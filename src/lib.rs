@@ -6,6 +6,7 @@ use rustbus::params;
 use rustbus::signature;
 use rustbus::standard_messages;
 use rustbus::{get_system_bus_path, Base, Container, Param};
+use rustbus::get_session_bus_path;
 use std::cell::{RefCell, RefMut};
 use std::collections::HashMap;
 use std::convert::{TryFrom, TryInto};
@@ -18,7 +19,7 @@ const SERV_IF_STR: &'static str = "org.bluez.GattService1";
 const CHAR_IF_STR: &'static str = "org.bluez.Characteristic1";
 const DESC_IF_STR: &'static str = "org.bluez.GattDescriptor1";
 const MANAGER_IF_STR: &'static str = "org.bluez.GattManager1";
-const SERV_IF_PROPS: &[&'static str] = &[UUID_PROP, PRIMARY_PROP, DEVICE_PROP, INCLUDES_PROP, HANDLE_PROP];
+const SERV_IF_PROPS: &[&'static str] = &[UUID_PROP, PRIMARY_PROP, DEVICE_PROP, HANDLE_PROP]; // HANDLE_PROP is not used
 const CHAR_IF_PROPS: &[&'static str] = &[
     UUID_PROP,
     SERVICE_PROP,
@@ -94,14 +95,14 @@ impl Descriptor {
 	fn update_path(&mut self, base: &str) {
 		self.path.clear();
 		self.path.push_str(base);
-		self.path.push_str("/characteristic");
+		self.path.push_str("/char");
 		let index_str = u16_to_ascii(self.index);
 		for i in &index_str {
 			self.path.push(*i);
 		}
 	}
 }
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Default)]
 pub struct CharFlags {
 	pub broadcast: bool,
 	pub read: bool,
@@ -127,11 +128,14 @@ impl CharFlags {
 		if self.broadcast {
 			ret.push("broadcast".to_string());
 		}
+		if self.read {
+			ret.push("read".to_string());
+		}
+		if self.write {
+			ret.push("write".to_string())
+		}
 		if self.write_wo_response{
 			ret.push("write-without-response".to_string());
-		}
-		if self.broadcast {
-			ret.push("broadcast".to_string());
 		}
 		if self.notify {
 			ret.push("notify".to_string());
@@ -169,6 +173,54 @@ impl CharFlags {
 		if self.secure_read {
 			ret.push("secure-read".to_string());
 		}
+		if self.authorize {
+			ret.push("authorize".to_string());
+		}
+		ret
+	}
+}
+#[derive(Clone, Copy, Default)]
+pub struct DescFlags {
+	pub read: bool,
+	pub write: bool,
+	pub encrypt_read: bool,
+	pub encrypt_write: bool,
+	pub encrypt_auth_read: bool,
+	pub encrypt_auth_write: bool,
+	pub secure_read: bool,
+	pub secure_write: bool,
+	pub authorize: bool
+}
+impl DescFlags {
+	fn to_strings(&self) -> Vec<String> {
+		let mut ret = Vec::new();
+		if self.read {
+			ret.push("read".to_string());
+		}
+		if self.write {
+			ret.push("write".to_string())
+		}
+		if self.encrypt_read {
+			ret.push("encrypt-read".to_string());
+		}
+		if self.encrypt_write {
+			ret.push("encrypt-write".to_string());
+		}
+		if self.encrypt_auth_read {
+			ret.push("encrypt-authenticated-read".to_string());
+		}
+		if self.encrypt_auth_write {
+			ret.push("encrypt-authenticated-write".to_string());
+		}
+		if self.secure_write {
+			ret.push("secure-write".to_string());
+		}
+		if self.secure_read {
+			ret.push("secure-read".to_string());
+		}
+		if self.authorize {
+			ret.push("authorize".to_string());
+		}
 		ret
 	}
 }
@@ -198,7 +250,7 @@ impl Charactersitic {
 	fn update_path(&mut self, base: &str) {
 		self.path.clear();
 		self.path.push_str(base);
-		self.path.push_str("/characteristic");
+		self.path.push_str("/char");
 		let index_str = u16_to_ascii(self.index);
 		for i in &index_str {
 			self.path.push(*i);
@@ -216,14 +268,16 @@ pub struct Service {
     uuid: String,
 	path: String,
     chars: Vec<Charactersitic>,
+	primary: bool
 }
 impl Service {
-    pub fn new(uuid: String) -> Self {
+    pub fn new(uuid: String, primary: bool) -> Self {
         Service {
             index: 0,
             uuid,
 			path: String::new(),
             chars: Vec::new(),
+			primary
         }
     }
     pub fn add_char(&mut self, mut character: Charactersitic) {
@@ -237,7 +291,7 @@ impl Service {
             return None;
         }
         let msg_path = &msg_path[1..];
-        if !msg_path.starts_with("characteristic") {
+        if !msg_path.starts_with("char") {
             return None;
         }
         let msg_path = &msg_path[14..];
@@ -377,7 +431,7 @@ impl<'a, 'b> Bluetooth<'a, 'b> {
         object_path.push(ascii[0]);
         object_path.push(ascii[1]);
 
-        object_path.push_str("/characteristic");
+        object_path.push_str("/char");
         let ascii = u16_to_ascii(char_index as u16);
         object_path.push(ascii[0]);
         object_path.push(ascii[1]);
@@ -514,8 +568,9 @@ impl<'a, 'b> Bluetooth<'a, 'b> {
                         _ => unimplemented!(), // TODO: Added interface not found
                     },
                 },
-                None => unknown_method(&call),
+                None => standard_messages::unknown_method(&call),
             };
+			eprintln!("replying to: {:#?}\nreply: {:#?}", call, reply);
             self.rpc_con.send_message(&mut reply, None)?;
         }
         Ok(())
@@ -559,6 +614,7 @@ impl<'a, 'b> Bluetooth<'a, 'b> {
         None
     }
 }
+/*
 pub fn unknown_method<'a, 'b>(call: &Message<'_,'_>) -> Message<'a,'b> {
     let text = format!(
         "No calls to {}.{} are accepted for object {}",
@@ -586,16 +642,17 @@ pub fn unknown_method<'a, 'b>(call: &Message<'_,'_>) -> Message<'a,'b> {
         err_resp
 
 }
+*/
 
 trait ObjectManager<'a, 'b> {
     fn objectmanager_call(&mut self, msg: &Message<'a, 'b>) -> Message<'a, 'b> {
         match msg.member.as_ref().unwrap().as_ref() {
             "GetManagedObjects" => self.get_managed_object(msg),
-            _ => unknown_method(&msg),
+            _ => standard_messages::unknown_method(&msg),
         }
     }
 	fn object_manager_type() -> signature::Type {
-		signature::Type::Container(signature::Container::Dict(signature::Base::String, Box::new(Service::GET_ALL_TYPE)))
+		signature::Type::Container(signature::Container::Dict(signature::Base::String, Box::new(Service::get_all_type())))
 	}
 
     fn get_managed_object(&mut self, msg: &Message<'a, 'b>) -> Message<'a, 'b>;
@@ -617,7 +674,7 @@ impl<'a, 'b> ObjectManager<'a, 'b> for Bluetooth<'a, 'b> {
             for characteristic in &mut service.chars {
                 let mut char_path = service_path.clone();
                 char_path.push('/');
-                char_path.push_str("characteristic");
+                char_path.push_str("char");
                 let index = u16_to_ascii(characteristic.index);
                 for &i in &index {
                     char_path.push(i);
@@ -634,16 +691,16 @@ impl<'a, 'b> ObjectManager<'a, 'b> for Bluetooth<'a, 'b> {
 						let props = desc.get_all_inner(interface.0).unwrap();
 						middle_map.insert(interface.0.to_string().into(), props);
 					}
-					let middle_cont: Container = (signature::Base::String, Descriptor::GET_ALL_TYPE, middle_map).try_into().unwrap();
-					outer_dict.insert(desc_path.into(), middle_cont.into());
+					let middle_cont: Container = (signature::Base::String, Descriptor::get_all_type(), middle_map).try_into().unwrap();
+					outer_dict.insert(Base::ObjectPath(desc_path), middle_cont.into());
                 }
 				let mut middle_map = HashMap::new();
 				for interface in Charactersitic::INTERFACES {
 					let props = characteristic.get_all_inner(interface.0).unwrap();
 					middle_map.insert(interface.0.to_string().into(), props);
 				}
-				let middle_cont: Container = (signature::Base::String, Charactersitic::GET_ALL_TYPE, middle_map).try_into().unwrap();
-                outer_dict.insert(char_path.into(), middle_cont.into());
+				let middle_cont: Container = (signature::Base::String, Charactersitic::get_all_type(), middle_map).try_into().unwrap();
+                outer_dict.insert(Base::ObjectPath(char_path), middle_cont.into());
             }
 			let mut middle_map = HashMap::new();
 			
@@ -651,17 +708,20 @@ impl<'a, 'b> ObjectManager<'a, 'b> for Bluetooth<'a, 'b> {
 					let props = service.get_all_inner(interface.0).unwrap();
 					middle_map.insert(interface.0.to_string().into(), props);
 			}
-			let middle_cont: Container = (signature::Base::String, Service::GET_ALL_TYPE, middle_map).try_into().unwrap();
-            outer_dict.insert(service_path.into(), middle_cont.into());
+			let middle_cont: Container = (signature::Base::String, Service::get_all_type(), middle_map).try_into().unwrap();
+            outer_dict.insert(Base::ObjectPath(service_path), middle_cont.into());
         }
         //let outer_param: Result<Param, std::convert::Infallible> = outer_dict.try_into();
-        let outer_cont: Container = (signature::Base::String, Self::object_manager_type(), outer_dict).try_into().unwrap();
-        reply.add_param(outer_cont);
+        let outer_cont: Container = (signature::Base::ObjectPath, Self::object_manager_type(), outer_dict).try_into().unwrap();
+        reply.push_param(outer_cont);
         reply
     }
 }
 trait Properties<'a, 'b> {
-	const GET_ALL_TYPE: signature::Type = signature::Type::Container(signature::Container::Variant);
+	const GET_ALL_ITEM: signature::Type = signature::Type::Container(signature::Container::Variant);
+	fn get_all_type() -> signature::Type {
+		signature::Type::Container(signature::Container::Dict(signature::Base::String, Box::new(Self::GET_ALL_ITEM)))
+	}
 	const INTERFACES: &'static [(&'static str, &'static [&'static str])];
 	fn properties_call(&mut self, msg: &Message<'a, 'b>) -> Message<'a, 'b> {
         match msg.member.as_ref().unwrap().as_ref() {
@@ -675,12 +735,13 @@ trait Properties<'a, 'b> {
 		let props = Self::INTERFACES.iter().find(|i| interface == i.0).map(|i| i.1)?;
         let mut prop_map = HashMap::new();
         for prop in props {
+			eprintln!("{}: {}", interface, prop);
             let val = self.get_inner(interface, prop).unwrap();
             prop_map.insert(prop.to_string().into(), val);
         }
         let prop_cont: Container = (
             signature::Base::String,
-            Self::GET_ALL_TYPE,
+            Self::GET_ALL_ITEM,
             prop_map,
         )
             .try_into()
@@ -715,9 +776,11 @@ impl<'a, 'b> Properties<'a, 'b> for Bluetooth<'_, '_> {
 
 fn base_param_to_variant(b: Base) -> Param {
 	let var = match b {
-		Base::String(s) => params::Variant { sig: signature::Type::Base(signature::Base::String), value: Param::Base(Base::String(s)) },
-		Base::Boolean(b) => params::Variant { sig: signature::Type::Base(signature::Base::Boolean), value: Param::Base(Base::Boolean(b)) },
-		Base::Uint16(u) => params::Variant { sig: signature::Type::Base(signature::Base::Uint16), value: Param::Base(Base::Uint16(u)) },
+		Base::String(s) => params::Variant { sig: signature::Type::Base(signature::Base::String), value: Param::Base(s.into()) },
+		Base::Boolean(b) => params::Variant { sig: signature::Type::Base(signature::Base::Boolean), value: Param::Base(b.into()) },
+		Base::Uint16(u) => params::Variant { sig: signature::Type::Base(signature::Base::Uint16), value: Param::Base(u.into()) },
+		Base::ObjectPath(p) => params::Variant { sig: signature::Type::Base(signature::Base::ObjectPath), value: Param::Base(Base::ObjectPath(p)) },
+		Base::Byte(b) => params::Variant { sig: signature::Type::Base(signature::Base::Byte), value: Param::Base(b.into()) },
 		_ => unimplemented!()
 	};
 	Param::Container(Container::Variant(Box::new(var)))
@@ -727,10 +790,10 @@ impl<'a, 'b> Properties<'a, 'b> for Charactersitic {
     fn get_inner(&mut self, interface: &str, prop: &str) -> Option<Param<'a, 'b>> {
 	    match interface {
             CHAR_IF_STR => match prop {
-                UUID_PROP => Some(base_param_to_variant(Base::String(self.uuid.clone()))),
+                UUID_PROP => Some(base_param_to_variant(self.uuid.clone().into())),
                 SERVICE_PROP => {
-					let pnt = self.path.len() - 19;
-					Some(self.path.split_at(pnt).0.to_string().into())
+					let pnt = self.path.len() - 9;
+					Some(base_param_to_variant(Base::ObjectPath(self.path.split_at(pnt).0.to_string())))
 				},
                 VALUE_PROP => {
 					let (v, l) = self.vf.to_value();
@@ -771,7 +834,25 @@ impl<'a, 'b> Properties<'a, 'b> for Charactersitic {
 impl<'a, 'b> Properties<'a, 'b> for Descriptor {
 	const INTERFACES: &'static [(&'static str, &'static [&'static str])] = &[DESC_IF, PROP_IF];
     fn get_inner(&mut self, interface: &str, prop: &str) -> Option<Param<'a, 'b>> {
-        unimplemented!()
+		match interface {
+			DESC_IF_STR => match prop {
+				UUID_PROP => Some(base_param_to_variant(self.uuid.clone().into())),
+				CHAR_PROP => {
+					let pnt = self.path.len() - 14;
+					Some(base_param_to_variant(Base::ObjectPath(self.path.split_at(pnt).0.to_string())))
+				},
+				VALUE_PROP => {
+					unimplemented!()
+				},
+				FLAGS_PROP => {
+					unimplemented!()
+				},
+				HANDLE_PROP => Some(base_param_to_variant(self.index.into())),
+				_ => None
+			},
+			PROP_IF_STR => None,
+			_ => None
+		}
     }
     fn set(&mut self, msg: &Message<'a, 'b>) -> Message<'a, 'b> {
         unimplemented!()
@@ -786,12 +867,22 @@ impl<'a, 'b> Properties<'a, 'b> for Descriptor {
 impl<'a, 'b> Properties<'a, 'b> for Service {
 	const INTERFACES: &'static [(&'static str, &'static [&'static str])] = &[SERV_IF, PROP_IF];
     fn get_inner(&mut self, interface: &str, prop: &str) -> Option<Param<'a, 'b>> {
-        unimplemented!()
+		match interface {
+				SERV_IF_STR => match prop {
+					UUID_PROP => Some(base_param_to_variant(self.uuid.clone().into())),
+					PRIMARY_PROP => Some(base_param_to_variant(self.primary.into())),
+					DEVICE_PROP => {
+						let pnt = self.path.len() - 10;
+						Some(base_param_to_variant(Base::ObjectPath(self.path.split_at(pnt).0.to_string())))
+					}
+					HANDLE_PROP => Some(base_param_to_variant(self.index.into())),
+					_ => None
+				},
+				PROP_IF_STR => None,
+				_ => None,
+		}
     }
     fn set(&mut self, msg: &Message<'a, 'b>) -> Message<'a, 'b> {
-        unimplemented!()
-    }
-    fn get_all(&mut self, msg: &Message<'a, 'b>) -> Message<'a, 'b> {
         unimplemented!()
     }
     fn prop_change(&self, name: &Vec<String>) -> Message {
