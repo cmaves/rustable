@@ -1,18 +1,22 @@
 use rustbus::client_conn;
 use rustbus::client_conn::{Conn, RpcConn};
+use rustbus::get_session_bus_path;
 use rustbus::message::{Message, MessageType};
 use rustbus::message_builder::MessageBuilder;
 use rustbus::params;
 use rustbus::signature;
 use rustbus::standard_messages;
 use rustbus::{get_system_bus_path, Base, Container, Param};
-use rustbus::get_session_bus_path;
 use std::cell::{RefCell, RefMut};
 use std::collections::HashMap;
 use std::convert::{TryFrom, TryInto};
 use std::fmt::{Debug, Display, Formatter};
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::time::Duration;
+
+mod introspect;
+use introspect::Introspectable;
 
 const PROP_IF_STR: &'static str = "org.freedesktop.Properties";
 const SERV_IF_STR: &'static str = "org.bluez.GattService1";
@@ -32,7 +36,7 @@ const CHAR_IF_PROPS: &[&'static str] = &[
 ];
 const DESC_IF_PROPS: &[&'static str] = &[UUID_PROP, VALUE_PROP, FLAGS_PROP, HANDLE_PROP, CHAR_PROP];
 
-const PROP_IF: (&'static str, &[&'static str])  = (PROP_IF_STR, &[]);
+const PROP_IF: (&'static str, &[&'static str]) = (PROP_IF_STR, &[]);
 const SERV_IF: (&'static str, &[&'static str]) = (SERV_IF_STR, SERV_IF_PROPS);
 const CHAR_IF: (&'static str, &[&'static str]) = (CHAR_IF_STR, CHAR_IF_PROPS);
 const DESC_IF: (&'static str, &[&'static str]) = (DESC_IF_STR, DESC_IF_PROPS);
@@ -75,190 +79,190 @@ pub enum ValOrFn {
 }
 
 impl ValOrFn {
-#[inline]
-	pub fn to_value(&mut self) -> ([u8; 255], usize) {
-		match self {
-			ValOrFn::Value(v, l) => (*v, *l),
-			ValOrFn::Function(f) => f()
-		}
-	}
+    #[inline]
+    pub fn to_value(&mut self) -> ([u8; 255], usize) {
+        match self {
+            ValOrFn::Value(v, l) => (*v, *l),
+            ValOrFn::Function(f) => f(),
+        }
+    }
 }
 pub struct Descriptor {
-	path: String,
+    path: String,
     index: u16,
-	uuid: String
+    uuid: String,
 }
 impl Descriptor {
-	pub fn new(uuid: String) -> Self {
-		unimplemented!()
-	}
-	fn update_path(&mut self, base: &str) {
-		self.path.clear();
-		self.path.push_str(base);
-		self.path.push_str("/char");
-		let index_str = u16_to_ascii(self.index);
-		for i in &index_str {
-			self.path.push(*i);
-		}
-	}
+    pub fn new(uuid: String) -> Self {
+        unimplemented!()
+    }
+    fn update_path(&mut self, base: &str) {
+        self.path.clear();
+        self.path.push_str(base);
+        self.path.push_str("/char");
+        let index_str = u16_to_ascii(self.index);
+        for i in &index_str {
+            self.path.push(*i);
+        }
+    }
 }
 #[derive(Clone, Copy, Default)]
 pub struct CharFlags {
-	pub broadcast: bool,
-	pub read: bool,
-	pub write_wo_response: bool,
-	pub write: bool,
-	pub notify: bool,
-	pub indicate: bool,
-	pub auth_signed_writes: bool,
-	pub extended_properties: bool,
-	pub reliable_write: bool,
-	pub writable_auxiliaries: bool,
-	pub encrypt_read: bool,
-	pub encrypt_write: bool,
-	pub encrypt_auth_read: bool,
-	pub encrypt_auth_write: bool,
-	pub secure_read: bool,
-	pub secure_write: bool,
-	pub authorize: bool
+    pub broadcast: bool,
+    pub read: bool,
+    pub write_wo_response: bool,
+    pub write: bool,
+    pub notify: bool,
+    pub indicate: bool,
+    pub auth_signed_writes: bool,
+    pub extended_properties: bool,
+    pub reliable_write: bool,
+    pub writable_auxiliaries: bool,
+    pub encrypt_read: bool,
+    pub encrypt_write: bool,
+    pub encrypt_auth_read: bool,
+    pub encrypt_auth_write: bool,
+    pub secure_read: bool,
+    pub secure_write: bool,
+    pub authorize: bool,
 }
 impl CharFlags {
-	fn to_strings(&self) -> Vec<String> {
-		let mut ret = Vec::new();
-		if self.broadcast {
-			ret.push("broadcast".to_string());
-		}
-		if self.read {
-			ret.push("read".to_string());
-		}
-		if self.write {
-			ret.push("write".to_string())
-		}
-		if self.write_wo_response{
-			ret.push("write-without-response".to_string());
-		}
-		if self.notify {
-			ret.push("notify".to_string());
-		}
-		if self.indicate {
-			ret.push("indicate".to_string());
-		}
-		if self.auth_signed_writes {
-			ret.push("authenticated-signed-writes".to_string());
-		}
-		if self.extended_properties {
-			ret.push("extended-properties".to_string());
-		}
-		if self.reliable_write {
-			ret.push("reliable-write".to_string());
-		}
-		if self.writable_auxiliaries {
-			ret.push("writable-auxiliaries".to_string());
-		}
-		if self.encrypt_read {
-			ret.push("encrypt-read".to_string());
-		}
-		if self.encrypt_write {
-			ret.push("encrypt-write".to_string());
-		}
-		if self.encrypt_auth_read {
-			ret.push("encrypt-authenticated-read".to_string());
-		}
-		if self.encrypt_auth_write {
-			ret.push("encrypt-authenticated-write".to_string());
-		}
-		if self.secure_write {
-			ret.push("secure-write".to_string());
-		}
-		if self.secure_read {
-			ret.push("secure-read".to_string());
-		}
-		if self.authorize {
-			ret.push("authorize".to_string());
-		}
-		ret
-	}
+    fn to_strings(&self) -> Vec<String> {
+        let mut ret = Vec::new();
+        if self.broadcast {
+            ret.push("broadcast".to_string());
+        }
+        if self.read {
+            ret.push("read".to_string());
+        }
+        if self.write {
+            ret.push("write".to_string())
+        }
+        if self.write_wo_response {
+            ret.push("write-without-response".to_string());
+        }
+        if self.notify {
+            ret.push("notify".to_string());
+        }
+        if self.indicate {
+            ret.push("indicate".to_string());
+        }
+        if self.auth_signed_writes {
+            ret.push("authenticated-signed-writes".to_string());
+        }
+        if self.extended_properties {
+            ret.push("extended-properties".to_string());
+        }
+        if self.reliable_write {
+            ret.push("reliable-write".to_string());
+        }
+        if self.writable_auxiliaries {
+            ret.push("writable-auxiliaries".to_string());
+        }
+        if self.encrypt_read {
+            ret.push("encrypt-read".to_string());
+        }
+        if self.encrypt_write {
+            ret.push("encrypt-write".to_string());
+        }
+        if self.encrypt_auth_read {
+            ret.push("encrypt-authenticated-read".to_string());
+        }
+        if self.encrypt_auth_write {
+            ret.push("encrypt-authenticated-write".to_string());
+        }
+        if self.secure_write {
+            ret.push("secure-write".to_string());
+        }
+        if self.secure_read {
+            ret.push("secure-read".to_string());
+        }
+        if self.authorize {
+            ret.push("authorize".to_string());
+        }
+        ret
+    }
 }
 #[derive(Clone, Copy, Default)]
 pub struct DescFlags {
-	pub read: bool,
-	pub write: bool,
-	pub encrypt_read: bool,
-	pub encrypt_write: bool,
-	pub encrypt_auth_read: bool,
-	pub encrypt_auth_write: bool,
-	pub secure_read: bool,
-	pub secure_write: bool,
-	pub authorize: bool
+    pub read: bool,
+    pub write: bool,
+    pub encrypt_read: bool,
+    pub encrypt_write: bool,
+    pub encrypt_auth_read: bool,
+    pub encrypt_auth_write: bool,
+    pub secure_read: bool,
+    pub secure_write: bool,
+    pub authorize: bool,
 }
 impl DescFlags {
-	fn to_strings(&self) -> Vec<String> {
-		let mut ret = Vec::new();
-		if self.read {
-			ret.push("read".to_string());
-		}
-		if self.write {
-			ret.push("write".to_string())
-		}
-		if self.encrypt_read {
-			ret.push("encrypt-read".to_string());
-		}
-		if self.encrypt_write {
-			ret.push("encrypt-write".to_string());
-		}
-		if self.encrypt_auth_read {
-			ret.push("encrypt-authenticated-read".to_string());
-		}
-		if self.encrypt_auth_write {
-			ret.push("encrypt-authenticated-write".to_string());
-		}
-		if self.secure_write {
-			ret.push("secure-write".to_string());
-		}
-		if self.secure_read {
-			ret.push("secure-read".to_string());
-		}
-		if self.authorize {
-			ret.push("authorize".to_string());
-		}
-		ret
-	}
+    fn to_strings(&self) -> Vec<String> {
+        let mut ret = Vec::new();
+        if self.read {
+            ret.push("read".to_string());
+        }
+        if self.write {
+            ret.push("write".to_string())
+        }
+        if self.encrypt_read {
+            ret.push("encrypt-read".to_string());
+        }
+        if self.encrypt_write {
+            ret.push("encrypt-write".to_string());
+        }
+        if self.encrypt_auth_read {
+            ret.push("encrypt-authenticated-read".to_string());
+        }
+        if self.encrypt_auth_write {
+            ret.push("encrypt-authenticated-write".to_string());
+        }
+        if self.secure_write {
+            ret.push("secure-write".to_string());
+        }
+        if self.secure_read {
+            ret.push("secure-read".to_string());
+        }
+        if self.authorize {
+            ret.push("authorize".to_string());
+        }
+        ret
+    }
 }
 pub struct Charactersitic {
     vf: ValOrFn,
     index: u16,
     uuid: String,
-	path: String,
-	write_fd: Option<()>,
-	notify_fd: Option<()>,
+    path: String,
+    write_fd: Option<()>,
+    notify_fd: Option<()>,
     descs: Vec<Descriptor>,
-	flags: CharFlags
+    flags: CharFlags,
 }
 impl Charactersitic {
     pub fn new(uuid: String, flags: CharFlags) -> Self {
         Charactersitic {
             vf: ValOrFn::Value([0; 255], 0),
             index: 0,
-			write_fd: None,
-			notify_fd: None,
+            write_fd: None,
+            notify_fd: None,
             uuid,
-			flags,
-			path: String::new(),
+            flags,
+            path: String::new(),
             descs: Vec::new(),
         }
     }
-	fn update_path(&mut self, base: &str) {
-		self.path.clear();
-		self.path.push_str(base);
-		self.path.push_str("/char");
-		let index_str = u16_to_ascii(self.index);
-		for i in &index_str {
-			self.path.push(*i);
-		}
-		for desc in &mut self.descs {
-			desc.update_path(&self.path);
-		}
-	}
+    fn update_path(&mut self, base: &str) {
+        self.path.clear();
+        self.path.push_str(base);
+        self.path.push_str("/char");
+        let index_str = u16_to_ascii(self.index);
+        for i in &index_str {
+            self.path.push(*i);
+        }
+        for desc in &mut self.descs {
+            desc.update_path(&self.path);
+        }
+    }
     fn match_descs(&mut self, msg_path: &str, msg: &Message) -> Option<GattObject> {
         unimplemented!()
     }
@@ -266,18 +270,18 @@ impl Charactersitic {
 pub struct Service {
     index: u8,
     uuid: String,
-	path: String,
+    path: String,
     chars: Vec<Charactersitic>,
-	primary: bool
+    primary: bool,
 }
 impl Service {
     pub fn new(uuid: String, primary: bool) -> Self {
         Service {
             index: 0,
             uuid,
-			path: String::new(),
+            path: String::new(),
             chars: Vec::new(),
-			primary
+            primary,
         }
     }
     pub fn add_char(&mut self, mut character: Charactersitic) {
@@ -306,16 +310,16 @@ impl Service {
         }
         None
     }
-	fn update_path(&mut self, mut base: String) {
-		base.push_str("/service");
-		let index_str = u8_to_ascii(self.index);
-		base.push(index_str[0]);
-		base.push(index_str[1]);
-		self.path = base;
-		for character in &mut self.chars {
-			character.update_path(&self.path);
-		}
-	}
+    fn update_path(&mut self, mut base: String) {
+        base.push_str("/service");
+        let index_str = u8_to_ascii(self.index);
+        base.push(index_str[0]);
+        base.push(index_str[1]);
+        self.path = base;
+        for character in &mut self.chars {
+            character.update_path(&self.path);
+        }
+    }
 }
 pub enum GattObject<'a> {
     Char(&'a mut Charactersitic),
@@ -369,16 +373,22 @@ impl<'a, 'b> Bluetooth<'a, 'b> {
         }));
         Ok(ret)
     }
+    pub fn get_path(&self) -> PathBuf {
+        let mut ret = String::with_capacity(self.name.len() + 1);
+        ret.push('/');
+        ret.push_str(&self.name.replace(".", "/"));
+		PathBuf::from(ret)
+    }
     pub fn add_service(&mut self, mut service: Service) -> Result<usize, Error> {
         if self.services.len() >= 255 {
             panic!("Cannot add more than 255 services");
         }
-		let mut path = String::new();
-		path.push('/');
-		path.push_str(&self.name.replace(".", "/"));
-		let index = self.services.len();
-		service.index = index as u8;
-		service.update_path(path);
+        let mut path = String::new();
+        path.push('/');
+        path.push_str(&self.name.replace(".", "/"));
+        let index = self.services.len();
+        service.index = index as u8;
+        service.update_path(path);
         self.services.push(service);
         Ok(index)
     }
@@ -542,41 +552,54 @@ impl<'a, 'b> Bluetooth<'a, 'b> {
         Ok(())
     }
     pub fn process_requests(&mut self) -> Result<(), Error> {
-        let path = self.name.replace(".", "/");
-        while let Some(call) = self.rpc_con.try_get_call() {
-            let interface = (&call.interface).as_ref().unwrap();
-            let mut reply = match self.match_root(&call, &path) {
-                Some(v) => match v {
-                    GattObject::Appl => match interface.as_ref() {
-                        "org.freedesktop.DBus.Properties" => self.properties_call(&call),
-                        "org.freedesktop.DBus.ObjectManager" => self.objectmanager_call(&call),
-                        _ => unimplemented!(), // TODO: Added interface not found
-                    },
-                    GattObject::Serv(v) => match interface.as_ref() {
-                        "org.freedesktop.DBus.Properties" => v.properties_call(&call),
-                        "org.bluez.GattService1" => unimplemented!(),
-                        _ => unimplemented!(), // TODO: Added interface not found
-                    },
-                    GattObject::Char(v) => match interface.as_ref() {
-                        "org.freedesktop.DBus.Properties" => v.properties_call(&call),
-                        "org.bluez.GattCharacteristic1" => unimplemented!(),
-                        _ => unimplemented!(), // TODO: Added interface not found
-                    },
-                    GattObject::Desc(v) => match interface.as_ref() {
-                        "org.freedesktop.DBus.Properties" => v.properties_call(&call),
-                        "org.bluez.GattDescriptor1" => unimplemented!(),
-                        _ => unimplemented!(), // TODO: Added interface not found
-                    },
-                },
-                None => standard_messages::unknown_method(&call),
-            };
-			eprintln!("replying to: {:#?}\nreply: {:#?}", call, reply);
-            self.rpc_con.send_message(&mut reply, None)?;
+		eprintln!("Process requests");
+        loop {
+            match self.rpc_con.wait_call(Some(Duration::from_micros(500))) {
+                Ok(call) => {
+                    eprintln!("received call");
+                    let interface = (&call.interface).as_ref().unwrap();
+                    let mut reply = match self.match_root(&call) {
+                        Some(v) => match v {
+                            GattObject::Appl => match interface.as_ref() {
+                                "org.freedesktop.DBus.Properties" => self.properties_call(&call),
+                                "org.freedesktop.DBus.ObjectManager" => self.objectmanager_call(&call),
+                                "org.freedesktop.DBus.Introspectable" => self.introspectable(&call),
+                                _ => unimplemented!(), // TODO: Added interface not found
+                            },
+                            GattObject::Serv(v) => match interface.as_ref() {
+                                "org.freedesktop.DBus.Properties" => v.properties_call(&call),
+                                "org.bluez.GattService1" => unimplemented!(),
+                                "org.freedesktop.DBus.Introspectable" => self.introspectable(&call),
+                                _ => unimplemented!(), // TODO: Added interface not found
+                            },
+                            GattObject::Char(v) => match interface.as_ref() {
+                                "org.freedesktop.DBus.Properties" => v.properties_call(&call),
+                                "org.bluez.GattCharacteristic1" => unimplemented!(),
+                                "org.freedesktop.DBus.Introspectable" => self.introspectable(&call),
+                                _ => unimplemented!(), // TODO: Added interface not found
+                            },
+                            GattObject::Desc(v) => match interface.as_ref() {
+                                "org.freedesktop.DBus.Properties" => v.properties_call(&call),
+                                "org.bluez.GattDescriptor1" => unimplemented!(),
+                                "org.freedesktop.DBus.Introspectable" => self.introspectable(&call),
+                                _ => unimplemented!(), // TODO: Added interface not found
+                            },
+                        },
+                        None => standard_messages::unknown_method(&call),
+                    };
+                    // eprintln!("replying to: {:#?}\nreply: {:#?}", call, reply);
+                    self.rpc_con.send_message(&mut reply, None)?;
+                }
+                Err(e) => match e {
+					client_conn::Error::TimedOut => return Ok(()),
+					_ => return Err(e.into()),
+				}
+            }
         }
-        Ok(())
     }
-    fn match_root(&mut self, msg: &Message, path: &str) -> Option<GattObject> {
-        eprintln!("For path: {}, Checking msg for match: {:#?}", path, msg);
+    fn match_root(&mut self, msg: &Message, path: &Path) -> Option<GattObject> {
+        let path = self.get_path();
+        eprintln!("For path: {}, Checking msg for match: {:#?}", path.display(), msg);
         if let None = &msg.interface {
             return None;
         }
@@ -584,16 +607,26 @@ impl<'a, 'b> Bluetooth<'a, 'b> {
             return None;
         }
         if let Some(object) = &msg.object {
+			let obj_path: &Path = object.as_ref();
+
+			match path.strip_prefix(obj_path) {
+				Ok(_) => Some(GattObject::Appl),
+			}
+			if let None =  obj_path_iter.next() {
+                eprintln!("Root component introspection received");
+                return Some(GattObject::Appl);
+			}
             if object.len() >= 1 && object[1..].starts_with(&path) {
                 if object.len() - 1 == path.len() {
                     return Some(GattObject::Appl);
                 }
-                return self.match_service(&object[path.len()..], msg);
+                //return self.match_service(&object[path.len()..], msg);
+                return self.match_service(obj_path.strip_prefix(path), msg);
             }
         }
         None
     }
-    fn match_service(&mut self, msg_path: &str, msg: &Message) -> Option<GattObject> {
+    fn match_service(&mut self, msg_path: Path, msg: &Message) -> Option<GattObject> {
         eprintln!("Checking for service for match: {:#?}", msg);
         if msg_path.len() < 10 || &msg_path[0..1] != "/" {
             return None;
@@ -622,7 +655,7 @@ pub fn unknown_method<'a, 'b>(call: &Message<'_,'_>) -> Message<'a,'b> {
         call.member.clone().unwrap_or_else(|| "".to_owned()),
         call.object.clone().unwrap_or_else(|| "".to_owned()),
     );
-	let err_name = "org.freedesktop.DBus.Error.UnknownMethod".to_owned();
+    let err_name = "org.freedesktop.DBus.Error.UnknownMethod".to_owned();
     let mut err_resp = Message {
             typ: MessageType::Reply,
             interface: None,
@@ -643,7 +676,6 @@ pub fn unknown_method<'a, 'b>(call: &Message<'_,'_>) -> Message<'a,'b> {
 
 }
 */
-
 trait ObjectManager<'a, 'b> {
     fn objectmanager_call(&mut self, msg: &Message<'a, 'b>) -> Message<'a, 'b> {
         match msg.member.as_ref().unwrap().as_ref() {
@@ -651,9 +683,12 @@ trait ObjectManager<'a, 'b> {
             _ => standard_messages::unknown_method(&msg),
         }
     }
-	fn object_manager_type() -> signature::Type {
-		signature::Type::Container(signature::Container::Dict(signature::Base::String, Box::new(Service::get_all_type())))
-	}
+    fn object_manager_type() -> signature::Type {
+        signature::Type::Container(signature::Container::Dict(
+            signature::Base::String,
+            Box::new(Service::get_all_type()),
+        ))
+    }
 
     fn get_managed_object(&mut self, msg: &Message<'a, 'b>) -> Message<'a, 'b>;
 }
@@ -686,44 +721,68 @@ impl<'a, 'b> ObjectManager<'a, 'b> for Bluetooth<'a, 'b> {
                     for &i in &index[1..] {
                         desc_path.push(i);
                     }
-					let mut middle_map = HashMap::new();
-					for interface in Descriptor::INTERFACES {
-						let props = desc.get_all_inner(interface.0).unwrap();
-						middle_map.insert(interface.0.to_string().into(), props);
-					}
-					let middle_cont: Container = (signature::Base::String, Descriptor::get_all_type(), middle_map).try_into().unwrap();
-					outer_dict.insert(Base::ObjectPath(desc_path), middle_cont.into());
+                    let mut middle_map = HashMap::new();
+                    for interface in Descriptor::INTERFACES {
+                        let props = desc.get_all_inner(interface.0).unwrap();
+                        middle_map.insert(interface.0.to_string().into(), props);
+                    }
+                    let middle_cont: Container = (
+                        signature::Base::String,
+                        Descriptor::get_all_type(),
+                        middle_map,
+                    )
+                        .try_into()
+                        .unwrap();
+                    outer_dict.insert(Base::ObjectPath(desc_path), middle_cont.into());
                 }
-				let mut middle_map = HashMap::new();
-				for interface in Charactersitic::INTERFACES {
-					let props = characteristic.get_all_inner(interface.0).unwrap();
-					middle_map.insert(interface.0.to_string().into(), props);
-				}
-				let middle_cont: Container = (signature::Base::String, Charactersitic::get_all_type(), middle_map).try_into().unwrap();
+                let mut middle_map = HashMap::new();
+                for interface in Charactersitic::INTERFACES {
+                    let props = characteristic.get_all_inner(interface.0).unwrap();
+                    middle_map.insert(interface.0.to_string().into(), props);
+                }
+                let middle_cont: Container = (
+                    signature::Base::String,
+                    Charactersitic::get_all_type(),
+                    middle_map,
+                )
+                    .try_into()
+                    .unwrap();
                 outer_dict.insert(Base::ObjectPath(char_path), middle_cont.into());
             }
-			let mut middle_map = HashMap::new();
-			
-			for interface in Service::INTERFACES {
-					let props = service.get_all_inner(interface.0).unwrap();
-					middle_map.insert(interface.0.to_string().into(), props);
-			}
-			let middle_cont: Container = (signature::Base::String, Service::get_all_type(), middle_map).try_into().unwrap();
+            let mut middle_map = HashMap::new();
+
+            for interface in Service::INTERFACES {
+                let props = service.get_all_inner(interface.0).unwrap();
+                middle_map.insert(interface.0.to_string().into(), props);
+            }
+            let middle_cont: Container =
+                (signature::Base::String, Service::get_all_type(), middle_map)
+                    .try_into()
+                    .unwrap();
             outer_dict.insert(Base::ObjectPath(service_path), middle_cont.into());
         }
         //let outer_param: Result<Param, std::convert::Infallible> = outer_dict.try_into();
-        let outer_cont: Container = (signature::Base::ObjectPath, Self::object_manager_type(), outer_dict).try_into().unwrap();
+        let outer_cont: Container = (
+            signature::Base::ObjectPath,
+            Self::object_manager_type(),
+            outer_dict,
+        )
+            .try_into()
+            .unwrap();
         reply.push_param(outer_cont);
         reply
     }
 }
 trait Properties<'a, 'b> {
-	const GET_ALL_ITEM: signature::Type = signature::Type::Container(signature::Container::Variant);
-	fn get_all_type() -> signature::Type {
-		signature::Type::Container(signature::Container::Dict(signature::Base::String, Box::new(Self::GET_ALL_ITEM)))
-	}
-	const INTERFACES: &'static [(&'static str, &'static [&'static str])];
-	fn properties_call(&mut self, msg: &Message<'a, 'b>) -> Message<'a, 'b> {
+    const GET_ALL_ITEM: signature::Type = signature::Type::Container(signature::Container::Variant);
+    fn get_all_type() -> signature::Type {
+        signature::Type::Container(signature::Container::Dict(
+            signature::Base::String,
+            Box::new(Self::GET_ALL_ITEM),
+        ))
+    }
+    const INTERFACES: &'static [(&'static str, &'static [&'static str])];
+    fn properties_call(&mut self, msg: &Message<'a, 'b>) -> Message<'a, 'b> {
         match msg.member.as_ref().unwrap().as_ref() {
             "Get" => self.get(msg),
             "Set" => self.set(msg),
@@ -732,38 +791,36 @@ trait Properties<'a, 'b> {
         }
     }
     fn get_all_inner(&mut self, interface: &str) -> Option<Param<'a, 'b>> {
-		let props = Self::INTERFACES.iter().find(|i| interface == i.0).map(|i| i.1)?;
+        let props = Self::INTERFACES
+            .iter()
+            .find(|i| interface == i.0)
+            .map(|i| i.1)?;
         let mut prop_map = HashMap::new();
         for prop in props {
-			eprintln!("{}: {}", interface, prop);
+            //eprintln!("{}: {}", interface, prop);
             let val = self.get_inner(interface, prop).unwrap();
             prop_map.insert(prop.to_string().into(), val);
         }
-        let prop_cont: Container = (
-            signature::Base::String,
-            Self::GET_ALL_ITEM,
-            prop_map,
-        )
+        let prop_cont: Container = (signature::Base::String, Self::GET_ALL_ITEM, prop_map)
             .try_into()
             .unwrap();
         Some(prop_cont.into())
     }
     fn get_all(&mut self, msg: &Message<'a, 'b>) -> Message<'a, 'b> {
-		unimplemented!()
-	}
+        unimplemented!()
+    }
 
     fn get(&mut self, msg: &Message<'a, 'b>) -> Message<'a, 'b> {
-		unimplemented!()
-	}
+        unimplemented!()
+    }
     fn get_inner(&mut self, interface: &str, prop: &str) -> Option<Param<'a, 'b>>;
     fn set(&mut self, msg: &Message<'a, 'b>) -> Message<'a, 'b>;
     fn prop_change(&self, name: &Vec<String>) -> Message;
 }
 
 impl<'a, 'b> Properties<'a, 'b> for Bluetooth<'_, '_> {
-	const INTERFACES: &'static [(&'static str, &'static [&'static str])] = &[];
+    const INTERFACES: &'static [(&'static str, &'static [&'static str])] = &[];
     fn get_inner(&mut self, interface: &str, prop: &str) -> Option<Param<'a, 'b>> {
-
         unimplemented!()
     }
     fn set(&mut self, msg: &Message<'a, 'b>) -> Message<'a, 'b> {
@@ -775,50 +832,88 @@ impl<'a, 'b> Properties<'a, 'b> for Bluetooth<'_, '_> {
 }
 
 fn base_param_to_variant(b: Base) -> Param {
-	let var = match b {
-		Base::String(s) => params::Variant { sig: signature::Type::Base(signature::Base::String), value: Param::Base(s.into()) },
-		Base::Boolean(b) => params::Variant { sig: signature::Type::Base(signature::Base::Boolean), value: Param::Base(b.into()) },
-		Base::Uint16(u) => params::Variant { sig: signature::Type::Base(signature::Base::Uint16), value: Param::Base(u.into()) },
-		Base::ObjectPath(p) => params::Variant { sig: signature::Type::Base(signature::Base::ObjectPath), value: Param::Base(Base::ObjectPath(p)) },
-		Base::Byte(b) => params::Variant { sig: signature::Type::Base(signature::Base::Byte), value: Param::Base(b.into()) },
-		_ => unimplemented!()
-	};
-	Param::Container(Container::Variant(Box::new(var)))
+    let var = match b {
+        Base::String(s) => params::Variant {
+            sig: signature::Type::Base(signature::Base::String),
+            value: Param::Base(s.into()),
+        },
+        Base::Boolean(b) => params::Variant {
+            sig: signature::Type::Base(signature::Base::Boolean),
+            value: Param::Base(b.into()),
+        },
+        Base::Uint16(u) => params::Variant {
+            sig: signature::Type::Base(signature::Base::Uint16),
+            value: Param::Base(u.into()),
+        },
+        Base::ObjectPath(p) => params::Variant {
+            sig: signature::Type::Base(signature::Base::ObjectPath),
+            value: Param::Base(Base::ObjectPath(p)),
+        },
+        Base::Byte(b) => params::Variant {
+            sig: signature::Type::Base(signature::Base::Byte),
+            value: Param::Base(b.into()),
+        },
+        _ => unimplemented!(),
+    };
+    Param::Container(Container::Variant(Box::new(var)))
 }
 impl<'a, 'b> Properties<'a, 'b> for Charactersitic {
     const INTERFACES: &'static [(&'static str, &'static [&'static str])] = &[CHAR_IF, PROP_IF];
     fn get_inner(&mut self, interface: &str, prop: &str) -> Option<Param<'a, 'b>> {
-	    match interface {
+        match interface {
             CHAR_IF_STR => match prop {
                 UUID_PROP => Some(base_param_to_variant(self.uuid.clone().into())),
                 SERVICE_PROP => {
-					let pnt = self.path.len() - 9;
-					Some(base_param_to_variant(Base::ObjectPath(self.path.split_at(pnt).0.to_string())))
-				},
+                    let pnt = self.path.len() - 9;
+                    Some(base_param_to_variant(Base::ObjectPath(
+                        self.path.split_at(pnt).0.to_string(),
+                    )))
+                }
                 VALUE_PROP => {
-					let (v, l) = self.vf.to_value();
-					let vec: Vec<Param> = v[..l].into_iter().map(|i| Base::Byte(*i).into()).collect();
-					let val = Param::Container(Container::Array(params::Array { element_sig: signature::Type::Base(signature::Base::Byte), values: vec } ));
-					let var = Box::new(params::Variant { sig: signature::Type::Container(signature::Container::Array(Box::new(signature::Type::Base(signature::Base::Byte)))), value: val });
-					Some(Param::Container(Container::Variant(var)))
-				},
-                WRITE_ACQUIRED_PROP => Some(base_param_to_variant(Base::Boolean(self.write_fd.is_some()))),
-                NOTIFY_ACQUIRED_PROP => Some(base_param_to_variant(Base::Boolean(self.notify_fd.is_some()))),
+                    let (v, l) = self.vf.to_value();
+                    let vec: Vec<Param> =
+                        v[..l].into_iter().map(|i| Base::Byte(*i).into()).collect();
+                    let val = Param::Container(Container::Array(params::Array {
+                        element_sig: signature::Type::Base(signature::Base::Byte),
+                        values: vec,
+                    }));
+                    let var = Box::new(params::Variant {
+                        sig: signature::Type::Container(signature::Container::Array(Box::new(
+                            signature::Type::Base(signature::Base::Byte),
+                        ))),
+                        value: val,
+                    });
+                    Some(Param::Container(Container::Variant(var)))
+                }
+                WRITE_ACQUIRED_PROP => Some(base_param_to_variant(Base::Boolean(
+                    self.write_fd.is_some(),
+                ))),
+                NOTIFY_ACQUIRED_PROP => Some(base_param_to_variant(Base::Boolean(
+                    self.notify_fd.is_some(),
+                ))),
                 NOTIFYING_PROP => Some(base_param_to_variant(Base::Boolean(true))),
                 FLAGS_PROP => {
-					let flags = self.flags.to_strings();
-					let vec = flags.into_iter().map(|s| Base::String(s).into()).collect();
-					let val = Param::Container(Container::Array(params::Array { element_sig: signature::Type::Base(signature::Base::String), values: vec} ));
-					let var = Box::new(params::Variant { sig: signature::Type::Container(signature::Container::Array(Box::new(signature::Type::Base(signature::Base::String)))), value: val });
-					Some(Param::Container(Container::Variant(var)))
-				},
+                    let flags = self.flags.to_strings();
+                    let vec = flags.into_iter().map(|s| Base::String(s).into()).collect();
+                    let val = Param::Container(Container::Array(params::Array {
+                        element_sig: signature::Type::Base(signature::Base::String),
+                        values: vec,
+                    }));
+                    let var = Box::new(params::Variant {
+                        sig: signature::Type::Container(signature::Container::Array(Box::new(
+                            signature::Type::Base(signature::Base::String),
+                        ))),
+                        value: val,
+                    });
+                    Some(Param::Container(Container::Variant(var)))
+                }
                 HANDLE_PROP => Some(base_param_to_variant(Base::Uint16(self.index))),
                 _ => None,
             },
             PROP_IF_STR => match prop {
                 _ => None,
             },
-			_ => None
+            _ => None,
         }
     }
     fn set(&mut self, msg: &Message<'a, 'b>) -> Message<'a, 'b> {
@@ -832,27 +927,25 @@ impl<'a, 'b> Properties<'a, 'b> for Charactersitic {
     }
 }
 impl<'a, 'b> Properties<'a, 'b> for Descriptor {
-	const INTERFACES: &'static [(&'static str, &'static [&'static str])] = &[DESC_IF, PROP_IF];
+    const INTERFACES: &'static [(&'static str, &'static [&'static str])] = &[DESC_IF, PROP_IF];
     fn get_inner(&mut self, interface: &str, prop: &str) -> Option<Param<'a, 'b>> {
-		match interface {
-			DESC_IF_STR => match prop {
-				UUID_PROP => Some(base_param_to_variant(self.uuid.clone().into())),
-				CHAR_PROP => {
-					let pnt = self.path.len() - 14;
-					Some(base_param_to_variant(Base::ObjectPath(self.path.split_at(pnt).0.to_string())))
-				},
-				VALUE_PROP => {
-					unimplemented!()
-				},
-				FLAGS_PROP => {
-					unimplemented!()
-				},
-				HANDLE_PROP => Some(base_param_to_variant(self.index.into())),
-				_ => None
-			},
-			PROP_IF_STR => None,
-			_ => None
-		}
+        match interface {
+            DESC_IF_STR => match prop {
+                UUID_PROP => Some(base_param_to_variant(self.uuid.clone().into())),
+                CHAR_PROP => {
+                    let pnt = self.path.len() - 14;
+                    Some(base_param_to_variant(Base::ObjectPath(
+                        self.path.split_at(pnt).0.to_string(),
+                    )))
+                }
+                VALUE_PROP => unimplemented!(),
+                FLAGS_PROP => unimplemented!(),
+                HANDLE_PROP => Some(base_param_to_variant(self.index.into())),
+                _ => None,
+            },
+            PROP_IF_STR => None,
+            _ => None,
+        }
     }
     fn set(&mut self, msg: &Message<'a, 'b>) -> Message<'a, 'b> {
         unimplemented!()
@@ -865,22 +958,24 @@ impl<'a, 'b> Properties<'a, 'b> for Descriptor {
     }
 }
 impl<'a, 'b> Properties<'a, 'b> for Service {
-	const INTERFACES: &'static [(&'static str, &'static [&'static str])] = &[SERV_IF, PROP_IF];
+    const INTERFACES: &'static [(&'static str, &'static [&'static str])] = &[SERV_IF, PROP_IF];
     fn get_inner(&mut self, interface: &str, prop: &str) -> Option<Param<'a, 'b>> {
-		match interface {
-				SERV_IF_STR => match prop {
-					UUID_PROP => Some(base_param_to_variant(self.uuid.clone().into())),
-					PRIMARY_PROP => Some(base_param_to_variant(self.primary.into())),
-					DEVICE_PROP => {
-						let pnt = self.path.len() - 10;
-						Some(base_param_to_variant(Base::ObjectPath(self.path.split_at(pnt).0.to_string())))
-					}
-					HANDLE_PROP => Some(base_param_to_variant(self.index.into())),
-					_ => None
-				},
-				PROP_IF_STR => None,
-				_ => None,
-		}
+        match interface {
+            SERV_IF_STR => match prop {
+                UUID_PROP => Some(base_param_to_variant(self.uuid.clone().into())),
+                PRIMARY_PROP => Some(base_param_to_variant(self.primary.into())),
+                DEVICE_PROP => {
+                    let pnt = self.path.len() - 10;
+                    Some(base_param_to_variant(Base::ObjectPath(
+                        self.path.split_at(pnt).0.to_string(),
+                    )))
+                }
+                HANDLE_PROP => Some(base_param_to_variant(self.index.into())),
+                _ => None,
+            },
+            PROP_IF_STR => None,
+            _ => None,
+        }
     }
     fn set(&mut self, msg: &Message<'a, 'b>) -> Message<'a, 'b> {
         unimplemented!()
