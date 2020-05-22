@@ -8,40 +8,31 @@ use rustbus::signature;
 use rustbus::standard_messages;
 use rustbus::{get_system_bus_path, Base, Container, Param};
 use std::cell::{RefCell, RefMut};
-use std::collections::HashMap;
+use std::collections::{HashMap,VecDeque};
 use std::convert::{TryFrom, TryInto};
+use std::fmt::Write;
 use std::fmt::{Debug, Display, Formatter};
-use std::path::{Path, PathBuf};
+use std::io::ErrorKind;
+use std::os::unix::io::AsRawFd;
+use std::os::unix::net::UnixDatagram;
+use std::path::{Component, Path, PathBuf};
 use std::rc::Rc;
 use std::time::Duration;
+use std::num::ParseIntError;
 
 mod introspect;
 use introspect::Introspectable;
 
+#[cfg(test)]
+mod tests;
+
+
 const PROP_IF_STR: &'static str = "org.freedesktop.Properties";
 const SERV_IF_STR: &'static str = "org.bluez.GattService1";
-const CHAR_IF_STR: &'static str = "org.bluez.Characteristic1";
+const CHAR_IF_STR: &'static str = "org.bluez.GattCharacteristic1";
 const DESC_IF_STR: &'static str = "org.bluez.GattDescriptor1";
 const MANAGER_IF_STR: &'static str = "org.bluez.GattManager1";
-const SERV_IF_PROPS: &[&'static str] = &[UUID_PROP, PRIMARY_PROP, DEVICE_PROP, HANDLE_PROP]; // HANDLE_PROP is not used
-const CHAR_IF_PROPS: &[&'static str] = &[
-    UUID_PROP,
-    SERVICE_PROP,
-    VALUE_PROP,
-    WRITE_ACQUIRED_PROP,
-    NOTIFY_ACQUIRED_PROP,
-    NOTIFYING_PROP,
-    FLAGS_PROP,
-    HANDLE_PROP,
-];
-const DESC_IF_PROPS: &[&'static str] = &[UUID_PROP, VALUE_PROP, FLAGS_PROP, HANDLE_PROP, CHAR_PROP];
-
-const PROP_IF: (&'static str, &[&'static str]) = (PROP_IF_STR, &[]);
-const SERV_IF: (&'static str, &[&'static str]) = (SERV_IF_STR, SERV_IF_PROPS);
-const CHAR_IF: (&'static str, &[&'static str]) = (CHAR_IF_STR, CHAR_IF_PROPS);
-const DESC_IF: (&'static str, &[&'static str]) = (DESC_IF_STR, DESC_IF_PROPS);
-const BLUEZ_DEST: &'static str = "org.bluez";
-const REGISTER_CALL: &'static str = "RegisterApplication";
+const LEAD_IF_STR: &'static str = "org.bluez.LEAdvertisement1";
 
 const UUID_PROP: &'static str = "UUID";
 const SERVICE_PROP: &'static str = "Service";
@@ -55,6 +46,55 @@ const CHAR_PROP: &'static str = "Characteristic";
 const PRIMARY_PROP: &'static str = "Primary";
 const DEVICE_PROP: &'static str = "Device";
 const INCLUDES_PROP: &'static str = "Includes";
+const TYPE_PROP: &'static str = "Type";
+const SERV_UUIDS_PROP: &'static str = "ServiceUUIDs";
+const SOLICIT_UUIDS_PROP: &'static str = "SolicitUUIDs";
+const SERV_DATA_PROP: &'static str = "ServiceData";
+const DATA_PROP: &'static str = "Data";
+const MANU_DATA_PROP: &'static str = "ManufacturererData";
+const DISCOVERABLE_PROP: &'static str = "Discoverable";
+const DISCOVERABLE_TO_PROP: &'static str = "DiscoverableTimeout";
+const LOCAL_NAME_PROP: &'static str = "LocalName";
+const APPEARANCE_PROP: &'static str = "Appearance";
+const DURATION_PROP: &'static str = "Duration";
+const TO_PROP: &'static str = "Timeout";
+const SND_CHANNEL_PROP: &'static str = "SecondaryChannel";
+
+const SERV_IF_PROPS: &[&'static str] = &[UUID_PROP, PRIMARY_PROP, DEVICE_PROP, HANDLE_PROP]; // HANDLE_PROP is not used
+const CHAR_IF_PROPS: &[&'static str] = &[
+    UUID_PROP,
+    SERVICE_PROP,
+    VALUE_PROP,
+    WRITE_ACQUIRED_PROP,
+    NOTIFY_ACQUIRED_PROP,
+    NOTIFYING_PROP,
+    FLAGS_PROP,
+    HANDLE_PROP,
+];
+const DESC_IF_PROPS: &[&'static str] = &[UUID_PROP, VALUE_PROP, FLAGS_PROP, HANDLE_PROP, CHAR_PROP];
+
+const LEAD_IF_PROPS: &[&'static str] = &[TYPE_PROP, SERV_UUIDS_PROP, MANU_DATA_PROP, SERV_DATA_PROP, DATA_PROP, DISCOVERABLE_PROP, DISCOVERABLE_TO_PROP, INCLUDES_PROP, LOCAL_NAME_PROP,APPEARANCE_PROP, DURATION_PROP, TO_PROP, SND_CHANNEL_PROP];
+
+const PROP_IF: (&'static str, &[&'static str]) = (PROP_IF_STR, &[]);
+const SERV_IF: (&'static str, &[&'static str]) = (SERV_IF_STR, SERV_IF_PROPS);
+const CHAR_IF: (&'static str, &[&'static str]) = (CHAR_IF_STR, CHAR_IF_PROPS);
+const DESC_IF: (&'static str, &[&'static str]) = (DESC_IF_STR, DESC_IF_PROPS);
+const LEAD_IF: (&'static str, &[&'static str]) = (LEAD_IF_STR, LEAD_IF_PROPS);
+
+const BLUEZ_DEST: &'static str = "org.bluez";
+const REGISTER_CALL: &'static str = "RegisterApplication";
+
+
+// Bluez Errors
+const BLUEZ_NOT_PERM: &'static str = "org.bluez.Error.NotPermitted";
+const BLUEZ_FAILED: &'static str = "org.bluez.Error.Failed";
+
+// Standard DBus Errors
+const UNKNOWN_METHOD: &'static str = "org.dbus.freedesktop.UnknownMethod";
+
+pub struct UUID {
+	uuid: u128
+}
 
 #[derive(Debug)]
 pub enum Error {
@@ -73,9 +113,20 @@ impl From<client_conn::Error> for Error {
         Error::DbusClient(err)
     }
 }
+
 pub enum ValOrFn {
     Value([u8; 255], usize),
     Function(Box<dyn FnMut() -> ([u8; 255], usize)>),
+}
+
+impl Debug for ValOrFn {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        if let ValOrFn::Value(v, l) = self {
+            write!(f, "ValOrFn {{ Value: {:?} }}", &v[..*l])
+        } else {
+            write!(f, "ValOrFn {{ Fn  }}")
+        }
+    }
 }
 
 impl ValOrFn {
@@ -87,9 +138,12 @@ impl ValOrFn {
         }
     }
 }
+
+#[derive(Debug)]
 pub struct Descriptor {
     path: String,
     index: u16,
+    handle: u16,
     uuid: String,
 }
 impl Descriptor {
@@ -106,7 +160,7 @@ impl Descriptor {
         }
     }
 }
-#[derive(Clone, Copy, Default)]
+#[derive(Clone, Copy, Default, Debug)]
 pub struct CharFlags {
     pub broadcast: bool,
     pub read: bool,
@@ -148,6 +202,7 @@ impl CharFlags {
             ret.push("indicate".to_string());
         }
         if self.auth_signed_writes {
+            unimplemented!();
             ret.push("authenticated-signed-writes".to_string());
         }
         if self.extended_properties {
@@ -157,6 +212,7 @@ impl CharFlags {
             ret.push("reliable-write".to_string());
         }
         if self.writable_auxiliaries {
+            unimplemented!();
             ret.push("writable-auxiliaries".to_string());
         }
         if self.encrypt_read {
@@ -178,6 +234,7 @@ impl CharFlags {
             ret.push("secure-read".to_string());
         }
         if self.authorize {
+            unimplemented!();
             ret.push("authorize".to_string());
         }
         ret
@@ -223,18 +280,27 @@ impl DescFlags {
             ret.push("secure-read".to_string());
         }
         if self.authorize {
+            unimplemented!();
             ret.push("authorize".to_string());
         }
         ret
     }
 }
+
+#[derive(Debug)]
+enum Notify {
+    Signal,
+    Fd(UnixDatagram),
+}
+#[derive(Debug)]
 pub struct Charactersitic {
     vf: ValOrFn,
     index: u16,
+    handle: u16,
     uuid: String,
     path: String,
-    write_fd: Option<()>,
-    notify_fd: Option<()>,
+    notify: Option<Notify>,
+    write: Option<UnixDatagram>,
     descs: Vec<Descriptor>,
     flags: CharFlags,
 }
@@ -243,8 +309,9 @@ impl Charactersitic {
         Charactersitic {
             vf: ValOrFn::Value([0; 255], 0),
             index: 0,
-            write_fd: None,
-            notify_fd: None,
+            handle: 0,
+            write: None,
+            notify: None,
             uuid,
             flags,
             path: String::new(),
@@ -263,12 +330,237 @@ impl Charactersitic {
             desc.update_path(&self.path);
         }
     }
-    fn match_descs(&mut self, msg_path: &str, msg: &Message) -> Option<GattObject> {
+    fn match_descs(&mut self, msg_path: &Path, msg: &Message) -> Option<GattObject> {
         unimplemented!()
+    }
+    fn char_call<'a, 'b>(&mut self, call: &Message<'a, 'b>) -> Message<'a, 'b> {
+        if let Some(member) = &call.member {
+            match &member[..] {
+                "ReadValue" => {
+                    if self.flags.read
+                        || self.flags.secure_read
+                        || self.flags.secure_read
+                        || self.flags.encrypt_read
+                    {
+                        let (v, l) = self.vf.to_value();
+                        let mut start = 0;
+                        if let Some(dict) = call.params.get(0) {
+                            if let Param::Container(Container::Dict(dict)) = dict {
+                                if let Some(offset) =
+                                    dict.map.get(&Base::String("offset".to_string()))
+                                {
+                                    if let Param::Container(Container::Variant(offset)) = offset {
+                                        if let Param::Base(Base::Uint16(offset)) = offset.value {
+                                            start = l.min(offset as usize);
+                                        } else {
+                                            return call.make_error_response("UnexpectedType".to_string(), Some("Expected a dict of variants as first parameter".to_string()));
+                                        }
+                                    } else {
+                                        return call.make_error_response(
+                                            "UnexpectedType".to_string(),
+                                            Some(
+                                                "Expected a dict of variants as first parameter"
+                                                    .to_string(),
+                                            ),
+                                        );
+                                    }
+                                }
+                            } else {
+                                return call.make_error_response(
+                                    "UnexpectedType".to_string(),
+                                    Some("Expected a dict as first parameter".to_string()),
+                                );
+                            }
+                        }
+                        // eprintln!("vf: {:?}\nValue: {:?}", self.vf, &v[..l]);
+                        let vec: Vec<Param> = v[start..l]
+                            .into_iter()
+                            .map(|i| Base::Byte(*i).into())
+                            .collect();
+                        let val = Param::Container(Container::Array(params::Array {
+                            element_sig: signature::Type::Base(signature::Base::Byte),
+                            values: vec,
+                        }));
+                        let mut res = call.make_response();
+                        res.add_param(val);
+                        res
+                    } else {
+                        call.make_error_response(
+                            BLUEZ_NOT_PERM.to_string(),
+                            Some("This is not a readable characteristic.".to_string()),
+                        )
+                    }
+                }
+                "WriteValue" => {
+                    if self.flags.write
+                        || self.flags.write_wo_response
+                        || self.flags.secure_write
+                        || self.flags.encrypt_write
+                        || self.flags.encrypt_auth_write
+                    {
+                        unimplemented!();
+                    } else {
+                        call.make_error_response(
+                            BLUEZ_NOT_PERM.to_string(),
+                            Some("This is not a writable characteristic.".to_string()),
+                        )
+                    }
+                }
+                "AcquireWrite" => {
+                    match UnixDatagram::pair() {
+                        Ok((sock1, sock2)) => {
+                            unimplemented!();
+                            let mut ret = 255;
+                            if let Some(dict) = call.params.get(0) {
+                                if let Param::Container(Container::Dict(dict)) = dict {
+                                    if let Some(mtu) =
+                                        dict.map.get(&Base::String("mtu".to_string()))
+                                    {
+                                        if let Param::Container(Container::Variant(mtu)) = mtu {
+                                            if let Param::Base(Base::Uint16(mtu)) = mtu.value {
+                                                ret = ret.min(mtu);
+                                            } else {
+                                                return call.make_error_response("UnexpectedType".to_string(), Some("Expected a dict of UInt16 as first offset type".to_string()));
+                                            }
+                                        } else {
+                                            return call.make_error_response("UnexpectedType".to_string(), Some("Expected a dict of variants as first parameter".to_string()));
+                                        }
+                                    }
+                                } else {
+                                    return call.make_error_response(
+                                        "UnexpectedType".to_string(),
+                                        Some("Expected a dict as first parameter".to_string()),
+                                    );
+                                }
+                            }
+                            let mut res = call.make_response();
+                            res.add_param2(
+                                Param::Base(Base::Uint32(sock1.as_raw_fd() as u32)),
+                                Param::Base(Base::Uint16(ret)),
+                            );
+                            return res;
+                        }
+                        Err(_) => {
+                            return call.make_error_response(
+                                BLUEZ_FAILED.to_string(),
+                                Some(
+                                    "An IO Error occured when creating the unix datagram socket."
+                                        .to_string(),
+                                ),
+                            )
+                        }
+                    }
+                }
+                "AcquireNotify" => {
+                    if !self.flags.notify {
+                        call.make_error_response(
+                            BLUEZ_NOT_PERM.to_string(),
+                            Some("This characteristic doesn't not permit notifying.".to_string()),
+                        )
+                    } else if let Some(notify) = &self.notify {
+                        let err_str = match notify {
+                            Notify::Signal => {
+                                "This characteristic is already notifying via signals."
+                            }
+                            Notify::Fd(_) => {
+                                "This characteristic is already notifying via a socket."
+                            }
+                        };
+                        call.make_error_response(
+                            "org.bluez.Error.InProgress".to_string(),
+                            Some(err_str.to_string()),
+                        )
+                    } else {
+                        match UnixDatagram::pair() {
+                            Ok((sock1, sock2)) => {
+                                let mut ret = 255;
+                                if let Some(dict) = call.params.get(0) {
+                                    if let Param::Container(Container::Dict(dict)) = dict {
+                                        if let Some(mtu) =
+                                            dict.map.get(&Base::String("mtu".to_string()))
+                                        {
+                                            if let Param::Container(Container::Variant(mtu)) = mtu {
+                                                if let Param::Base(Base::Uint16(mtu)) = mtu.value {
+                                                    ret = ret.min(mtu);
+                                                } else {
+                                                    return call.make_error_response("UnexpectedType".to_string(), Some("Expected a dict of UInt16 as first offset type".to_string()));
+                                                }
+                                            } else {
+                                                return call.make_error_response("UnexpectedType".to_string(), Some("Expected a dict of variants as first parameter".to_string()));
+                                            }
+                                        }
+                                    } else {
+                                        return call.make_error_response(
+                                            "UnexpectedType".to_string(),
+                                            Some("Expected a dict as first parameter".to_string()),
+                                        );
+                                    }
+                                }
+                                let mut res = call.make_response();
+                                res.add_param2(
+                                    Param::Base(Base::Uint32(sock1.as_raw_fd() as u32)),
+                                    Param::Base(Base::Uint16(ret)),
+                                );
+                                self.notify = Some(Notify::Fd(sock2));
+                                res
+                            },
+                            Err(_) => call.make_error_response(
+                                BLUEZ_FAILED.to_string(),
+                                Some(
+                                    "An IO Error occured when creating the unix datagram socket."
+                                        .to_string(),
+                                ),
+                            ),
+                        }
+                    }
+                }
+                "StartNotify" => {
+                    if !self.flags.notify {
+                        call.make_error_response(
+                            BLUEZ_NOT_PERM.to_string(),
+                            Some("This characteristic doesn't not permit notifying.".to_string()),
+                        )
+                    } else if let Some(notify) = &self.notify {
+                        let err_str = match notify {
+                            Notify::Signal => {
+                                "This characteristic is already notifying via signals."
+                            }
+                            Notify::Fd(_) => {
+                                "This characteristic is already notifying via a socket."
+                            }
+                        };
+                        call.make_error_response(
+                            "org.bluez.Error.InProgress".to_string(),
+                            Some(err_str.to_string()),
+                        )
+                    } else {
+                        self.notify = Some(Notify::Signal);
+                        call.make_response()
+                    }
+                }
+                "StopNotify" => {
+                    if let Some(notify) = self.notify.as_ref() {
+                        self.notify = None;
+                        call.make_response()
+                    } else {
+                        call.make_error_response(
+                            BLUEZ_FAILED.to_string(),
+                            Some("Notify has not been started".to_string()),
+                        )
+                    }
+                }
+                "Confirm" => call.make_response(),
+                _ => call.make_error_response(UNKNOWN_METHOD.to_string(), None),
+            }
+        } else {
+            // TODO: remove this statement if unneeded
+            unreachable!();
+        }
     }
 }
 pub struct Service {
     index: u8,
+    handle: u16,
     uuid: String,
     path: String,
     chars: Vec<Charactersitic>,
@@ -278,6 +570,7 @@ impl Service {
     pub fn new(uuid: String, primary: bool) -> Self {
         Service {
             index: 0,
+            handle: 0,
             uuid,
             path: String::new(),
             chars: Vec::new(),
@@ -290,51 +583,60 @@ impl Service {
         character.index = self.chars.len() as u16;
         self.chars.push(character);
     }
-    fn match_chars(&mut self, msg_path: &str, msg: &Message) -> Option<GattObject> {
-        if msg_path.len() < 19 || &msg_path[0..1] != "/" {
-            return None;
-        }
-        let msg_path = &msg_path[1..];
-        if !msg_path.starts_with("char") {
-            return None;
-        }
-        let msg_path = &msg_path[14..];
-        let characteristics = &mut self.chars;
-        for (i, character) in characteristics.iter_mut().enumerate() {
-            if !msg_path.starts_with(&u16_to_ascii(character.index)[..]) {
-                if msg_path.len() == 4 {
+    fn match_chars(&mut self, msg_path: &Path, msg: &Message) -> Option<GattObject> {
+        eprintln!("Checking for characteristic for match");
+        let mut components = msg_path.components().take(2);
+        if let Component::Normal(path) = components.next().unwrap() {
+            let path = path.to_str()?;
+            if !path.starts_with("char") {
+                return None;
+            }
+            let mut char_str = String::new();
+            for character in self.chars.iter_mut() {
+                char_str.clear();
+                write!(&mut char_str, "char{:02}", character.index).unwrap();
+                if let Ok(path) = msg_path.strip_prefix(char_str) {
+                    return character.match_descs(path, msg);
+                } else {
                     return Some(GattObject::Char(character));
                 }
-                character.match_descs(&msg_path[4..], &msg);
             }
+            None
+        } else {
+            None
         }
-        None
     }
     fn update_path(&mut self, mut base: String) {
         base.push_str("/service");
-        let index_str = u8_to_ascii(self.index);
-        base.push(index_str[0]);
-        base.push(index_str[1]);
+        //let index_str = u8_to_ascii(self.index);
+        write!(base, "{:02}", self.index).unwrap();
+        //base.push(index_str[0]);
+        //base.push(index_str[1]);
         self.path = base;
         for character in &mut self.chars {
             character.update_path(&self.path);
         }
+    }
+    pub fn service_call<'a, 'b>(&mut self, call: &Message<'a, 'b>) -> Message<'a, 'b> {
+        unimplemented!()
     }
 }
 pub enum GattObject<'a> {
     Char(&'a mut Charactersitic),
     Serv(&'a mut Service),
     Desc(&'a mut Descriptor),
+	Ad(&'a Advertisement),
     Appl,
 }
 pub struct Bluetooth<'a, 'b> {
     rpc_con: RpcConn<'a, 'b>,
     blue_path: String,
     name: String,
-    verbose: u8,
+    pub verbose: u8,
     services: Vec<Service>,
     registered: bool,
-    msg_idx: u32,
+    pub filter_dest: Option<String>,
+	pub ads: VecDeque<Advertisement>
 }
 
 impl<'a, 'b> Bluetooth<'a, 'b> {
@@ -362,7 +664,8 @@ impl<'a, 'b> Bluetooth<'a, 'b> {
             services,
             registered: false,
             blue_path,
-            msg_idx: 0,
+            filter_dest: Some(BLUEZ_DEST.to_string()),
+			ads: VecDeque::new()
         };
         ret.rpc_con.set_filter(Box::new(move |msg| match msg.typ {
             MessageType::Call => true,
@@ -377,7 +680,7 @@ impl<'a, 'b> Bluetooth<'a, 'b> {
         let mut ret = String::with_capacity(self.name.len() + 1);
         ret.push('/');
         ret.push_str(&self.name.replace(".", "/"));
-		PathBuf::from(ret)
+        PathBuf::from(ret)
     }
     pub fn add_service(&mut self, mut service: Service) -> Result<usize, Error> {
         if self.services.len() >= 255 {
@@ -421,8 +724,23 @@ impl<'a, 'b> Bluetooth<'a, 'b> {
             ValOrFn::Value(v, l) => (*v, *l),
             ValOrFn::Function(f) => f(),
         };
-        self.signal_change(&buf[..len], service_index, char_index, None)
+        if let Some(notify) = &mut character.notify {
+            match notify {
+                Notify::Signal => self.signal_change(&buf[..len], service_index, char_index, None),
+                Notify::Fd(sock) => {
+                    if let Err(_) = sock.send(&buf[..len]) {
+                        character.notify = None;
+                    }
+                    Ok(())
+                }
+            }
+        } else {
+            Ok(())
+        }
     }
+	pub fn start_advertise(&mut self, adv: Advertisement) -> Result<(), Error> {
+		unimplemented!()
+	}
     fn signal_change(
         &mut self,
         value: &[u8],
@@ -430,7 +748,6 @@ impl<'a, 'b> Bluetooth<'a, 'b> {
         char_index: usize,
         desc: Option<usize>,
     ) -> Result<(), Error> {
-        eprintln!("{:?}", value);
         let mut object_path = String::with_capacity(43);
         object_path.push('/');
         object_path.push_str(&self.name.replace(".", "/"));
@@ -491,7 +808,7 @@ impl<'a, 'b> Bluetooth<'a, 'b> {
             )
             .with_params(params)
             .build();
-        eprintln!("msg to be send: {:#?}", msg);
+        // eprintln!("msg to be send: {:#?}", msg);
         self.rpc_con.send_message(&mut msg, None)?;
         Ok(())
     }
@@ -500,9 +817,7 @@ impl<'a, 'b> Bluetooth<'a, 'b> {
         Ok(self.services.remove(service_index))
     }
     pub fn register_application(&mut self) -> Result<(), Error> {
-        let mut path = String::with_capacity(self.name.len() + 1);
-        path.push('/');
-        path.push_str(&self.name.replace(".", "/"));
+        let path = self.get_path();
         let empty_dict = HashMap::new();
         let dict = params::Dict {
             key_sig: signature::Base::String,
@@ -511,7 +826,9 @@ impl<'a, 'b> Bluetooth<'a, 'b> {
         };
         let mut call_builder = MessageBuilder::new().call(REGISTER_CALL.to_string());
         call_builder.add_param2(
-            Param::Base(Base::ObjectPath(path)),
+            Param::Base(Base::ObjectPath(
+                path.as_os_str().to_str().unwrap().to_string(),
+            )),
             Param::Container(Container::Dict(dict)),
         );
         let mut msg = call_builder
@@ -520,29 +837,39 @@ impl<'a, 'b> Bluetooth<'a, 'b> {
             .at(BLUEZ_DEST.to_string())
             .build();
 
-        let msg_idx = self.msg_idx;
-        self.msg_idx += 1;
-        /*msg.serial = Some(msg_idx);
-        msg.sender = Some(self.name.clone());
-        */
         eprintln!("registration msg: {:#?}", msg);
         let msg_idx = self.rpc_con.send_message(&mut msg, None)?;
         // we expect there to be no response
-        match self
-            .rpc_con
-            .wait_response(msg_idx, Some(Duration::from_millis(500)))
-        {
-            Ok(res) => Err(Error::Bluez(format!(
-                "Failed to register application with bluez: {:?}",
-                res
-            ))),
-            Err(e) => {
-                if let client_conn::Error::TimedOut = e {
-                    self.registered = true;
-                    Ok(())
+        loop {
+            self.process_requests()?;
+            if let Some(res) = self.rpc_con.try_get_response(msg_idx) {
+                return if let MessageType::Error = res.typ {
+                    let mut err = None;
+                    if let Some(err_str) = res.params.get(0) {
+                        if let Param::Base(Base::String(err_str)) = err_str {
+                            err = Some(err_str);
+                        }
+                    }
+                    let err_str = if let Some(err) = err {
+                        format!(
+                            "Failed to register application with bluez: {}: {:?}",
+                            res.error_name.unwrap(),
+                            err
+                        )
+                    } else {
+                        format!(
+                            "Failed to register application with bluez: {}",
+                            res.error_name.unwrap()
+                        )
+                    };
+                    eprintln!("error: {}", err_str);
+                    Err(Error::Bluez(err_str))
                 } else {
-                    Err(Error::DbusClient(e))
-                }
+                    if self.verbose >= 1 {
+                        eprintln!("Registered application with bluez.");
+                    };
+                    Ok(())
+                };
             }
         }
     }
@@ -552,38 +879,49 @@ impl<'a, 'b> Bluetooth<'a, 'b> {
         Ok(())
     }
     pub fn process_requests(&mut self) -> Result<(), Error> {
-		eprintln!("Process requests");
         loop {
             match self.rpc_con.wait_call(Some(Duration::from_micros(500))) {
                 Ok(call) => {
-                    eprintln!("received call");
+                    eprintln!("received call {:#?}", call);
                     let interface = (&call.interface).as_ref().unwrap();
+                    if let Some(dest) = &self.filter_dest {
+                        if dest != call.destination.as_ref().unwrap() {
+                            let msg = call.make_error_response(
+                                BLUEZ_NOT_PERM.to_string(),
+                                Some("Sender is not allowed to perform this action.".to_string()),
+                            );
+                            continue;
+                        }
+                    }
                     let mut reply = match self.match_root(&call) {
                         Some(v) => match v {
                             GattObject::Appl => match interface.as_ref() {
                                 "org.freedesktop.DBus.Properties" => self.properties_call(&call),
-                                "org.freedesktop.DBus.ObjectManager" => self.objectmanager_call(&call),
+                                "org.freedesktop.DBus.ObjectManager" => {
+                                    self.objectmanager_call(&call)
+                                }
                                 "org.freedesktop.DBus.Introspectable" => self.introspectable(&call),
                                 _ => unimplemented!(), // TODO: Added interface not found
                             },
                             GattObject::Serv(v) => match interface.as_ref() {
                                 "org.freedesktop.DBus.Properties" => v.properties_call(&call),
-                                "org.bluez.GattService1" => unimplemented!(),
-                                "org.freedesktop.DBus.Introspectable" => self.introspectable(&call),
+                                "org.bluez.GattService1" => v.service_call(&call),
+                                "org.freedesktop.DBus.Introspectable" => v.introspectable(&call),
                                 _ => unimplemented!(), // TODO: Added interface not found
                             },
                             GattObject::Char(v) => match interface.as_ref() {
                                 "org.freedesktop.DBus.Properties" => v.properties_call(&call),
-                                "org.bluez.GattCharacteristic1" => unimplemented!(),
-                                "org.freedesktop.DBus.Introspectable" => self.introspectable(&call),
+                                "org.bluez.GattCharacteristic1" => v.char_call(&call),
+                                "org.freedesktop.DBus.Introspectable" => v.introspectable(&call),
                                 _ => unimplemented!(), // TODO: Added interface not found
                             },
                             GattObject::Desc(v) => match interface.as_ref() {
                                 "org.freedesktop.DBus.Properties" => v.properties_call(&call),
                                 "org.bluez.GattDescriptor1" => unimplemented!(),
-                                "org.freedesktop.DBus.Introspectable" => self.introspectable(&call),
+                                "org.freedesktop.DBus.Introspectable" => v.introspectable(&call),
                                 _ => unimplemented!(), // TODO: Added interface not found
                             },
+							GattObject::Ad(ad) => unimplemented!()
                         },
                         None => standard_messages::unknown_method(&call),
                     };
@@ -591,60 +929,89 @@ impl<'a, 'b> Bluetooth<'a, 'b> {
                     self.rpc_con.send_message(&mut reply, None)?;
                 }
                 Err(e) => match e {
-					client_conn::Error::TimedOut => return Ok(()),
-					_ => return Err(e.into()),
-				}
+                    client_conn::Error::TimedOut => return Ok(()),
+                    _ => return Err(e.into()),
+                },
             }
         }
     }
-    fn match_root(&mut self, msg: &Message, path: &Path) -> Option<GattObject> {
+    fn match_root(&mut self, msg: &Message) -> Option<GattObject> {
         let path = self.get_path();
-        eprintln!("For path: {}, Checking msg for match: {:#?}", path.display(), msg);
         if let None = &msg.interface {
             return None;
         }
         if let None = &msg.member {
             return None;
         }
-        if let Some(object) = &msg.object {
-			let obj_path: &Path = object.as_ref();
+        eprintln!("For path: {:?}, Checking msg for match", path);
+        let object = &msg.object.as_ref()?;
+        let obj_path: &Path = object.as_ref();
 
-			match path.strip_prefix(obj_path) {
-				Ok(_) => Some(GattObject::Appl),
-			}
-			if let None =  obj_path_iter.next() {
-                eprintln!("Root component introspection received");
-                return Some(GattObject::Appl);
-			}
-            if object.len() >= 1 && object[1..].starts_with(&path) {
-                if object.len() - 1 == path.len() {
-                    return Some(GattObject::Appl);
-                }
-                //return self.match_service(&object[path.len()..], msg);
-                return self.match_service(obj_path.strip_prefix(path), msg);
+        if path.starts_with(obj_path) {
+            Some(GattObject::Appl)
+        } else {
+            if let Ok(service_path) = obj_path.strip_prefix(path) {
+				let self0: &mut Self = unsafe {
+					/* As of Rust 1.43, the compiler (as far as I can tell) is not smart enough
+					   to know that if-let statement below is false then the mutable borrow from 
+					   match_service is over.
+					 */
+					let ptr: *mut Self = self;
+                	if let Some(object) = self.match_service(service_path, msg) { return Some(object); } 
+					ptr.as_mut().unwrap()
+				};
+				self0.match_advertisement(service_path, msg)
+				//unimplemented!()
+            } else {
+                None
             }
         }
-        None
     }
-    fn match_service(&mut self, msg_path: Path, msg: &Message) -> Option<GattObject> {
-        eprintln!("Checking for service for match: {:#?}", msg);
-        if msg_path.len() < 10 || &msg_path[0..1] != "/" {
-            return None;
-        }
-        let msg_path = &msg_path[1..];
-        if !msg_path.starts_with("service") {
-            return None;
-        }
-        let msg_path = &msg_path[7..];
-        for (i, service) in self.services.iter_mut().enumerate() {
-            if msg_path.starts_with(&u8_to_ascii(service.index)[..]) {
-                if msg_path.len() == 2 {
-                    return Some(GattObject::Serv(service));
-                }
-                return service.match_chars(&msg_path[2..], &msg);
+	fn match_advertisement(&self, msg_path: &Path, msg: &Message) -> Option<GattObject> {
+        eprintln!("Checking for advertisement for match");
+		let mut components = msg_path.components();
+		let comp = components.next()?.as_os_str().to_str().unwrap();
+		if let None = components.next() {
+			return None;
+		}
+		if comp.len() != 10 {
+			return None;
+		}
+		if &comp[0..6] != "advert" { return None; }
+		if let Ok(u) = u16::from_str_radix(&comp[6..10], 16) {
+			if let Some(ad) = self.ads.iter().find(|x| x.index == u) {
+				Some(GattObject::Ad(ad))
+			} else {
+				None
+			}
+		} else {
+			None
+		}
+	}
+    fn match_service(&mut self, msg_path: &Path, msg: &Message) -> Option<GattObject> {
+        eprintln!("Checking for service for match");
+        let mut components = msg_path.components().take(2);
+        if let Component::Normal(path) = components.next().unwrap() {
+            let path = path.to_str()?;
+            if !path.starts_with("service") {
+                return None;
             }
+            let mut service_str = String::new();
+            for service in self.services.iter_mut() {
+                service_str.clear();
+                write!(&mut service_str, "service{:02X}/", service.index).unwrap();
+                if let Ok(path) = msg_path.strip_prefix(&service_str) {
+                    if let Some(_) = path.components().next() {
+                        return service.match_chars(path, msg);
+                    } else {
+                        return Some(GattObject::Serv(service));
+                    }
+                }
+            }
+            None
+        } else {
+            None
         }
-        None
     }
 }
 /*
@@ -807,26 +1174,95 @@ trait Properties<'a, 'b> {
         Some(prop_cont.into())
     }
     fn get_all(&mut self, msg: &Message<'a, 'b>) -> Message<'a, 'b> {
-        unimplemented!()
+        let interface = if let Some(interface) = &msg.interface {
+            interface
+        } else {
+            return msg.make_error_response("Missing interface".to_string(), None);
+        };
+        if let Some(param) = self.get_all_inner(&interface) {
+            let mut res = msg.make_response();
+            res.push_param(param);
+            res
+        } else {
+            let err_msg = format!(
+                "Interface {} is not known on {}",
+                interface,
+                msg.object.as_ref().unwrap()
+            );
+            msg.make_error_response("InterfaceNotFound".to_string(), Some(err_msg))
+        }
     }
 
     fn get(&mut self, msg: &Message<'a, 'b>) -> Message<'a, 'b> {
-        unimplemented!()
+        if msg.params.len() < 2 {
+            let err_str = "Expected two string arguments".to_string();
+            return msg.make_error_response("Invalid arguments".to_string(), Some(err_str));
+        }
+        let interface = if let Param::Base(Base::String(interface)) = &msg.params[0] {
+            interface
+        } else {
+            let err_str = "Expected string interface as first argument!".to_string();
+            return msg.make_error_response("Invalid arguments".to_string(), Some(err_str));
+        };
+        let prop = if let Param::Base(Base::String(prop)) = &msg.params[1] {
+            prop
+        } else {
+            let err_str = "Expected string property as second argument!".to_string();
+            return msg.make_error_response("Invalid arguments".to_string(), Some(err_str));
+        };
+        if let Some(param) = self.get_inner(interface, prop) {
+            let mut reply = msg.make_response();
+            reply.push_param(param);
+            reply
+        } else {
+            let s = format!("Property {} on interface {} not found.", prop, interface);
+            msg.make_error_response("PropertyNotFound".to_string(), Some(s))
+        }
     }
+    /// Should returng a variant containing if the property is found. If it is not found then it returns None.
     fn get_inner(&mut self, interface: &str, prop: &str) -> Option<Param<'a, 'b>>;
-    fn set(&mut self, msg: &Message<'a, 'b>) -> Message<'a, 'b>;
-    fn prop_change(&self, name: &Vec<String>) -> Message;
+    fn set_inner(&mut self, interface: &str, prop: &str, val: &params::Variant) -> Option<String>;
+    fn set(&mut self, msg: &Message<'a, 'b>) -> Message<'a, 'b> {
+        if msg.params.len() < 3 {
+            return msg.make_error_response(
+                "InvalidParameters".to_string(),
+                Some("Expected three parameters".to_string()),
+            );
+        }
+        let interface = if let Param::Base(Base::String(interface)) = &msg.params[0] {
+            interface
+        } else {
+            return msg.make_error_response(
+                "InvalidParameters".to_string(),
+                Some("Expected string (interface) as first parameter".to_string()),
+            );
+        };
+        let prop = if let Param::Base(Base::String(prop)) = &msg.params[1] {
+            prop
+        } else {
+            return msg.make_error_response(
+                "InvalidParameters".to_string(),
+                Some("Expected string (property) as second parameter".to_string()),
+            );
+        };
+        if let Param::Container(Container::Variant(val)) = &msg.params[2] {
+            if let Some(err_str) = self.set_inner(&interface, &prop, &val) {
+                msg.make_error_response(err_str, None)
+            } else {
+                msg.make_response()
+            }
+        } else {
+            unimplemented!()
+        }
+    }
 }
 
 impl<'a, 'b> Properties<'a, 'b> for Bluetooth<'_, '_> {
     const INTERFACES: &'static [(&'static str, &'static [&'static str])] = &[];
     fn get_inner(&mut self, interface: &str, prop: &str) -> Option<Param<'a, 'b>> {
-        unimplemented!()
+        None
     }
-    fn set(&mut self, msg: &Message<'a, 'b>) -> Message<'a, 'b> {
-        unimplemented!()
-    }
-    fn prop_change(&self, name: &Vec<String>) -> Message {
+    fn set_inner(&mut self, interface: &str, prop: &str, val: &params::Variant) -> Option<String> {
         unimplemented!()
     }
 }
@@ -860,6 +1296,7 @@ fn base_param_to_variant(b: Base) -> Param {
 impl<'a, 'b> Properties<'a, 'b> for Charactersitic {
     const INTERFACES: &'static [(&'static str, &'static [&'static str])] = &[CHAR_IF, PROP_IF];
     fn get_inner(&mut self, interface: &str, prop: &str) -> Option<Param<'a, 'b>> {
+        // eprintln!("org.freedesktop.DBus.Charactersitic interface:\n{}, prop {}", interface, prop);
         match interface {
             CHAR_IF_STR => match prop {
                 UUID_PROP => Some(base_param_to_variant(self.uuid.clone().into())),
@@ -871,6 +1308,7 @@ impl<'a, 'b> Properties<'a, 'b> for Charactersitic {
                 }
                 VALUE_PROP => {
                     let (v, l) = self.vf.to_value();
+                    // eprintln!("vf: {:?}\nValue: {:?}", self.vf, &v[..l]);
                     let vec: Vec<Param> =
                         v[..l].into_iter().map(|i| Base::Byte(*i).into()).collect();
                     let val = Param::Container(Container::Array(params::Array {
@@ -885,13 +1323,13 @@ impl<'a, 'b> Properties<'a, 'b> for Charactersitic {
                     });
                     Some(Param::Container(Container::Variant(var)))
                 }
-                WRITE_ACQUIRED_PROP => Some(base_param_to_variant(Base::Boolean(
-                    self.write_fd.is_some(),
-                ))),
-                NOTIFY_ACQUIRED_PROP => Some(base_param_to_variant(Base::Boolean(
-                    self.notify_fd.is_some(),
-                ))),
-                NOTIFYING_PROP => Some(base_param_to_variant(Base::Boolean(true))),
+                WRITE_ACQUIRED_PROP => {
+                    Some(base_param_to_variant(Base::Boolean(self.write.is_some())))
+                }
+                NOTIFY_ACQUIRED_PROP => {
+                    Some(base_param_to_variant(Base::Boolean(self.notify.is_some())))
+                }
+                NOTIFYING_PROP => Some(base_param_to_variant(Base::Boolean(self.notify.is_some()))),
                 FLAGS_PROP => {
                     let flags = self.flags.to_strings();
                     let vec = flags.into_iter().map(|s| Base::String(s).into()).collect();
@@ -907,7 +1345,8 @@ impl<'a, 'b> Properties<'a, 'b> for Charactersitic {
                     });
                     Some(Param::Container(Container::Variant(var)))
                 }
-                HANDLE_PROP => Some(base_param_to_variant(Base::Uint16(self.index))),
+                HANDLE_PROP => Some(base_param_to_variant(Base::Uint16(self.handle))),
+				INCLUDES_PROP => None, // TODO: implement
                 _ => None,
             },
             PROP_IF_STR => match prop {
@@ -916,14 +1355,23 @@ impl<'a, 'b> Properties<'a, 'b> for Charactersitic {
             _ => None,
         }
     }
-    fn set(&mut self, msg: &Message<'a, 'b>) -> Message<'a, 'b> {
-        unimplemented!()
-    }
-    fn get_all(&mut self, msg: &Message<'a, 'b>) -> Message<'a, 'b> {
-        unimplemented!()
-    }
-    fn prop_change(&self, name: &Vec<String>) -> Message {
-        unimplemented!()
+    fn set_inner(&mut self, interface: &str, prop: &str, val: &params::Variant) -> Option<String> {
+        match interface {
+            SERV_IF_STR => match prop {
+                HANDLE_PROP => {
+                    if let Param::Base(Base::Uint16(handle)) = val.value {
+                        eprintln!("setting Handle prop: {:?}", val.value); // TODO remove
+                        self.handle = handle;
+                        None
+                    } else {
+                        Some("UnexpectedType".to_string())
+                    }
+                }
+                _ => unimplemented!(),
+            },
+            PROP_IF_STR => Some("UnknownProperty".to_string()),
+            _ => Some("UnknownInterface".to_string()),
+        }
     }
 }
 impl<'a, 'b> Properties<'a, 'b> for Descriptor {
@@ -947,13 +1395,10 @@ impl<'a, 'b> Properties<'a, 'b> for Descriptor {
             _ => None,
         }
     }
-    fn set(&mut self, msg: &Message<'a, 'b>) -> Message<'a, 'b> {
+    fn set_inner(&mut self, interface: &str, prop: &str, val: &params::Variant) -> Option<String> {
         unimplemented!()
     }
     fn get_all(&mut self, msg: &Message<'a, 'b>) -> Message<'a, 'b> {
-        unimplemented!()
-    }
-    fn prop_change(&self, name: &Vec<String>) -> Message {
         unimplemented!()
     }
 }
@@ -970,26 +1415,33 @@ impl<'a, 'b> Properties<'a, 'b> for Service {
                         self.path.split_at(pnt).0.to_string(),
                     )))
                 }
-                HANDLE_PROP => Some(base_param_to_variant(self.index.into())),
+                HANDLE_PROP => {
+                    // eprintln!("Getting handle: {}", self.index);
+                    Some(base_param_to_variant(Base::Uint16(self.handle)))
+                }
                 _ => None,
             },
             PROP_IF_STR => None,
             _ => None,
         }
     }
-    fn set(&mut self, msg: &Message<'a, 'b>) -> Message<'a, 'b> {
-        unimplemented!()
-    }
-    fn prop_change(&self, name: &Vec<String>) -> Message {
-        unimplemented!()
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    #[test]
-    fn it_works() {
-        assert_eq!(2 + 2, 4);
+    fn set_inner(&mut self, interface: &str, prop: &str, val: &params::Variant) -> Option<String> {
+        match interface {
+            SERV_IF_STR => match prop {
+                HANDLE_PROP => {
+                    if let Param::Base(Base::Uint16(handle)) = val.value {
+                        eprintln!("setting Handle prop: {:?}", val.value); // TODO remove
+                        self.handle = handle;
+                        None
+                    } else {
+                        Some("UnexpectedType".to_string())
+                    }
+                }
+                _ => unimplemented!(),
+            },
+            PROP_IF_STR => Some("UnknownProperty".to_string()),
+            _ => Some("UnknownInterface".to_string()),
+        }
     }
 }
 
@@ -1011,3 +1463,82 @@ fn u16_to_ascii(val: u16) -> [char; 4] {
         half_byte((val & 0xF) as u8),
     ]
 }
+
+pub fn validate_uuid(uuid: &str) -> bool {
+	if uuid.len() != 36 {
+		return false;
+	}
+	let mut uuid_chars = uuid.chars();
+	if uuid_chars.nth(8).unwrap() != '-' { return false; }
+	for _ in 0..3 {
+		if uuid_chars.nth(4).unwrap() != '-' { return false; }
+	}
+	let parse = |uuid: &str| -> Result<(), ParseIntError> {
+		u128::from_str_radix(&uuid[..8], 16)?;
+		u128::from_str_radix(&uuid[9..13], 16)?;
+		u128::from_str_radix(&uuid[14..18], 16)?;
+		u128::from_str_radix(&uuid[19..23], 16)?;
+		u128::from_str_radix(&uuid[24..36], 16)?;
+		Ok(())
+	};
+	if let Ok(_) = parse(uuid) {
+		true
+	} else {
+		false
+	}
+}
+pub struct Advertisement {
+	pub typ: AdType,
+	pub service_uuids: Vec<String>,
+	// pub manu_data: HashMap<String, ()>
+	pub solicit_uuids: Vec<String>,
+	pub appearance: u16,
+	pub timeout: u16,
+	pub duration: u16,
+	pub localname: String,
+	pub index: u16
+}
+pub enum AdType {
+	Peripheral,
+	Broadcast,
+}
+impl AdType {
+	pub fn to_str(&self) -> &'static str {
+		match self {
+			AdType::Peripheral => "peripheral",
+			AdType::Broadcast => "broadcast"
+		}
+	}
+}
+
+impl<'a, 'b> Properties<'a, 'b> for Advertisement {
+	const INTERFACES: &'static [(&'static str, &'static [&'static str])] = &[LEAD_IF, PROP_IF];
+	fn get_inner(&mut self, interface: &str, prop: &str) -> Option<Param<'a, 'b>> {
+		match interface {
+			LEAD_IF_STR => {
+				match prop {
+					TYPE_PROP => unimplemented!(),
+					SERV_UUIDS_PROP => unimplemented!(),
+					MANU_DATA_PROP => unimplemented!(),
+					SOLICIT_UUIDS_PROP => unimplemented!(),
+					SERV_DATA_PROP => unimplemented!(),
+					DATA_PROP => unimplemented!(),
+					DISCOVERABLE_PROP => unimplemented!(),
+					DISCOVERABLE_TO_PROP => unimplemented!(),
+					INCLUDES_PROP => unimplemented!(),
+					LOCAL_NAME_PROP => unimplemented!(),
+					APPEARANCE_PROP => unimplemented!(),
+					DURATION_PROP => unimplemented!(),
+					TO_PROP => unimplemented!(),
+					SND_CHANNEL_PROP => unimplemented!(),
+					_ => None
+				}
+			},
+			_ => None,
+		}
+	}
+	fn set_inner(&mut self, interface: &str, prop: &str, val: &params::Variant) -> Option<String> {
+		unimplemented!()	
+	}
+}
+
