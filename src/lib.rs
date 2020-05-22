@@ -8,24 +8,23 @@ use rustbus::signature;
 use rustbus::standard_messages;
 use rustbus::{get_system_bus_path, Base, Container, Param};
 use std::cell::{RefCell, RefMut};
-use std::collections::{HashMap,VecDeque};
+use std::collections::{HashMap, VecDeque};
 use std::convert::{TryFrom, TryInto};
 use std::fmt::Write;
 use std::fmt::{Debug, Display, Formatter};
 use std::io::ErrorKind;
+use std::num::ParseIntError;
 use std::os::unix::io::AsRawFd;
 use std::os::unix::net::UnixDatagram;
 use std::path::{Component, Path, PathBuf};
 use std::rc::Rc;
 use std::time::Duration;
-use std::num::ParseIntError;
 
 mod introspect;
 use introspect::Introspectable;
 
 #[cfg(test)]
 mod tests;
-
 
 const PROP_IF_STR: &'static str = "org.freedesktop.Properties";
 const SERV_IF_STR: &'static str = "org.bluez.GattService1";
@@ -73,7 +72,21 @@ const CHAR_IF_PROPS: &[&'static str] = &[
 ];
 const DESC_IF_PROPS: &[&'static str] = &[UUID_PROP, VALUE_PROP, FLAGS_PROP, HANDLE_PROP, CHAR_PROP];
 
-const LEAD_IF_PROPS: &[&'static str] = &[TYPE_PROP, SERV_UUIDS_PROP, MANU_DATA_PROP, SERV_DATA_PROP, DATA_PROP, DISCOVERABLE_PROP, DISCOVERABLE_TO_PROP, INCLUDES_PROP, LOCAL_NAME_PROP,APPEARANCE_PROP, DURATION_PROP, TO_PROP, SND_CHANNEL_PROP];
+const LEAD_IF_PROPS: &[&'static str] = &[
+    TYPE_PROP,
+    SERV_UUIDS_PROP,
+    MANU_DATA_PROP,
+    SERV_DATA_PROP,
+    DATA_PROP,
+    DISCOVERABLE_PROP,
+    DISCOVERABLE_TO_PROP,
+    INCLUDES_PROP,
+    LOCAL_NAME_PROP,
+    APPEARANCE_PROP,
+    DURATION_PROP,
+    TO_PROP,
+    SND_CHANNEL_PROP,
+];
 
 const PROP_IF: (&'static str, &[&'static str]) = (PROP_IF_STR, &[]);
 const SERV_IF: (&'static str, &[&'static str]) = (SERV_IF_STR, SERV_IF_PROPS);
@@ -84,7 +97,6 @@ const LEAD_IF: (&'static str, &[&'static str]) = (LEAD_IF_STR, LEAD_IF_PROPS);
 const BLUEZ_DEST: &'static str = "org.bluez";
 const REGISTER_CALL: &'static str = "RegisterApplication";
 
-
 // Bluez Errors
 const BLUEZ_NOT_PERM: &'static str = "org.bluez.Error.NotPermitted";
 const BLUEZ_FAILED: &'static str = "org.bluez.Error.Failed";
@@ -93,7 +105,7 @@ const BLUEZ_FAILED: &'static str = "org.bluez.Error.Failed";
 const UNKNOWN_METHOD: &'static str = "org.dbus.freedesktop.UnknownMethod";
 
 pub struct UUID {
-	uuid: u128
+    uuid: u128,
 }
 
 #[derive(Debug)]
@@ -503,7 +515,7 @@ impl Charactersitic {
                                 );
                                 self.notify = Some(Notify::Fd(sock2));
                                 res
-                            },
+                            }
                             Err(_) => call.make_error_response(
                                 BLUEZ_FAILED.to_string(),
                                 Some(
@@ -625,7 +637,7 @@ pub enum GattObject<'a> {
     Char(&'a mut Charactersitic),
     Serv(&'a mut Service),
     Desc(&'a mut Descriptor),
-	Ad(&'a Advertisement),
+    Ad(&'a Advertisement),
     Appl,
 }
 pub struct Bluetooth<'a, 'b> {
@@ -636,7 +648,7 @@ pub struct Bluetooth<'a, 'b> {
     services: Vec<Service>,
     registered: bool,
     pub filter_dest: Option<String>,
-	pub ads: VecDeque<Advertisement>
+    pub ads: VecDeque<Advertisement>,
 }
 
 impl<'a, 'b> Bluetooth<'a, 'b> {
@@ -665,7 +677,7 @@ impl<'a, 'b> Bluetooth<'a, 'b> {
             registered: false,
             blue_path,
             filter_dest: Some(BLUEZ_DEST.to_string()),
-			ads: VecDeque::new()
+            ads: VecDeque::new(),
         };
         ret.rpc_con.set_filter(Box::new(move |msg| match msg.typ {
             MessageType::Call => true,
@@ -738,9 +750,9 @@ impl<'a, 'b> Bluetooth<'a, 'b> {
             Ok(())
         }
     }
-	pub fn start_advertise(&mut self, adv: Advertisement) -> Result<(), Error> {
-		unimplemented!()
-	}
+    pub fn start_advertise(&mut self, adv: Advertisement) -> Result<(), Error> {
+        unimplemented!()
+    }
     fn signal_change(
         &mut self,
         value: &[u8],
@@ -921,7 +933,7 @@ impl<'a, 'b> Bluetooth<'a, 'b> {
                                 "org.freedesktop.DBus.Introspectable" => v.introspectable(&call),
                                 _ => unimplemented!(), // TODO: Added interface not found
                             },
-							GattObject::Ad(ad) => unimplemented!()
+                            GattObject::Ad(ad) => unimplemented!(),
                         },
                         None => standard_messages::unknown_method(&call),
                     };
@@ -951,43 +963,47 @@ impl<'a, 'b> Bluetooth<'a, 'b> {
             Some(GattObject::Appl)
         } else {
             if let Ok(service_path) = obj_path.strip_prefix(path) {
-				let self0: &mut Self = unsafe {
-					/* As of Rust 1.43, the compiler (as far as I can tell) is not smart enough
-					   to know that if-let statement below is false then the mutable borrow from 
-					   match_service is over.
-					 */
-					let ptr: *mut Self = self;
-                	if let Some(object) = self.match_service(service_path, msg) { return Some(object); } 
-					ptr.as_mut().unwrap()
-				};
-				self0.match_advertisement(service_path, msg)
-				//unimplemented!()
+                let self0: &mut Self = unsafe {
+                    /* As of Rust 1.43, the compiler (as far as I can tell) is not smart enough
+                      to know that if-let statement below is false then the mutable borrow from
+                      match_service is over.
+                    */
+                    let ptr: *mut Self = self;
+                    if let Some(object) = self.match_service(service_path, msg) {
+                        return Some(object);
+                    }
+                    ptr.as_mut().unwrap()
+                };
+                self0.match_advertisement(service_path, msg)
+            //unimplemented!()
             } else {
                 None
             }
         }
     }
-	fn match_advertisement(&self, msg_path: &Path, msg: &Message) -> Option<GattObject> {
+    fn match_advertisement(&self, msg_path: &Path, msg: &Message) -> Option<GattObject> {
         eprintln!("Checking for advertisement for match");
-		let mut components = msg_path.components();
-		let comp = components.next()?.as_os_str().to_str().unwrap();
-		if let None = components.next() {
-			return None;
-		}
-		if comp.len() != 10 {
-			return None;
-		}
-		if &comp[0..6] != "advert" { return None; }
-		if let Ok(u) = u16::from_str_radix(&comp[6..10], 16) {
-			if let Some(ad) = self.ads.iter().find(|x| x.index == u) {
-				Some(GattObject::Ad(ad))
-			} else {
-				None
-			}
-		} else {
-			None
-		}
-	}
+        let mut components = msg_path.components();
+        let comp = components.next()?.as_os_str().to_str().unwrap();
+        if let None = components.next() {
+            return None;
+        }
+        if comp.len() != 10 {
+            return None;
+        }
+        if &comp[0..6] != "advert" {
+            return None;
+        }
+        if let Ok(u) = u16::from_str_radix(&comp[6..10], 16) {
+            if let Some(ad) = self.ads.iter().find(|x| x.index == u) {
+                Some(GattObject::Ad(ad))
+            } else {
+                None
+            }
+        } else {
+            None
+        }
+    }
     fn match_service(&mut self, msg_path: &Path, msg: &Message) -> Option<GattObject> {
         eprintln!("Checking for service for match");
         let mut components = msg_path.components().take(2);
@@ -1346,7 +1362,7 @@ impl<'a, 'b> Properties<'a, 'b> for Charactersitic {
                     Some(Param::Container(Container::Variant(var)))
                 }
                 HANDLE_PROP => Some(base_param_to_variant(Base::Uint16(self.handle))),
-				INCLUDES_PROP => None, // TODO: implement
+                INCLUDES_PROP => None, // TODO: implement
                 _ => None,
             },
             PROP_IF_STR => match prop {
@@ -1465,80 +1481,81 @@ fn u16_to_ascii(val: u16) -> [char; 4] {
 }
 
 pub fn validate_uuid(uuid: &str) -> bool {
-	if uuid.len() != 36 {
-		return false;
-	}
-	let mut uuid_chars = uuid.chars();
-	if uuid_chars.nth(8).unwrap() != '-' { return false; }
-	for _ in 0..3 {
-		if uuid_chars.nth(4).unwrap() != '-' { return false; }
-	}
-	let parse = |uuid: &str| -> Result<(), ParseIntError> {
-		u128::from_str_radix(&uuid[..8], 16)?;
-		u128::from_str_radix(&uuid[9..13], 16)?;
-		u128::from_str_radix(&uuid[14..18], 16)?;
-		u128::from_str_radix(&uuid[19..23], 16)?;
-		u128::from_str_radix(&uuid[24..36], 16)?;
-		Ok(())
-	};
-	if let Ok(_) = parse(uuid) {
-		true
-	} else {
-		false
-	}
+    if uuid.len() != 36 {
+        return false;
+    }
+    let mut uuid_chars = uuid.chars();
+    if uuid_chars.nth(8).unwrap() != '-' {
+        return false;
+    }
+    for _ in 0..3 {
+        if uuid_chars.nth(4).unwrap() != '-' {
+            return false;
+        }
+    }
+    let parse = |uuid: &str| -> Result<(), ParseIntError> {
+        u128::from_str_radix(&uuid[..8], 16)?;
+        u128::from_str_radix(&uuid[9..13], 16)?;
+        u128::from_str_radix(&uuid[14..18], 16)?;
+        u128::from_str_radix(&uuid[19..23], 16)?;
+        u128::from_str_radix(&uuid[24..36], 16)?;
+        Ok(())
+    };
+    if let Ok(_) = parse(uuid) {
+        true
+    } else {
+        false
+    }
 }
 pub struct Advertisement {
-	pub typ: AdType,
-	pub service_uuids: Vec<String>,
-	// pub manu_data: HashMap<String, ()>
-	pub solicit_uuids: Vec<String>,
-	pub appearance: u16,
-	pub timeout: u16,
-	pub duration: u16,
-	pub localname: String,
-	pub index: u16
+    pub typ: AdType,
+    pub service_uuids: Vec<String>,
+    // pub manu_data: HashMap<String, ()>
+    pub solicit_uuids: Vec<String>,
+    pub appearance: u16,
+    pub timeout: u16,
+    pub duration: u16,
+    pub localname: String,
+    pub index: u16,
 }
 pub enum AdType {
-	Peripheral,
-	Broadcast,
+    Peripheral,
+    Broadcast,
 }
 impl AdType {
-	pub fn to_str(&self) -> &'static str {
-		match self {
-			AdType::Peripheral => "peripheral",
-			AdType::Broadcast => "broadcast"
-		}
-	}
+    pub fn to_str(&self) -> &'static str {
+        match self {
+            AdType::Peripheral => "peripheral",
+            AdType::Broadcast => "broadcast",
+        }
+    }
 }
 
 impl<'a, 'b> Properties<'a, 'b> for Advertisement {
-	const INTERFACES: &'static [(&'static str, &'static [&'static str])] = &[LEAD_IF, PROP_IF];
-	fn get_inner(&mut self, interface: &str, prop: &str) -> Option<Param<'a, 'b>> {
-		match interface {
-			LEAD_IF_STR => {
-				match prop {
-					TYPE_PROP => unimplemented!(),
-					SERV_UUIDS_PROP => unimplemented!(),
-					MANU_DATA_PROP => unimplemented!(),
-					SOLICIT_UUIDS_PROP => unimplemented!(),
-					SERV_DATA_PROP => unimplemented!(),
-					DATA_PROP => unimplemented!(),
-					DISCOVERABLE_PROP => unimplemented!(),
-					DISCOVERABLE_TO_PROP => unimplemented!(),
-					INCLUDES_PROP => unimplemented!(),
-					LOCAL_NAME_PROP => unimplemented!(),
-					APPEARANCE_PROP => unimplemented!(),
-					DURATION_PROP => unimplemented!(),
-					TO_PROP => unimplemented!(),
-					SND_CHANNEL_PROP => unimplemented!(),
-					_ => None
-				}
-			},
-			_ => None,
-		}
-	}
-	fn set_inner(&mut self, interface: &str, prop: &str, val: &params::Variant) -> Option<String> {
-		unimplemented!()	
-	}
+    const INTERFACES: &'static [(&'static str, &'static [&'static str])] = &[LEAD_IF, PROP_IF];
+    fn get_inner(&mut self, interface: &str, prop: &str) -> Option<Param<'a, 'b>> {
+        match interface {
+            LEAD_IF_STR => match prop {
+                TYPE_PROP => unimplemented!(),
+                SERV_UUIDS_PROP => unimplemented!(),
+                MANU_DATA_PROP => unimplemented!(),
+                SOLICIT_UUIDS_PROP => unimplemented!(),
+                SERV_DATA_PROP => unimplemented!(),
+                DATA_PROP => unimplemented!(),
+                DISCOVERABLE_PROP => unimplemented!(),
+                DISCOVERABLE_TO_PROP => unimplemented!(),
+                INCLUDES_PROP => unimplemented!(),
+                LOCAL_NAME_PROP => unimplemented!(),
+                APPEARANCE_PROP => unimplemented!(),
+                DURATION_PROP => unimplemented!(),
+                TO_PROP => unimplemented!(),
+                SND_CHANNEL_PROP => unimplemented!(),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+    fn set_inner(&mut self, interface: &str, prop: &str, val: &params::Variant) -> Option<String> {
+        unimplemented!()
+    }
 }
-
