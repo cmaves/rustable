@@ -1,19 +1,20 @@
-use crate::{Bluetooth, Charactersitic, Descriptor, Service};
+use crate::Bluetooth; 
+use crate::gatt::*;
 use rustbus::{Base, Message, Param};
 use std::fmt::Write;
 use std::path::Path;
-const INTROSPECT_FMT_P1: &'static str = "<!DOCTYPE node PUBLIC \"-//freedesktop//DTD D-BUS Object Introspection 1.0//EN\" \"http://www.freedesktop.org/standards/dbus/1.0/introspect.dtd\">
+pub(crate) const INTROSPECT_FMT_P1: &'static str = "<!DOCTYPE node PUBLIC \"-//freedesktop//DTD D-BUS Object Introspection 1.0//EN\" \"http://www.freedesktop.org/standards/dbus/1.0/introspect.dtd\">
  <node name=\"";
-const INTROSPECT_FMT_P2: &'static str = "\">
+pub (crate) const INTROSPECT_FMT_P2: &'static str = "\">
 \t<interface name=\"org.freedesktop.DBus.Introspectable\">
 \t\t<method name=\"Introspect\">
 \t\t\t<arg name=\"xml_data\" type=\"s\" direction=\"out\"/>
 \t\t</method>
 \t</interface>\n";
 
-const INTROSPECT_FMT_P3: &'static str = " </node>";
+pub(crate) const INTROSPECT_FMT_P3: &'static str = " </node>";
 
-const PROP_STR: &'static str = "\t<interface name=\"org.freedesktop.DBus.Properties\">
+pub(crate) const PROP_STR: &'static str = "\t<interface name=\"org.freedesktop.DBus.Properties\">
 \t\t<method name=\"Get\">
 \t\t\t<arg name=\"interface_name\" type=\"s\" direction=\"in\"/>
 \t\t\t<arg name=\"property_name\" type=\"s\" direction=\"in\"/>
@@ -29,13 +30,13 @@ const PROP_STR: &'static str = "\t<interface name=\"org.freedesktop.DBus.Propert
 \t\t\t<arg name=\"value\" type=\"v\" direction=\"in\"/>
 \t\t</method>
 \t</interface>\n";
-const SERVICE_STR: &'static str = "\t<interface name=\"org.bluez.GattService1\">
+pub(crate) const SERVICE_STR: &'static str = "\t<interface name=\"org.bluez.GattService1\">
 \t\t<property name=\"UUID\" type=\"s\" access=\"read\"/>
 \t\t<property name=\"Primary\" type=\"b\" access=\"read\"/>
 \t\t<property name=\"Device\" type=\"o\" access=\"read\"/>
 \t\t<property name=\"Handle\" type=\"q\" access=\"read\"/>
 \t</interface>\n";
-const CHAR_STR: &'static str = "\t<interface name=\"org.bluez.GattCharacteristic1\">
+pub(crate) const CHAR_STR: &'static str = "\t<interface name=\"org.bluez.GattCharacteristic1\">
 \t\t<method name=\"ReadValue\">
 \t\t\t<arg name=\"options\" type=\"a{sv}\" direction=\"in\"/>
 \t\t\t<arg name=\"value\" type=\"ay\" direction=\"out\"/>
@@ -66,7 +67,7 @@ const CHAR_STR: &'static str = "\t<interface name=\"org.bluez.GattCharacteristic
 \t\t<property name=\"Flags\" type=\"as\" access=\"read\"/>
 \t\t<property name=\"Handle\" type=\"q\" access=\"readwrite\"/>
 \t</interface>\n";
-const MANGAGER_STR: &'static str = "\t<interface name=\"org.freedesktop.DBus.ObjectManager\">
+pub(crate) const MANGAGER_STR: &'static str = "\t<interface name=\"org.freedesktop.DBus.ObjectManager\">
 \t\t<method name=\"GetManagedObjects\">
 \t\t\t<arg type=\"a{oa{sa{sv}}}\" name=\"object_paths_interfaces_and_properties\" direction=\"out\"/>
 \t\t</method>
@@ -79,7 +80,7 @@ const MANGAGER_STR: &'static str = "\t<interface name=\"org.freedesktop.DBus.Obj
 \t\t\t<arg type=\"as\" name=\"interfaces\"/>
 \t\t</signal>
 \t</interface>\n";
-fn child_nodes(children: &[&str], dst: &mut String) {
+pub(crate) fn child_nodes(children: &[&str], dst: &mut String) {
     for child in children {
         write!(dst, "\t<node name=\"{}\"/>\n", child).unwrap();
     }
@@ -126,52 +127,14 @@ impl Introspectable for Bluetooth<'_, '_> {
         //ret.push_str(PROP_STR);
         let children: Vec<&str> = self
             .services
-            .iter()
-            .map(|s| &s.path[s.path.len() - 9..])
+            .values()
+            .map(|s| s.path.file_name().unwrap().to_str().unwrap())
             .collect();
         child_nodes(&children, &mut ret);
         ret.push_str(INTROSPECT_FMT_P3);
         ret
     }
 }
-impl Introspectable for Charactersitic {
-    fn introspectable_str(&self) -> String {
-        let mut ret = String::new();
-        ret.push_str(INTROSPECT_FMT_P1);
-        ret.push_str(&self.path);
-        ret.push_str(INTROSPECT_FMT_P2);
-        ret.push_str(PROP_STR);
-        ret.push_str(CHAR_STR);
-        let children: Vec<&str> = self
-            .descs
-            .iter()
-            .map(|s| &s.path[s.path.len() - 18..])
-            .collect();
-        child_nodes(&children, &mut ret);
-        ret.push_str(INTROSPECT_FMT_P3);
-        ret
-    }
-}
-impl Introspectable for Service {
-    fn introspectable_str(&self) -> String {
-        let mut ret = String::new();
-        ret.push_str(INTROSPECT_FMT_P1);
-        ret.push_str(&self.path);
-        ret.push_str(INTROSPECT_FMT_P2);
-        ret.push_str(PROP_STR);
-        ret.push_str(SERVICE_STR);
-        let children: Vec<&str> = self
-            .chars
-            .iter()
-            .map(|s| &s.path[s.path.len() - 8..])
-            .collect();
-        child_nodes(&children, &mut ret);
-        ret.push_str(INTROSPECT_FMT_P3);
-        ret
-    }
-}
-impl Introspectable for Descriptor {
-    fn introspectable_str(&self) -> String {
-        unimplemented!()
-    }
-}
+
+
+
