@@ -1,13 +1,10 @@
-
-use std::path::{Path, PathBuf};
 use std::fmt::Write;
+use std::path::{Path, PathBuf};
 
-use crate::*;
 use crate::interfaces::*;
+use crate::*;
 
-pub trait Descriptor {
-
-}
+pub trait Descriptor {}
 
 #[derive(Debug)]
 pub struct LocalDescriptor {
@@ -21,10 +18,10 @@ impl LocalDescriptor {
         unimplemented!()
     }
     pub(super) fn update_path(&mut self, base: &Path) {
-		self.path = base.to_owned();
-		let mut name = String::with_capacity(7);
-		write!(&mut name, "desc{:03x}", self.index);
-		self.path.push(name);
+        self.path = base.to_owned();
+        let mut name = String::with_capacity(7);
+        write!(&mut name, "desc{:03x}", self.index);
+        self.path.push(name);
     }
 }
 
@@ -81,11 +78,9 @@ impl<'a, 'b> Properties<'a, 'b> for LocalDescriptor {
         match interface {
             DESC_IF_STR => match prop {
                 UUID_PROP => Some(base_param_to_variant(self.uuid.to_string().into())),
-                CHAR_PROP => {
-                    Some(base_param_to_variant(Base::ObjectPath(
-                        self.path.parent().unwrap().to_str().unwrap().to_string()
-                    )))
-                }
+                CHAR_PROP => Some(base_param_to_variant(Base::ObjectPath(
+                    self.path.parent().unwrap().to_str().unwrap().to_string(),
+                ))),
                 VALUE_PROP => unimplemented!(),
                 FLAGS_PROP => unimplemented!(),
                 HANDLE_PROP => Some(base_param_to_variant(self.index.into())),

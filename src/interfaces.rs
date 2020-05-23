@@ -32,7 +32,8 @@ pub const DURATION_PROP: &'static str = "Duration";
 pub const TO_PROP: &'static str = "Timeout";
 pub const SND_CHANNEL_PROP: &'static str = "SecondaryChannel";
 
-pub(crate) const SERV_IF_PROPS: &[&'static str] = &[UUID_PROP, PRIMARY_PROP, DEVICE_PROP, HANDLE_PROP]; // HANDLE_PROP is not used
+pub(crate) const SERV_IF_PROPS: &[&'static str] =
+    &[UUID_PROP, PRIMARY_PROP, DEVICE_PROP, HANDLE_PROP]; // HANDLE_PROP is not used
 pub(crate) const CHAR_IF_PROPS: &[&'static str] = &[
     UUID_PROP,
     SERVICE_PROP,
@@ -43,7 +44,8 @@ pub(crate) const CHAR_IF_PROPS: &[&'static str] = &[
     FLAGS_PROP,
     HANDLE_PROP,
 ];
-pub(crate) const DESC_IF_PROPS: &[&'static str] = &[UUID_PROP, VALUE_PROP, FLAGS_PROP, HANDLE_PROP, CHAR_PROP];
+pub(crate) const DESC_IF_PROPS: &[&'static str] =
+    &[UUID_PROP, VALUE_PROP, FLAGS_PROP, HANDLE_PROP, CHAR_PROP];
 
 pub(crate) const LEAD_IF_PROPS: &[&'static str] = &[
     TYPE_PROP,
@@ -79,4 +81,3 @@ pub const BLUEZ_FAILED: &'static str = "org.bluez.Error.Failed";
 
 // Standard DBus Errors
 pub const UNKNOWN_METHOD: &'static str = "org.dbus.freedesktop.UnknownMethod";
-

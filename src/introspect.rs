@@ -1,11 +1,11 @@
-use crate::Bluetooth; 
 use crate::gatt::*;
+use crate::Bluetooth;
 use rustbus::{Base, Message, Param};
 use std::fmt::Write;
 use std::path::Path;
 pub(crate) const INTROSPECT_FMT_P1: &'static str = "<!DOCTYPE node PUBLIC \"-//freedesktop//DTD D-BUS Object Introspection 1.0//EN\" \"http://www.freedesktop.org/standards/dbus/1.0/introspect.dtd\">
  <node name=\"";
-pub (crate) const INTROSPECT_FMT_P2: &'static str = "\">
+pub(crate) const INTROSPECT_FMT_P2: &'static str = "\">
 \t<interface name=\"org.freedesktop.DBus.Introspectable\">
 \t\t<method name=\"Introspect\">
 \t\t\t<arg name=\"xml_data\" type=\"s\" direction=\"out\"/>
@@ -135,6 +135,3 @@ impl Introspectable for Bluetooth<'_, '_> {
         ret
     }
 }
-
-
-

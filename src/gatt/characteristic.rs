@@ -1,24 +1,22 @@
-
-
 use crate::interfaces::*;
-use crate::*;
 use crate::introspect::*;
-use rustbus::{Param,Base,Container};
-use rustbus::message::{Message};
+use crate::*;
+use rustbus::message::Message;
+use rustbus::{Base, Container, Param};
 use std::os::unix::net::UnixDatagram;
 
 pub trait Charactersitic {
-	fn read(&mut self) -> Result<([u8; 255], usize), Error>;
-	fn read_value(&mut self) -> Result<([u8; 255], usize), Error>;
-	fn write(&mut self, val: &[u8]) -> Result<(), Error>;
-	fn uuid(&self) -> &str;
-	fn service(&self) -> &Path;
-	fn write_acquired(&self) -> bool;
-	fn notify_acquired(&self) -> bool;
-	fn notifying(&self) -> bool;
-	fn flags(&self) -> CharFlags;
-	/*pub fn start_notify(&self) -> ();
-	pub fn acquire_notify(&self) -> (); */
+    fn read(&mut self) -> Result<([u8; 255], usize), Error>;
+    fn read_value(&mut self) -> Result<([u8; 255], usize), Error>;
+    fn write(&mut self, val: &[u8]) -> Result<(), Error>;
+    fn uuid(&self) -> &str;
+    fn service(&self) -> &Path;
+    fn write_acquired(&self) -> bool;
+    fn notify_acquired(&self) -> bool;
+    fn notifying(&self) -> bool;
+    fn flags(&self) -> CharFlags;
+    /*pub fn start_notify(&self) -> ();
+    pub fn acquire_notify(&self) -> (); */
 }
 
 #[derive(Debug)]
@@ -40,10 +38,10 @@ pub struct LocalCharBase {
 }
 impl LocalCharBase {
     pub(super) fn update_path(&mut self, base: &Path) {
-		self.path = base.to_owned();
-		let mut name = String::with_capacity(8);
-		write!(&mut name, "char{:04x}", self.index);
-		self.path.push(name);
+        self.path = base.to_owned();
+        let mut name = String::with_capacity(8);
+        write!(&mut name, "char{:04x}", self.index);
+        self.path.push(name);
         for desc in self.descs.values_mut() {
             desc.update_path(&self.path);
         }
@@ -277,8 +275,8 @@ impl LocalCharBase {
         unimplemented!()
     }
     pub fn new(uuid: String, flags: CharFlags) -> Self {
-		let uuid: Rc<str> = uuid.into();
-        LocalCharBase  {
+        let uuid: Rc<str> = uuid.into();
+        LocalCharBase {
             vf: ValOrFn::Value([0; 255], 0),
             index: 0,
             handle: 0,
@@ -287,18 +285,17 @@ impl LocalCharBase {
             uuid,
             flags,
             path: PathBuf::new(),
-            descs: HashMap::new()
+            descs: HashMap::new(),
         }
     }
 }
 
 pub struct LocalCharactersitic<'a, 'b, 'c> {
-	pub(super) base: &'a mut LocalCharBase,
-	bt: &'a mut Bluetooth<'b, 'c>
+    pub(super) base: &'a mut LocalCharBase,
+    bt: &'a mut Bluetooth<'b, 'c>,
 }
 impl LocalCharactersitic<'_, '_, '_> {
-
-	fn signal_change(&mut self, value: &[u8]) -> Result<(), Error> {
+    fn signal_change(&mut self, value: &[u8]) -> Result<(), Error> {
         let mut params = Vec::with_capacity(3);
         params.push(Param::Base(Base::String(CHAR_IF_STR.to_string())));
         let changed_vec: Vec<Param> = value
@@ -331,17 +328,16 @@ impl LocalCharactersitic<'_, '_, '_> {
             .signal(
                 PROP_IF.0.to_string(),
                 PROP_CHANGED_SIG.to_string(),
-                self.base.path.to_str().unwrap().to_string()
+                self.base.path.to_str().unwrap().to_string(),
             )
             .with_params(params)
             .build();
         // eprintln!("msg to be send: {:#?}", msg);
         self.bt.rpc_con.send_message(&mut msg, None)?;
         Ok(())
-
-	}
-	fn notify(&mut self) -> Result<(), Error> {
-		let (buf, len) = self.base.vf.to_value();
+    }
+    fn notify(&mut self) -> Result<(), Error> {
+        let (buf, len) = self.base.vf.to_value();
         if let Some(notify) = &mut self.base.notify {
             match notify {
                 Notify::Signal => self.signal_change(&buf[..len])?,
@@ -352,9 +348,8 @@ impl LocalCharactersitic<'_, '_, '_> {
                 }
             }
         }
-		Ok(())
-	}
-
+        Ok(())
+    }
 }
 
 #[derive(Clone, Copy, Default, Debug)]
@@ -438,49 +433,48 @@ impl CharFlags {
     }
 }
 
-
 impl Charactersitic for LocalCharactersitic<'_, '_, '_> {
-	fn read(&mut self) -> Result<([u8; 255], usize), Error> {
+    fn read(&mut self) -> Result<([u8; 255], usize), Error> {
         match &mut self.base.vf {
             ValOrFn::Value(buf, len) => Ok((*buf, *len)),
             ValOrFn::Function(f) => Ok(f()),
-		}
-	}
-	fn read_value(&mut self) -> Result<([u8; 255], usize), Error> {
-		self.read()
-	}
-	fn write(&mut self, val: &[u8]) -> Result<(), Error> {
-		let mut buf = [0; 255];
-		buf[..val.len()].copy_from_slice(val);
-		self.base.vf = ValOrFn::Value(buf, val.len());
-		Ok(())
-	}
-	fn service(&self) -> &Path {
-		self.base.path.parent().unwrap()
-	}
-	fn write_acquired(&self) -> bool {
-		if let Some(_) = self.base.write {
-			true
-		} else {
-			false 
-		}
-	}
-	fn notify_acquired(&self) -> bool {
-		if let Some(Notify::Fd(_)) = self.base.notify{
-			true 
-		} else {
-			false
-		}
-	}
-	fn notifying(&self) -> bool {
-		self.base.notify.is_some()
-	}
-	fn uuid(&self) -> &str {
-		&self.base.uuid
-	}
-	fn flags(&self) -> CharFlags {
-		self.base.flags
-	}
+        }
+    }
+    fn read_value(&mut self) -> Result<([u8; 255], usize), Error> {
+        self.read()
+    }
+    fn write(&mut self, val: &[u8]) -> Result<(), Error> {
+        let mut buf = [0; 255];
+        buf[..val.len()].copy_from_slice(val);
+        self.base.vf = ValOrFn::Value(buf, val.len());
+        Ok(())
+    }
+    fn service(&self) -> &Path {
+        self.base.path.parent().unwrap()
+    }
+    fn write_acquired(&self) -> bool {
+        if let Some(_) = self.base.write {
+            true
+        } else {
+            false
+        }
+    }
+    fn notify_acquired(&self) -> bool {
+        if let Some(Notify::Fd(_)) = self.base.notify {
+            true
+        } else {
+            false
+        }
+    }
+    fn notifying(&self) -> bool {
+        self.base.notify.is_some()
+    }
+    fn uuid(&self) -> &str {
+        &self.base.uuid
+    }
+    fn flags(&self) -> CharFlags {
+        self.base.flags
+    }
 }
 impl Introspectable for LocalCharBase {
     fn introspectable_str(&self) -> String {
@@ -508,11 +502,9 @@ impl<'a, 'b> Properties<'a, 'b> for LocalCharBase {
         match interface {
             CHAR_IF_STR => match prop {
                 UUID_PROP => Some(base_param_to_variant(self.uuid.to_string().into())),
-                SERVICE_PROP => {
-                    Some(base_param_to_variant(Base::ObjectPath(
-						self.path.parent().unwrap().to_str().unwrap().to_string()
-                    )))
-                }
+                SERVICE_PROP => Some(base_param_to_variant(Base::ObjectPath(
+                    self.path.parent().unwrap().to_str().unwrap().to_string(),
+                ))),
                 VALUE_PROP => {
                     let (v, l) = self.vf.to_value();
                     // eprintln!("vf: {:?}\nValue: {:?}", self.vf, &v[..l]);
@@ -581,4 +573,3 @@ impl<'a, 'b> Properties<'a, 'b> for LocalCharBase {
         }
     }
 }
-

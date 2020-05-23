@@ -1,3 +1,4 @@
+use gatt::*;
 use rustbus::client_conn;
 use rustbus::client_conn::{Conn, RpcConn};
 use rustbus::get_session_bus_path;
@@ -19,7 +20,6 @@ use std::os::unix::net::UnixDatagram;
 use std::path::{Component, Path, PathBuf};
 use std::rc::Rc;
 use std::time::Duration;
-use gatt::*;
 
 pub mod interfaces;
 
@@ -60,26 +60,21 @@ impl From<client_conn::Error> for Error {
     }
 }
 
-
-
-
-
-
 /*
 pub struct Device {
-	services: Service
+    services: Service
 }*/
 pub struct Bluetooth<'a, 'b> {
     rpc_con: RpcConn<'a, 'b>,
     blue_path: String,
     name: String,
-	path: PathBuf,
+    path: PathBuf,
     pub verbose: u8,
     services: HashMap<UUID, LocalServiceBase>,
     registered: bool,
     pub filter_dest: Option<String>,
     pub ads: VecDeque<Advertisement>,
-	service_index: u8
+    service_index: u8,
 }
 
 impl<'a, 'b> Bluetooth<'a, 'b> {
@@ -100,8 +95,8 @@ impl<'a, 'b> Bluetooth<'a, 'b> {
             )));
         }
         let services = HashMap::new();
-		let path = name.replace(".", "/");
-		let path = PathBuf::from(path);
+        let path = name.replace(".", "/");
+        let path = PathBuf::from(path);
         let mut ret = Bluetooth {
             rpc_con,
             name,
@@ -109,10 +104,10 @@ impl<'a, 'b> Bluetooth<'a, 'b> {
             services,
             registered: false,
             blue_path,
-			path,
+            path,
             filter_dest: Some(BLUEZ_DEST.to_string()),
             ads: VecDeque::new(),
-			service_index: 0,
+            service_index: 0,
         };
         ret.rpc_con.set_filter(Box::new(move |msg| match msg.typ {
             MessageType::Call => true,
@@ -124,44 +119,41 @@ impl<'a, 'b> Bluetooth<'a, 'b> {
         Ok(ret)
     }
     pub fn get_path(&self) -> &Path {
-		&self.path
+        &self.path
     }
     pub fn add_service(&mut self, mut service: LocalServiceBase) -> Result<(), Error> {
         if self.services.len() >= 255 {
             panic!("Cannot add more than 255 services");
         }
         service.index = self.service_index;
-		self.service_index += 1;
-		let path = self.path.to_owned();
+        self.service_index += 1;
+        let path = self.path.to_owned();
         service.update_path(path);
-		self.services.insert(service.uuid.clone(), service);
-		Ok(())
+        self.services.insert(service.uuid.clone(), service);
+        Ok(())
     }
-    pub fn local_service(
-        &mut self,
-		uuid: &UUID,
-    ) -> Option<LocalService<'_, 'a, 'b>> {
-		if self.services.contains_key(uuid) {
-			Some(LocalService {
-				uuid: uuid.clone(),
-				bt: self
-			})
-		} else {
-			None
-		}
+    pub fn local_service(&mut self, uuid: &UUID) -> Option<LocalService<'_, 'a, 'b>> {
+        if self.services.contains_key(uuid) {
+            Some(LocalService {
+                uuid: uuid.clone(),
+                bt: self,
+            })
+        } else {
+            None
+        }
     }
     pub fn start_advertise(&mut self, adv: Advertisement) -> Result<(), Error> {
         unimplemented!()
     }
     pub fn remove_service(&mut self, uuid: &str) -> Result<LocalService, Error> {
-		unimplemented!()
+        unimplemented!()
     }
-	fn register_advertisement(&mut self, advert: Advertisement) -> Result<u16, Error> {
-		unimplemented!()
-	}
-	fn unregister_advertisement(&mut self, advert: Advertisement) -> Result<u16, Error> {
-		unimplemented!()
-	}
+    fn register_advertisement(&mut self, advert: Advertisement) -> Result<u16, Error> {
+        unimplemented!()
+    }
+    fn unregister_advertisement(&mut self, advert: Advertisement) -> Result<u16, Error> {
+        unimplemented!()
+    }
     pub fn register_application(&mut self) -> Result<(), Error> {
         let path = self.get_path();
         let empty_dict = HashMap::new();
@@ -472,10 +464,13 @@ impl<'a, 'b> ObjectManager<'a, 'b> for Bluetooth<'a, 'b> {
                 let props = service.get_all_inner(interface.0).unwrap();
                 middle_map.insert(interface.0.to_string().into(), props);
             }
-            let middle_cont: Container =
-                (signature::Base::String, LocalServiceBase::get_all_type(), middle_map)
-                    .try_into()
-                    .unwrap();
+            let middle_cont: Container = (
+                signature::Base::String,
+                LocalServiceBase::get_all_type(),
+                middle_map,
+            )
+                .try_into()
+                .unwrap();
             outer_dict.insert(Base::ObjectPath(service_path), middle_cont.into());
         }
         //let outer_param: Result<Param, std::convert::Infallible> = outer_dict.try_into();
@@ -643,7 +638,6 @@ fn base_param_to_variant(b: Base) -> Param {
     };
     Param::Container(Container::Variant(Box::new(var)))
 }
-
 
 fn half_byte(val: u8) -> char {
     if val <= 10 {

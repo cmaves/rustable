@@ -1,27 +1,24 @@
-
-use crate::*;
 use crate::gatt::*;
 use crate::introspect::*;
+use crate::*;
 use rustbus::Message;
-use std::path::{Component, Path, PathBuf};
-use std::collections::{HashMap};
 use std::collections::hash_map::Keys;
-
+use std::collections::HashMap;
+use std::path::{Component, Path, PathBuf};
 
 pub trait Service<T: Charactersitic> {
-	fn uuid(&self) -> &str;
-	fn primary(&self) -> bool;
-	fn device(&self) -> &Path;
-	fn includes(&self) -> &[&Path];
-	fn handle(&self) -> u16;
-	fn char_uuids(&self) -> Keys<String, T>;
-	fn get_char(&mut self, uuid: &str) -> &mut T;
+    fn uuid(&self) -> &str;
+    fn primary(&self) -> bool;
+    fn device(&self) -> &Path;
+    fn includes(&self) -> &[&Path];
+    fn handle(&self) -> u16;
+    fn char_uuids(&self) -> Keys<String, T>;
+    fn get_char(&mut self, uuid: &str) -> &mut T;
 }
-
 
 pub struct LocalServiceBase {
     pub(crate) index: u8,
-	char_index: u16,
+    char_index: u16,
     handle: u16,
     pub(crate) uuid: UUID,
     pub(crate) path: PathBuf,
@@ -33,8 +30,8 @@ impl LocalServiceBase {
         // TODO: add check for duplicate UUIDs
         assert!(self.chars.len() < 65535);
         character.index = self.char_index;
-		self.char_index += 1;
-		self.chars.insert(character.uuid.clone(), character);
+        self.char_index += 1;
+        self.chars.insert(character.uuid.clone(), character);
     }
 
     pub fn service_call<'a, 'b>(&mut self, call: &Message<'a, 'b>) -> Message<'a, 'b> {
@@ -42,10 +39,10 @@ impl LocalServiceBase {
     }
 
     pub(crate) fn update_path(&mut self, mut base: PathBuf) {
-		let mut name = String::with_capacity(11);
+        let mut name = String::with_capacity(11);
         write!(name, "{:04x}", self.index).unwrap();
-		base.push(name);
-		self.path = base;
+        base.push(name);
+        self.path = base;
         for character in self.chars.values_mut() {
             character.update_path(&self.path);
         }
@@ -74,10 +71,10 @@ impl LocalServiceBase {
         }
     }
     pub fn new(uuid: String, primary: bool) -> Self {
-		let uuid: Rc<str> = uuid.into();
+        let uuid: Rc<str> = uuid.into();
         LocalServiceBase {
             index: 0,
-			char_index: 0,
+            char_index: 0,
             handle: 0,
             uuid,
             path: PathBuf::new(),
@@ -87,12 +84,10 @@ impl LocalServiceBase {
     }
 }
 pub struct LocalService<'a, 'b, 'c> {
-	pub(crate) uuid: UUID,
-	pub(crate) bt: &'a mut Bluetooth<'b, 'c>
+    pub(crate) uuid: UUID,
+    pub(crate) bt: &'a mut Bluetooth<'b, 'c>,
 }
-impl LocalService<'_, '_, '_> {
-
-}
+impl LocalService<'_, '_, '_> {}
 
 impl<'a, 'b> Properties<'a, 'b> for LocalServiceBase {
     const INTERFACES: &'static [(&'static str, &'static [&'static str])] = &[SERV_IF, PROP_IF];
@@ -101,11 +96,9 @@ impl<'a, 'b> Properties<'a, 'b> for LocalServiceBase {
             SERV_IF_STR => match prop {
                 UUID_PROP => Some(base_param_to_variant(self.uuid.to_string().into())),
                 PRIMARY_PROP => Some(base_param_to_variant(self.primary.into())),
-                DEVICE_PROP => {
-                    Some(base_param_to_variant(Base::ObjectPath(
-                        self.path.parent().unwrap().to_str().unwrap().to_string())
-                    ))
-                }
+                DEVICE_PROP => Some(base_param_to_variant(Base::ObjectPath(
+                    self.path.parent().unwrap().to_str().unwrap().to_string(),
+                ))),
                 HANDLE_PROP => {
                     // eprintln!("Getting handle: {}", self.index);
                     Some(base_param_to_variant(Base::Uint16(self.handle)))
