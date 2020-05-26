@@ -6,14 +6,14 @@ use std::collections::hash_map::Keys;
 use std::collections::HashMap;
 use std::path::{Component, Path, PathBuf};
 
-pub trait Service<T: Charactersitic> {
-    fn uuid(&self) -> &str;
+pub trait Service<'a, T: Charactersitic, U> {
+    fn uuid(&self) -> &UUID;
     fn primary(&self) -> bool;
     fn device(&self) -> &Path;
     fn includes(&self) -> &[&Path];
     fn handle(&self) -> u16;
-    fn char_uuids(&self) -> Keys<String, T>;
-    fn get_char(&mut self, uuid: &str) -> &mut T;
+    fn char_uuids(&self) -> Keys<UUID, U>;
+    fn get_char<V: ToUUID>(&'a mut self, uuid: &V) -> Option<T>;
 }
 
 pub struct LocalServiceBase {
@@ -70,8 +70,8 @@ impl LocalServiceBase {
             None
         }
     }
-    pub fn new(uuid: String, primary: bool) -> Self {
-        let uuid: Rc<str> = uuid.into();
+    pub fn new<T: ToUUID>(uuid: &T, primary: bool) -> Self {
+		let uuid = uuid.to_uuid();
         LocalServiceBase {
             index: 0,
             char_index: 0,
@@ -87,7 +87,51 @@ pub struct LocalService<'a, 'b, 'c> {
     pub(crate) uuid: UUID,
     pub(crate) bt: &'a mut Bluetooth<'b, 'c>,
 }
-impl LocalService<'_, '_, '_> {}
+impl<'a, 'b, 'c>  Service<'a, LocalCharactersitic<'a, 'b, 'c>, LocalCharBase> for LocalService<'a, 'b, 'c> {
+	fn uuid(&self) -> &UUID {
+		&self.uuid
+	}
+	fn char_uuids(&self) -> Keys<UUID, LocalCharBase> {
+		let service = self.get_service();
+		service.chars.keys()
+	}
+	fn primary(&self) -> bool {
+		let service = self.get_service();
+		service.primary
+	}
+	fn get_char<V: ToUUID>(&'a mut self, uuid: &V) -> Option<LocalCharactersitic<'a, 'b, 'c>> {
+		let service = self.get_service_mut();
+		let uuid = uuid.to_uuid();
+		if service.chars.contains_key(&uuid) {
+			Some(LocalCharactersitic {
+				service: self,
+				uuid: uuid.clone()
+			})
+		} else {
+			None
+		}
+		
+	}
+	fn device(&self) -> &Path {
+		unimplemented!()
+	}
+	fn includes(&self) -> &[&Path] {
+		unimplemented!()
+	}
+	fn handle(&self) -> u16 {
+		unimplemented!()
+	}
+}
+
+
+impl LocalService<'_, '_, '_> {
+	pub(super) fn get_service(&self) -> &LocalServiceBase {
+		&self.bt.services[&self.uuid]
+	}
+	pub(super) fn get_service_mut(&mut self) -> &mut LocalServiceBase {
+		self.bt.services.get_mut(&self.uuid).unwrap()
+	}
+}
 
 impl<'a, 'b> Properties<'a, 'b> for LocalServiceBase {
     const INTERFACES: &'static [(&'static str, &'static [&'static str])] = &[SERV_IF, PROP_IF];

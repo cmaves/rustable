@@ -1,9 +1,11 @@
+use crate::UUID;
 use std::fmt::{Debug, Formatter};
 mod characteristic;
 mod descriptor;
 mod service;
 
-pub use characteristic::{Charactersitic, LocalCharBase, LocalCharactersitic};
+//pub use characteristic::{Charactersitic, LocalCharBase, LocalCharactersitic, CharFlags};
+pub use characteristic::*;
 pub use descriptor::{Descriptor, LocalDescriptor};
 pub use service::{LocalService, LocalServiceBase, Service};
 
@@ -17,9 +19,11 @@ pub struct SocketNotifier {
 }
 */
 
-pub trait GattDevice<T, U>
+
+pub trait GattDevice<'a, T, W, U>
 where
     T: Charactersitic,
-    U: Service<T>,
+    U: Service<'a, T, W>,
 {
+
 }

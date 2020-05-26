@@ -32,7 +32,29 @@ use introspect::Introspectable;
 #[cfg(test)]
 mod tests;
 
-type UUID = Rc<str>;
+pub type UUID = Rc<str>;
+
+pub trait ToUUID {
+	fn to_uuid(&self) -> UUID;
+}
+impl ToUUID for &str {
+	fn to_uuid(&self) -> UUID {
+		assert!(validate_uuid(self));
+		let deref = *self;
+		deref.into()
+	}
+}
+impl ToUUID for UUID {
+	fn to_uuid(&self) -> UUID {
+		self.clone()
+	}
+}
+impl ToUUID for u128 {
+	fn to_uuid(&self) -> UUID {
+		format!("{:08x}-{:04x}-{:04x}-{:04x}-{:012x}", self >> 24, (self >> 20) & 0xFFFF, (self >> 16) & 0xFFFF, (self >> 12) & 0xFFFF, self & 0xFFFFFFFFFFFF).into()
+	}
+}
+
 
 enum DbusObject<'a> {
     Char(&'a mut LocalCharBase),
@@ -132,8 +154,9 @@ impl<'a, 'b> Bluetooth<'a, 'b> {
         self.services.insert(service.uuid.clone(), service);
         Ok(())
     }
-    pub fn local_service(&mut self, uuid: &UUID) -> Option<LocalService<'_, 'a, 'b>> {
-        if self.services.contains_key(uuid) {
+    pub fn local_service<T: ToUUID>(&mut self, uuid: &T) -> Option<LocalService<'_, 'a, 'b>> {
+		let uuid = uuid.to_uuid();
+        if self.services.contains_key(&uuid) {
             Some(LocalService {
                 uuid: uuid.clone(),
                 bt: self,
@@ -738,7 +761,7 @@ impl<'a, 'b> Properties<'a, 'b> for Advertisement {
     }
 }
 
-enum ValOrFn {
+pub enum ValOrFn {
     Value([u8; 255], usize),
     Function(Box<dyn FnMut() -> ([u8; 255], usize)>),
 }
