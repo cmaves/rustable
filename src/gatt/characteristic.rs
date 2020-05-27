@@ -293,19 +293,19 @@ impl LocalCharBase {
 pub struct LocalCharactersitic<'a, 'b: 'a, 'c: 'a, 'd: 'a> {
     pub(super) uuid: UUID,
     pub(super) service: &'a mut LocalService<'b, 'c, 'd>,
-	#[cfg(feature = "unsafe-opt")]
-	base: *mut LocalCharBase
+    #[cfg(feature = "unsafe-opt")]
+    base: *mut LocalCharBase,
 }
 impl LocalCharactersitic<'_, '_, '_, '_> {
-	pub fn write_val_or_fn(&mut self, val: &mut ValOrFn) {
-		let base = self.get_char_base_mut();
-		std::mem::swap(&mut base.vf, val);
-	}
+    pub fn write_val_or_fn(&mut self, val: &mut ValOrFn) {
+        let base = self.get_char_base_mut();
+        std::mem::swap(&mut base.vf, val);
+    }
     fn signal_change(&mut self) -> Result<(), Error> {
-		let base = self.get_char_base_mut();
-		//let (v, l) = self.get_char_base_mut().vf.to_value();
-		let (v, l) = base.vf.to_value();
-		let value = &v[..];
+        let base = self.get_char_base_mut();
+        //let (v, l) = self.get_char_base_mut().vf.to_value();
+        let (v, l) = base.vf.to_value();
+        let value = &v[..];
         let mut params = Vec::with_capacity(3);
         params.push(Param::Base(Base::String(CHAR_IF_STR.to_string())));
         let changed_vec: Vec<Param> = value
@@ -334,7 +334,7 @@ impl LocalCharactersitic<'_, '_, '_, '_> {
         };
         let empty = Param::Container(Container::Array(empty));
         params.push(empty);
-		let base = self.get_char_base_mut();
+        let base = self.get_char_base_mut();
         let mut msg = MessageBuilder::new()
             .signal(
                 PROP_IF.0.to_string(),
@@ -348,7 +348,7 @@ impl LocalCharactersitic<'_, '_, '_, '_> {
         Ok(())
     }
     pub fn notify(&mut self) -> Result<(), Error> {
-		let base = self.get_char_base_mut();
+        let base = self.get_char_base_mut();
         let (buf, len) = base.vf.to_value();
         if let Some(notify) = &mut base.notify {
             match notify {
@@ -362,13 +362,16 @@ impl LocalCharactersitic<'_, '_, '_, '_> {
         }
         Ok(())
     }
-	fn get_char_base_mut(&mut self) -> &mut LocalCharBase{
-		self.service.get_service_mut().chars.get_mut(&self.uuid).unwrap()
-	}
-	fn get_char_base(&self) -> &LocalCharBase {
-		&self.service.get_service().chars[&self.uuid]
-
-	}
+    fn get_char_base_mut(&mut self) -> &mut LocalCharBase {
+        self.service
+            .get_service_mut()
+            .chars
+            .get_mut(&self.uuid)
+            .unwrap()
+    }
+    fn get_char_base(&self) -> &LocalCharBase {
+        &self.service.get_service().chars[&self.uuid]
+    }
 }
 
 #[derive(Clone, Copy, Default, Debug)]
@@ -454,7 +457,7 @@ impl CharFlags {
 
 impl Charactersitic for LocalCharactersitic<'_, '_, '_, '_> {
     fn read(&mut self) -> Result<([u8; 255], usize), Error> {
-		let base = self.get_char_base_mut();
+        let base = self.get_char_base_mut();
         match &mut base.vf {
             ValOrFn::Value(buf, len) => Ok((*buf, *len)),
             ValOrFn::Function(f) => Ok(f()),
@@ -466,16 +469,16 @@ impl Charactersitic for LocalCharactersitic<'_, '_, '_, '_> {
     fn write(&mut self, val: &[u8]) -> Result<(), Error> {
         let mut buf = [0; 255];
         buf[..val.len()].copy_from_slice(val);
-		let mut val = ValOrFn::Value(buf, val.len());
-		self.write_val_or_fn(&mut val);
-		Ok(())
+        let mut val = ValOrFn::Value(buf, val.len());
+        self.write_val_or_fn(&mut val);
+        Ok(())
     }
     fn service(&self) -> &Path {
-		let base = self.get_char_base();
+        let base = self.get_char_base();
         base.path.parent().unwrap()
     }
     fn write_acquired(&self) -> bool {
-		let base = self.get_char_base();
+        let base = self.get_char_base();
         if let Some(_) = base.write {
             true
         } else {
@@ -483,7 +486,7 @@ impl Charactersitic for LocalCharactersitic<'_, '_, '_, '_> {
         }
     }
     fn notify_acquired(&self) -> bool {
-		let base = self.get_char_base();
+        let base = self.get_char_base();
         if let Some(Notify::Fd(_)) = base.notify {
             true
         } else {
@@ -491,15 +494,15 @@ impl Charactersitic for LocalCharactersitic<'_, '_, '_, '_> {
         }
     }
     fn notifying(&self) -> bool {
-		let base = self.get_char_base();
+        let base = self.get_char_base();
         base.notify.is_some()
     }
     fn uuid(&self) -> &str {
-		let base = self.get_char_base();
+        let base = self.get_char_base();
         &base.uuid
     }
     fn flags(&self) -> CharFlags {
-		let base = self.get_char_base();
+        let base = self.get_char_base();
         base.flags
     }
 }

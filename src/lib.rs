@@ -35,26 +35,33 @@ mod tests;
 pub type UUID = Rc<str>;
 
 pub trait ToUUID {
-	fn to_uuid(&self) -> UUID;
+    fn to_uuid(&self) -> UUID;
 }
 impl ToUUID for &str {
-	fn to_uuid(&self) -> UUID {
-		assert!(validate_uuid(self));
-		let deref = *self;
-		deref.into()
-	}
+    fn to_uuid(&self) -> UUID {
+        assert!(validate_uuid(self));
+        let deref = *self;
+        deref.into()
+    }
 }
 impl ToUUID for UUID {
-	fn to_uuid(&self) -> UUID {
-		self.clone()
-	}
+    fn to_uuid(&self) -> UUID {
+        self.clone()
+    }
 }
 impl ToUUID for u128 {
-	fn to_uuid(&self) -> UUID {
-		format!("{:08x}-{:04x}-{:04x}-{:04x}-{:012x}", self >> 24, (self >> 20) & 0xFFFF, (self >> 16) & 0xFFFF, (self >> 12) & 0xFFFF, self & 0xFFFFFFFFFFFF).into()
-	}
+    fn to_uuid(&self) -> UUID {
+        format!(
+            "{:08x}-{:04x}-{:04x}-{:04x}-{:012x}",
+            self >> 24,
+            (self >> 20) & 0xFFFF,
+            (self >> 16) & 0xFFFF,
+            (self >> 12) & 0xFFFF,
+            self & 0xFFFFFFFFFFFF
+        )
+        .into()
+    }
 }
-
 
 enum DbusObject<'a> {
     Char(&'a mut LocalCharBase),
@@ -117,8 +124,8 @@ impl<'a, 'b> Bluetooth<'a, 'b> {
             )));
         }
         let services = HashMap::new();
-		let mut path = String::new();
-		path.push('/');
+        let mut path = String::new();
+        path.push('/');
         path.push_str(&name.replace(".", "/"));
         let path = PathBuf::from(path);
         let mut ret = Bluetooth {
@@ -157,7 +164,7 @@ impl<'a, 'b> Bluetooth<'a, 'b> {
         Ok(())
     }
     pub fn local_service<T: ToUUID>(&mut self, uuid: &T) -> Option<LocalService<'_, 'a, 'b>> {
-		let uuid = uuid.to_uuid();
+        let uuid = uuid.to_uuid();
         if self.services.contains_key(&uuid) {
             Some(LocalService {
                 uuid: uuid.clone(),
@@ -431,9 +438,9 @@ impl<'a, 'b> ObjectManager<'a, 'b> for Bluetooth<'a, 'b> {
     fn get_managed_object(&mut self, msg: &Message<'a, 'b>) -> Message<'a, 'b> {
         let mut reply = msg.make_response();
         let mut outer_dict: HashMap<Base, Param> = HashMap::new();
-		let path = self.get_path().to_path_buf();
+        let path = self.get_path().to_path_buf();
         for service in self.services.values_mut() {
-			let service_path = path.join(format!("service{:02x}", service.index));
+            let service_path = path.join(format!("service{:02x}", service.index));
             for characteristic in service.chars.values_mut() {
                 for desc in characteristic.descs.values_mut() {
                     let mut middle_map = HashMap::new();
@@ -448,7 +455,10 @@ impl<'a, 'b> ObjectManager<'a, 'b> for Bluetooth<'a, 'b> {
                     )
                         .try_into()
                         .unwrap();
-                    outer_dict.insert(Base::ObjectPath(desc.path.to_str().unwrap().to_string()), middle_cont.into());
+                    outer_dict.insert(
+                        Base::ObjectPath(desc.path.to_str().unwrap().to_string()),
+                        middle_cont.into(),
+                    );
                 }
                 let mut middle_map = HashMap::new();
                 for interface in LocalCharBase::INTERFACES {
@@ -462,7 +472,10 @@ impl<'a, 'b> ObjectManager<'a, 'b> for Bluetooth<'a, 'b> {
                 )
                     .try_into()
                     .unwrap();
-                outer_dict.insert(Base::ObjectPath(characteristic.path.to_str().unwrap().to_string()), middle_cont.into());
+                outer_dict.insert(
+                    Base::ObjectPath(characteristic.path.to_str().unwrap().to_string()),
+                    middle_cont.into(),
+                );
             }
             let mut middle_map = HashMap::new();
 
@@ -477,7 +490,10 @@ impl<'a, 'b> ObjectManager<'a, 'b> for Bluetooth<'a, 'b> {
             )
                 .try_into()
                 .unwrap();
-            outer_dict.insert(Base::ObjectPath(service.path.to_str().unwrap().to_string()), middle_cont.into());
+            outer_dict.insert(
+                Base::ObjectPath(service.path.to_str().unwrap().to_string()),
+                middle_cont.into(),
+            );
         }
         //let outer_param: Result<Param, std::convert::Infallible> = outer_dict.try_into();
         let outer_cont: Container = (
@@ -644,7 +660,6 @@ fn base_param_to_variant(b: Base) -> Param {
     };
     Param::Container(Container::Variant(Box::new(var)))
 }
-
 
 pub fn validate_uuid(uuid: &str) -> bool {
     if uuid.len() != 36 {
