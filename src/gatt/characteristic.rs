@@ -30,7 +30,7 @@ pub struct LocalCharBase {
     pub(crate) index: u16,
     handle: u16,
     pub(super) uuid: UUID,
-    pub(super) path: PathBuf,
+    pub(crate) path: PathBuf,
     notify: Option<Notify>,
     write: Option<UnixDatagram>,
     pub(crate) descs: HashMap<String, LocalDescriptor>,
@@ -290,13 +290,13 @@ impl LocalCharBase {
     }
 }
 
-pub struct LocalCharactersitic<'a, 'b, 'c> {
+pub struct LocalCharactersitic<'a, 'b: 'a, 'c: 'a, 'd: 'a> {
     pub(super) uuid: UUID,
-    pub(super) service: &'a mut LocalService<'a, 'b, 'c>,
+    pub(super) service: &'a mut LocalService<'b, 'c, 'd>,
 	#[cfg(feature = "unsafe-opt")]
 	base: *mut LocalCharBase
 }
-impl LocalCharactersitic<'_, '_, '_> {
+impl LocalCharactersitic<'_, '_, '_, '_> {
 	pub fn write_val_or_fn(&mut self, val: &mut ValOrFn) {
 		let base = self.get_char_base_mut();
 		std::mem::swap(&mut base.vf, val);
@@ -452,7 +452,7 @@ impl CharFlags {
     }
 }
 
-impl Charactersitic for LocalCharactersitic<'_, '_, '_> {
+impl Charactersitic for LocalCharactersitic<'_, '_, '_, '_> {
     fn read(&mut self) -> Result<([u8; 255], usize), Error> {
 		let base = self.get_char_base_mut();
         match &mut base.vf {

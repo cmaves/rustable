@@ -20,10 +20,3 @@ pub struct SocketNotifier {
 */
 
 
-pub trait GattDevice<'a, T, W, U>
-where
-    T: Charactersitic,
-    U: Service<'a, T, W>,
-{
-
-}

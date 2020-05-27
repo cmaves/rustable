@@ -6,14 +6,16 @@ use std::collections::hash_map::Keys;
 use std::collections::HashMap;
 use std::path::{Component, Path, PathBuf};
 
-pub trait Service<'a, T: Charactersitic, U> {
+pub trait Service<'a> {
+	type CharType: Charactersitic;
+	type Value;
     fn uuid(&self) -> &UUID;
     fn primary(&self) -> bool;
     fn device(&self) -> &Path;
     fn includes(&self) -> &[&Path];
     fn handle(&self) -> u16;
-    fn char_uuids(&self) -> Keys<UUID, U>;
-    fn get_char<V: ToUUID>(&'a mut self, uuid: &V) -> Option<T>;
+    fn char_uuids(&self) -> Keys<UUID, Self::Value>;
+    fn get_char<V: ToUUID>(&'a mut self, uuid: &V) -> Option<Self::CharType>;
 }
 
 pub struct LocalServiceBase {
@@ -40,7 +42,7 @@ impl LocalServiceBase {
 
     pub(crate) fn update_path(&mut self, mut base: PathBuf) {
         let mut name = String::with_capacity(11);
-        write!(name, "{:04x}", self.index).unwrap();
+        write!(name, "service{:02x}", self.index).unwrap();
         base.push(name);
         self.path = base;
         for character in self.chars.values_mut() {
@@ -87,11 +89,13 @@ pub struct LocalService<'a, 'b, 'c> {
     pub(crate) uuid: UUID,
     pub(crate) bt: &'a mut Bluetooth<'b, 'c>,
 }
-impl<'a, 'b, 'c>  Service<'a, LocalCharactersitic<'a, 'b, 'c>, LocalCharBase> for LocalService<'a, 'b, 'c> {
+impl<'a, 'b: 'a, 'c: 'a, 'd: 'a> Service<'a> for LocalService<'b, 'c, 'd> {
+	type CharType = LocalCharactersitic<'a, 'b, 'c, 'd>;
+	type Value = LocalCharBase;
 	fn uuid(&self) -> &UUID {
 		&self.uuid
 	}
-	fn char_uuids(&self) -> Keys<UUID, LocalCharBase> {
+	fn char_uuids(&self) -> Keys<UUID, Self::Value> {
 		let service = self.get_service();
 		service.chars.keys()
 	}
@@ -99,19 +103,24 @@ impl<'a, 'b, 'c>  Service<'a, LocalCharactersitic<'a, 'b, 'c>, LocalCharBase> fo
 		let service = self.get_service();
 		service.primary
 	}
-	fn get_char<V: ToUUID>(&'a mut self, uuid: &V) -> Option<LocalCharactersitic<'a, 'b, 'c>> {
+	fn get_char<V: ToUUID>(&'a mut self, uuid: &V) -> Option<Self::CharType> {
 		let service = self.get_service_mut();
 		let uuid = uuid.to_uuid();
 		if service.chars.contains_key(&uuid) {
+			drop(service);
 			Some(LocalCharactersitic {
 				service: self,
 				uuid: uuid.clone()
 			})
 		} else {
 			None
-		}
-		
+		}	
 	}
+	/*
+	fn get_char<'a, V: ToUUID>(&'a mut self, uuid: &V) -> Option<LocalCharactersitic<'a, 'b, 'c, 'd>> {
+
+	}
+	*/
 	fn device(&self) -> &Path {
 		unimplemented!()
 	}

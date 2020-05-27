@@ -117,7 +117,9 @@ impl<'a, 'b> Bluetooth<'a, 'b> {
             )));
         }
         let services = HashMap::new();
-        let path = name.replace(".", "/");
+		let mut path = String::new();
+		path.push('/');
+        path.push_str(&name.replace(".", "/"));
         let path = PathBuf::from(path);
         let mut ret = Bluetooth {
             rpc_con,
@@ -286,7 +288,7 @@ impl<'a, 'b> Bluetooth<'a, 'b> {
                         },
                         None => standard_messages::unknown_method(&call),
                     };
-                    // eprintln!("replying to: {:#?}\nreply: {:#?}", call, reply);
+                    eprintln!("replying: {:#?}", reply);
                     self.rpc_con.send_message(&mut reply, None)?;
                 }
                 Err(e) => match e {
@@ -429,30 +431,11 @@ impl<'a, 'b> ObjectManager<'a, 'b> for Bluetooth<'a, 'b> {
     fn get_managed_object(&mut self, msg: &Message<'a, 'b>) -> Message<'a, 'b> {
         let mut reply = msg.make_response();
         let mut outer_dict: HashMap<Base, Param> = HashMap::new();
-        let mut path = String::new();
-        path.push('/');
-        path.push_str(&self.name.replace(".", "/"));
-        path.push_str("/service");
+		let path = self.get_path().to_path_buf();
         for service in self.services.values_mut() {
-            let mut service_path = path.clone();
-            let index = u8_to_ascii(service.index);
-            service_path.push(index[0]);
-            service_path.push(index[1]);
+			let service_path = path.join(format!("service{:02x}", service.index));
             for characteristic in service.chars.values_mut() {
-                let mut char_path = service_path.clone();
-                char_path.push('/');
-                char_path.push_str("char");
-                let index = u16_to_ascii(characteristic.index);
-                for &i in &index {
-                    char_path.push(i);
-                }
                 for desc in characteristic.descs.values_mut() {
-                    let mut desc_path = char_path.clone();
-                    char_path.push('/');
-                    let index = u16_to_ascii(desc.index);
-                    for &i in &index[1..] {
-                        desc_path.push(i);
-                    }
                     let mut middle_map = HashMap::new();
                     for interface in LocalDescriptor::INTERFACES {
                         let props = desc.get_all_inner(interface.0).unwrap();
@@ -465,7 +448,7 @@ impl<'a, 'b> ObjectManager<'a, 'b> for Bluetooth<'a, 'b> {
                     )
                         .try_into()
                         .unwrap();
-                    outer_dict.insert(Base::ObjectPath(desc_path), middle_cont.into());
+                    outer_dict.insert(Base::ObjectPath(desc.path.to_str().unwrap().to_string()), middle_cont.into());
                 }
                 let mut middle_map = HashMap::new();
                 for interface in LocalCharBase::INTERFACES {
@@ -479,7 +462,7 @@ impl<'a, 'b> ObjectManager<'a, 'b> for Bluetooth<'a, 'b> {
                 )
                     .try_into()
                     .unwrap();
-                outer_dict.insert(Base::ObjectPath(char_path), middle_cont.into());
+                outer_dict.insert(Base::ObjectPath(characteristic.path.to_str().unwrap().to_string()), middle_cont.into());
             }
             let mut middle_map = HashMap::new();
 
@@ -494,7 +477,7 @@ impl<'a, 'b> ObjectManager<'a, 'b> for Bluetooth<'a, 'b> {
             )
                 .try_into()
                 .unwrap();
-            outer_dict.insert(Base::ObjectPath(service_path), middle_cont.into());
+            outer_dict.insert(Base::ObjectPath(service.path.to_str().unwrap().to_string()), middle_cont.into());
         }
         //let outer_param: Result<Param, std::convert::Infallible> = outer_dict.try_into();
         let outer_cont: Container = (
@@ -662,24 +645,6 @@ fn base_param_to_variant(b: Base) -> Param {
     Param::Container(Container::Variant(Box::new(var)))
 }
 
-fn half_byte(val: u8) -> char {
-    if val <= 10 {
-        (48 + val) as char
-    } else {
-        (val + 65 - 11) as char
-    }
-}
-fn u8_to_ascii(val: u8) -> [char; 2] {
-    [half_byte((val >> 4) & 0xF), half_byte(val & 0xF)]
-}
-fn u16_to_ascii(val: u16) -> [char; 4] {
-    [
-        half_byte((val >> 12) as u8),
-        half_byte(((val >> 8) & 0xF) as u8),
-        half_byte(((val >> 4) & 0xF) as u8),
-        half_byte((val & 0xF) as u8),
-    ]
-}
 
 pub fn validate_uuid(uuid: &str) -> bool {
     if uuid.len() != 36 {

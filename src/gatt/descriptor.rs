@@ -8,7 +8,7 @@ pub trait Descriptor {}
 
 #[derive(Debug)]
 pub struct LocalDescriptor {
-    pub(super) path: PathBuf,
+    pub(crate) path: PathBuf,
     pub(crate) index: u16,
     handle: u16,
     uuid: Rc<String>,
