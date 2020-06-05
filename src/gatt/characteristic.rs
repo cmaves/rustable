@@ -1,16 +1,16 @@
 use crate::interfaces::*;
 use crate::introspect::*;
 use crate::*;
+use nix::poll;
+use nix::sys::socket;
+use nix::sys::time::{TimeVal, TimeValLike};
+use nix::sys::uio::IoVec;
+use nix::unistd::close;
 use rustbus::message::Message;
 use rustbus::{Base, Container, Param};
-use std::os::unix::io::RawFd;
-use std::marker::PhantomData;
 use std::convert::TryFrom;
-use nix::unistd::close;
-use nix::sys::socket;
-use nix::sys::uio::IoVec;
-use nix::poll;
-use nix::sys::time::{TimeValLike, TimeVal};
+use std::marker::PhantomData;
+use std::os::unix::io::RawFd;
 
 pub trait Characteristic {
     fn read(&mut self) -> Result<([u8; 255], usize), Error>;
@@ -189,7 +189,12 @@ impl LocalCharBase {
                             Some(err_str.to_string()),
                         )
                     } else {
-                        match socket::socketpair(socket::AddressFamily::Unix, socket::SockType::SeqPacket, None, socket::SockFlag::SOCK_CLOEXEC) {
+                        match socket::socketpair(
+                            socket::AddressFamily::Unix,
+                            socket::SockType::SeqPacket,
+                            None,
+                            socket::SockFlag::SOCK_CLOEXEC,
+                        ) {
                             Ok((sock1, sock2)) => {
                                 let mut ret = 255;
                                 if let Some(dict) = call.params.get(0) {
@@ -216,7 +221,7 @@ impl LocalCharBase {
                                 }
                                 let mut res = call.make_response();
                                 res.add_param2(
-									Param::Base(Base::UnixFd(sock1 as u32)),
+                                    Param::Base(Base::UnixFd(sock1 as u32)),
                                     Param::Base(Base::Uint16(ret)),
                                 );
                                 self.notify = Some(Notify::Fd(sock2));
@@ -637,109 +642,141 @@ impl<'a, 'b> Properties<'a, 'b> for LocalCharBase {
 pub struct RemoteCharBase {
     uuid: UUID,
     chars: HashMap<UUID, RemoteDescBase>,
-	notify_fd: Option<RawFd>,
-	path: PathBuf
+    notify_fd: Option<RawFd>,
+    path: PathBuf,
 }
 impl Drop for RemoteCharBase {
-	fn drop(&mut self) {
-		if let Some(fd) = self.notify_fd {
-			close(fd);
-		}
-	}
+    fn drop(&mut self) {
+        if let Some(fd) = self.notify_fd {
+            close(fd);
+        }
+    }
 }
 pub struct RemoteChar<'a, 'b, 'c, 'd, 'e> {
     pub(super) uuid: UUID,
     pub(super) service: &'a mut RemoteService<'b, 'c, 'd, 'e>,
-#[cfg(feature = "unsafe-opt")]
-	ptr: *mut RemoteCharBase,
+    #[cfg(feature = "unsafe-opt")]
+    ptr: *mut RemoteCharBase,
 }
 
 impl<'a, 'b, 'c, 'd, 'e> RemoteChar<'a, 'b, 'c, 'd, 'e> {
     pub fn acquire_notify<'sel>(&'sel mut self) -> Result<RawFd, Error> {
-		let base = self.get_char_mut();
-		let mut msg = MessageBuilder::new().call("AcquireNotify".to_string()).on(base.path.to_str().unwrap().to_string()).at(BLUEZ_DEST.to_string()).with_interface(CHAR_IF_STR.to_string()).build();
-		let blue = self.get_blue_mut();
-		let res_idx = blue.rpc_con.send_message(&mut msg, None)?;
-		loop {
-			blue.process_requests()?;
-			if let Some(res) = blue.rpc_con.try_get_response(res_idx) {
-				return match res.typ {
-					MessageType::Reply => {
-						let fd = if let Some(Param::Base(Base::UnixFd(fd))) = res.params.get(0) {
-							*fd
-						} else {
-							return Err(Error::DbusReqErr("Response returned unexpected of parameter".to_string()))
-						};
-						let fd = fd as i32;
-						let base = self.get_char_mut();
-						base.notify_fd = Some(fd);
-						Ok(fd)
-					},
-					MessageType::Error => Err(Error::try_from(&res).unwrap()),
-					_ => unreachable!()
-				}
-			}
-		}
-	}
-	pub fn try_get_notify(&self) -> Result<Option<([u8; 255], usize)>, Error> {
-		let base = self.get_char();
-		let fd = match base.notify_fd {
-			Some(fd) => fd,
-			None => return Ok(None)
-		};
-		let mut ret = [0; 255];
-		let msg = socket::recvmsg(fd, &[IoVec::from_mut_slice(&mut ret)], None, socket::MsgFlags::MSG_DONTWAIT)?;
-		Ok(Some((ret, msg.bytes)))
-	}
-	pub fn wait_get_notify(&self, timeout: Option<Duration>) -> Result<Option<([u8; 255], usize)>, Error> {
-		let base = self.get_char();
-		let fd = match base.notify_fd {
-			Some(fd) => fd,
-			None => return Ok(None)
-		};
-		let timeout = match timeout {
-			Some(dur) => dur.as_micros(),
-			None => 0,
-		};
-		let mut ret = [0; 255];
-		let msg = if timeout == 0 {
-			socket::recvmsg(fd, &[IoVec::from_mut_slice(&mut ret)], None, socket::MsgFlags::MSG_DONTWAIT)?
-		} else {
-			let tv = TimeVal::microseconds(timeout.try_into().unwrap());
-			socket::setsockopt(fd, socket::sockopt::ReceiveTimeout, &tv)?;
-			socket::recvmsg(fd, &[IoVec::from_mut_slice(&mut ret)], None, socket::MsgFlags::empty())?
-		};
-		Ok(Some((ret, msg.bytes)))
-	}
-	pub fn get_notify_fd(&self) -> Option<RawFd> {
-		let base = self.get_char();
-		base.notify_fd
-	}
-	fn get_blue_mut(&mut self) -> &mut Bluetooth<'d, 'e> {
-		self.service.dev.blue
-	}
+        let base = self.get_char_mut();
+        let mut msg = MessageBuilder::new()
+            .call("AcquireNotify".to_string())
+            .on(base.path.to_str().unwrap().to_string())
+            .at(BLUEZ_DEST.to_string())
+            .with_interface(CHAR_IF_STR.to_string())
+            .build();
+        let blue = self.get_blue_mut();
+        let res_idx = blue.rpc_con.send_message(&mut msg, None)?;
+        loop {
+            blue.process_requests()?;
+            if let Some(res) = blue.rpc_con.try_get_response(res_idx) {
+                return match res.typ {
+                    MessageType::Reply => {
+                        let fd = if let Some(Param::Base(Base::UnixFd(fd))) = res.params.get(0) {
+                            *fd
+                        } else {
+                            return Err(Error::DbusReqErr(
+                                "Response returned unexpected of parameter".to_string(),
+                            ));
+                        };
+                        let fd = fd as i32;
+                        let base = self.get_char_mut();
+                        base.notify_fd = Some(fd);
+                        Ok(fd)
+                    }
+                    MessageType::Error => Err(Error::try_from(&res).unwrap()),
+                    _ => unreachable!(),
+                };
+            }
+        }
+    }
+    pub fn try_get_notify(&self) -> Result<Option<([u8; 255], usize)>, Error> {
+        let base = self.get_char();
+        let fd = match base.notify_fd {
+            Some(fd) => fd,
+            None => return Ok(None),
+        };
+        let mut ret = [0; 255];
+        let msg = socket::recvmsg(
+            fd,
+            &[IoVec::from_mut_slice(&mut ret)],
+            None,
+            socket::MsgFlags::MSG_DONTWAIT,
+        )?;
+        Ok(Some((ret, msg.bytes)))
+    }
+    pub fn wait_get_notify(
+        &self,
+        timeout: Option<Duration>,
+    ) -> Result<Option<([u8; 255], usize)>, Error> {
+        let base = self.get_char();
+        let fd = match base.notify_fd {
+            Some(fd) => fd,
+            None => return Ok(None),
+        };
+        let timeout = match timeout {
+            Some(dur) => dur.as_micros(),
+            None => 0,
+        };
+        let mut ret = [0; 255];
+        let msg = if timeout == 0 {
+            socket::recvmsg(
+                fd,
+                &[IoVec::from_mut_slice(&mut ret)],
+                None,
+                socket::MsgFlags::MSG_DONTWAIT,
+            )?
+        } else {
+            let tv = TimeVal::microseconds(timeout.try_into().unwrap());
+            socket::setsockopt(fd, socket::sockopt::ReceiveTimeout, &tv)?;
+            socket::recvmsg(
+                fd,
+                &[IoVec::from_mut_slice(&mut ret)],
+                None,
+                socket::MsgFlags::empty(),
+            )?
+        };
+        Ok(Some((ret, msg.bytes)))
+    }
+    pub fn get_notify_fd(&self) -> Option<RawFd> {
+        let base = self.get_char();
+        base.notify_fd
+    }
+    fn get_blue_mut(&mut self) -> &mut Bluetooth<'d, 'e> {
+        self.service.dev.blue
+    }
     fn get_char(&self) -> &RemoteCharBase {
         #[cfg(feature = "unsafe-opt")]
         unsafe {
             return &*self.ptr;
         }
-		let service = &self.service;
-		let dev = &service.dev;
-		let blue = &dev.blue;
-		&blue.devices[&dev.mac].services[&service.uuid].chars[&self.uuid]
+        let service = &self.service;
+        let dev = &service.dev;
+        let blue = &dev.blue;
+        &blue.devices[&dev.mac].services[&service.uuid].chars[&self.uuid]
     }
     fn get_char_mut(&mut self) -> &mut RemoteCharBase {
         #[cfg(feature = "unsafe-opt")]
         unsafe {
             return &mut *self.ptr;
         }
-		let service = &mut self.service;
-		let dev = &mut service.dev;
-		let blue = &mut dev.blue;
-		blue.devices.get_mut(&dev.mac).unwrap().services.get_mut(&service.uuid).unwrap().chars.get_mut(&self.uuid).unwrap()
+        let service = &mut self.service;
+        let dev = &mut service.dev;
+        let blue = &mut dev.blue;
+        blue.devices
+            .get_mut(&dev.mac)
+            .unwrap()
+            .services
+            .get_mut(&service.uuid)
+            .unwrap()
+            .chars
+            .get_mut(&self.uuid)
+            .unwrap()
     }
     /*pub fn start_notify(&self) -> ();*/
-
 }
 
 impl Characteristic for RemoteChar<'_, '_, '_, '_, '_> {
@@ -771,4 +808,3 @@ impl Characteristic for RemoteChar<'_, '_, '_, '_, '_> {
         unimplemented!()
     }
 }
-

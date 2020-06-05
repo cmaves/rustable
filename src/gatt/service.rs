@@ -88,8 +88,8 @@ impl LocalServiceBase {
 pub struct LocalService<'a, 'b, 'c> {
     pub(crate) uuid: UUID,
     pub(crate) bt: &'a mut Bluetooth<'b, 'c>,
-	#[cfg(feature = "unsafe-opt")]
-	ptr: *mut LocalServiceBase
+    #[cfg(feature = "unsafe-opt")]
+    ptr: *mut LocalServiceBase,
 }
 impl<'a, 'b: 'a, 'c: 'a, 'd: 'a> Service<'a> for LocalService<'b, 'c, 'd> {
     type CharType = LocalCharactersitic<'a, 'b, 'c, 'd>;
@@ -232,14 +232,21 @@ impl RemoteService<'_, '_, '_, '_> {
         unsafe {
             return &*self.ptr;
         }
-		&self.dev.blue.devices[&self.dev.mac].services[&self.uuid]
+        &self.dev.blue.devices[&self.dev.mac].services[&self.uuid]
     }
     fn get_service_mut(&mut self) -> &mut RemoteServiceBase {
         #[cfg(feature = "unsafe-opt")]
         unsafe {
             return &mut *self.ptr;
         }
-		self.dev.blue.devices.get_mut(&self.dev.mac).unwrap().services.get_mut(&self.uuid).unwrap()
+        self.dev
+            .blue
+            .devices
+            .get_mut(&self.dev.mac)
+            .unwrap()
+            .services
+            .get_mut(&self.uuid)
+            .unwrap()
     }
 }
 
