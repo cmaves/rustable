@@ -36,7 +36,7 @@ impl LocalServiceBase {
         self.chars.insert(character.uuid.clone(), character);
     }
 
-    pub fn service_call<'a, 'b>(&mut self, call: &Message<'a, 'b>) -> Message<'a, 'b> {
+    pub fn service_call<'a, 'b>(&mut self, call: &Message<'a, 'b>) -> OutMessage {
         unimplemented!()
     }
 
@@ -143,9 +143,9 @@ impl LocalService<'_, '_, '_> {
     }
 }
 
-impl<'a, 'b> Properties<'a, 'b> for LocalServiceBase {
+impl Properties for LocalServiceBase {
     const INTERFACES: &'static [(&'static str, &'static [&'static str])] = &[SERV_IF, PROP_IF];
-    fn get_inner(&mut self, interface: &str, prop: &str) -> Option<Param<'a, 'b>> {
+    fn get_inner<'a, 'b>(&mut self, interface: &str, prop: &str) -> Option<Param<'a, 'b>> {
         match interface {
             SERV_IF_STR => match prop {
                 UUID_PROP => Some(base_param_to_variant(self.uuid.to_string().into())),

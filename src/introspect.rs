@@ -1,5 +1,6 @@
 use crate::gatt::*;
 use crate::Bluetooth;
+use rustbus::message_builder::{OutMessage, OutMessageBody};
 use rustbus::{Base, Message, Param};
 use std::fmt::Write;
 use std::path::Path;
@@ -86,23 +87,24 @@ pub(crate) fn child_nodes(children: &[&str], dst: &mut String) {
     }
 }
 pub trait Introspectable {
-    fn introspectable<'a, 'b>(&self, call: &Message<'a, 'b>) -> Message<'a, 'b> {
+    fn introspectable<'a, 'b>(&self, call: &Message<'a, 'b>) -> OutMessage {
         let obj_path: &Path = call.object.as_ref().unwrap().as_ref();
         let mut reply = call.make_response();
-        reply.push_param(Param::Base(Base::String(self.introspectable_str())));
+        reply.body.push_param(self.introspectable_str());
         reply
     }
     fn introspectable_str(&self) -> String;
 }
 
 impl Introspectable for Bluetooth<'_, '_> {
-    fn introspectable<'a, 'b>(&self, call: &Message<'a, 'b>) -> Message<'a, 'b> {
+    fn introspectable<'a, 'b>(&self, call: &Message<'a, 'b>) -> OutMessage {
         let object: &Path = call.object.as_ref().unwrap().as_ref();
         let path = self.get_path();
         let stripped = path.strip_prefix(object).unwrap();
         let mut reply = call.make_response();
         eprintln!("{:?}", stripped);
         if let Some(child) = stripped.components().nth(0) {
+            // Handle if the introspection is for a parent of the Bluetooth dev
             eprintln!("{:?}", child);
             let mut xml = String::new();
             xml.push_str(&INTROSPECT_FMT_P1);
@@ -110,10 +112,11 @@ impl Introspectable for Bluetooth<'_, '_> {
             xml.push_str(&INTROSPECT_FMT_P2);
             child_nodes(&[child.as_os_str().to_str().unwrap()], &mut xml);
             xml.push_str(&INTROSPECT_FMT_P3);
-            reply.push_param(Param::Base(Base::String(xml)));
+            reply.body.push_param(xml);
             reply
         } else {
-            reply.push_param(Param::Base(Base::String(self.introspectable_str())));
+            // handle the normal case
+            reply.body.push_param(self.introspectable_str());
             reply
         }
     }

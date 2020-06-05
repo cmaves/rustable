@@ -1,9 +1,9 @@
 use gatt::*;
 use rustbus::client_conn;
-use rustbus::client_conn::{Conn, RpcConn};
+use rustbus::client_conn::{Conn, RpcConn, Timeout};
 use rustbus::get_session_bus_path;
 use rustbus::message::{Message, MessageType};
-use rustbus::message_builder::MessageBuilder;
+use rustbus::message_builder::{MessageBuilder, OutMessage, OutMessageBody};
 use rustbus::params;
 use rustbus::signature;
 use rustbus::standard_messages;
@@ -187,10 +187,12 @@ impl<'a, 'b> Bluetooth<'a, 'b> {
         let mut rpc_con = RpcConn::new(conn);
         let mut name = "io.rustable.".to_string();
         name.push_str(dbus_name);
-        rpc_con.send_message(&mut standard_messages::hello(), None)?;
-        let namereq =
-            rpc_con.send_message(&mut standard_messages::request_name(name.clone(), 0), None)?;
-        let res = rpc_con.wait_response(namereq, None)?;
+        rpc_con.send_message(&mut standard_messages::hello(), Timeout::Infinite)?;
+        let namereq = rpc_con.send_message(
+            &mut standard_messages::request_name(name.clone(), 0),
+            Timeout::Infinite,
+        )?;
+        let res = rpc_con.wait_response(namereq, Timeout::Infinite)?;
         if let Some(_) = &res.error_name {
             return Err(Error::DbusReqErr(format!(
                 "Error Dbus client name {:?}",
@@ -284,20 +286,30 @@ impl<'a, 'b> Bluetooth<'a, 'b> {
             map: empty_dict,
         };
         let mut call_builder = MessageBuilder::new().call(REGISTER_CALL.to_string());
-        call_builder.add_param2(
+        /*call_builder.add_param2(
             Param::Base(Base::ObjectPath(
                 path.as_os_str().to_str().unwrap().to_string(),
             )),
             Param::Container(Container::Dict(dict)),
-        );
+        );*/
         let mut msg = call_builder
             .with_interface(MANAGER_IF_STR.to_string())
             .on(self.blue_path.to_str().unwrap().to_string())
             .at(BLUEZ_DEST.to_string())
             .build();
 
+        let mut body = OutMessageBody::new();
+        body.push_old_params(&[
+            Param::Base(Base::ObjectPath(
+                path.as_os_str().to_str().unwrap().to_string(),
+            )),
+            Param::Container(Container::Dict(dict)),
+        ])
+        .unwrap();
+        msg.body = body;
+
         eprintln!("registration msg: {:#?}", msg);
-        let msg_idx = self.rpc_con.send_message(&mut msg, None)?;
+        let msg_idx = self.rpc_con.send_message(&mut msg, Timeout::Infinite)?;
         // we expect there to be no response
         loop {
             self.process_requests()?;
@@ -338,9 +350,10 @@ impl<'a, 'b> Bluetooth<'a, 'b> {
         Ok(())
     }
     pub fn process_requests(&mut self) -> Result<(), Error> {
+        let half_milli = Duration::from_micros(500);
         loop {
             let mut done = false;
-            match self.rpc_con.wait_call(Some(Duration::from_micros(500))) {
+            match self.rpc_con.wait_call(Timeout::Duration(half_milli)) {
                 Ok(call) => {
                     eprintln!("received call {:#?}", call);
                     let interface = (&call.interface).as_ref().unwrap();
@@ -386,7 +399,7 @@ impl<'a, 'b> Bluetooth<'a, 'b> {
                         None => standard_messages::unknown_method(&call),
                     };
                     eprintln!("replying: {:#?}", reply);
-                    self.rpc_con.send_message(&mut reply, None)?;
+                    self.rpc_con.send_message(&mut reply, Timeout::Infinite)?;
                 }
                 Err(e) => match e {
                     client_conn::Error::TimedOut => done = true,
@@ -539,7 +552,7 @@ impl<'a, 'b> Bluetooth<'a, 'b> {
             .at(BLUEZ_DEST.to_string())
             .with_interface(OBJ_MANAGER_IF_STR.to_string())
             .build();
-        let res_idx = self.rpc_con.send_message(&mut msg, None)?;
+        let res_idx = self.rpc_con.send_message(&mut msg, Timeout::Infinite)?;
         loop {
             self.process_requests()?;
             if let Some(mut res) = self.rpc_con.try_get_response(res_idx) {
@@ -720,8 +733,8 @@ pub fn unknown_method<'a, 'b>(call: &Message<'_,'_>) -> Message<'a,'b> {
 
 }
 */
-trait ObjectManager<'a, 'b> {
-    fn objectmanager_call(&mut self, msg: &Message<'a, 'b>) -> Message<'a, 'b> {
+trait ObjectManager {
+    fn objectmanager_call(&mut self, msg: &Message<'_, '_>) -> OutMessage {
         match msg.member.as_ref().unwrap().as_ref() {
             MANGAGED_OBJ_CALL => self.get_managed_object(msg),
             _ => standard_messages::unknown_method(&msg),
@@ -734,16 +747,16 @@ trait ObjectManager<'a, 'b> {
         ))
     }
 
-    fn get_managed_object(&mut self, msg: &Message<'a, 'b>) -> Message<'a, 'b>;
+    fn get_managed_object(&mut self, msg: &Message<'_, '_>) -> OutMessage;
 }
 
-impl<'a, 'b> ObjectManager<'a, 'b> for Bluetooth<'a, 'b> {
-    fn get_managed_object(&mut self, msg: &Message<'a, 'b>) -> Message<'a, 'b> {
+impl ObjectManager for Bluetooth<'_, '_> {
+    fn get_managed_object(&mut self, msg: &Message) -> OutMessage {
         let mut reply = msg.make_response();
         let mut outer_dict: HashMap<Base, Param> = HashMap::new();
         let path = self.get_path().to_path_buf();
         for service in self.services.values_mut() {
-            let service_path = path.join(format!("service{:02x}", service.index));
+            //let service_path = path.join(format!("service{:02x}", service.index));
             for characteristic in service.chars.values_mut() {
                 for desc in characteristic.descs.values_mut() {
                     let mut middle_map = HashMap::new();
@@ -806,11 +819,11 @@ impl<'a, 'b> ObjectManager<'a, 'b> for Bluetooth<'a, 'b> {
         )
             .try_into()
             .unwrap();
-        reply.push_param(outer_cont);
+        reply.body.push_old_param(&outer_cont.into());
         reply
     }
 }
-trait Properties<'a, 'b> {
+trait Properties {
     const GET_ALL_ITEM: signature::Type = signature::Type::Container(signature::Container::Variant);
     fn get_all_type() -> signature::Type {
         signature::Type::Container(signature::Container::Dict(
@@ -819,7 +832,7 @@ trait Properties<'a, 'b> {
         ))
     }
     const INTERFACES: &'static [(&'static str, &'static [&'static str])];
-    fn properties_call(&mut self, msg: &Message<'a, 'b>) -> Message<'a, 'b> {
+    fn properties_call(&mut self, msg: &Message) -> OutMessage {
         match msg.member.as_ref().unwrap().as_ref() {
             "Get" => self.get(msg),
             "Set" => self.set(msg),
@@ -827,7 +840,7 @@ trait Properties<'a, 'b> {
             _ => standard_messages::unknown_method(&msg),
         }
     }
-    fn get_all_inner(&mut self, interface: &str) -> Option<Param<'a, 'b>> {
+    fn get_all_inner<'a, 'b>(&mut self, interface: &str) -> Option<Param<'a, 'b>> {
         let props = Self::INTERFACES
             .iter()
             .find(|i| interface == i.0)
@@ -843,7 +856,7 @@ trait Properties<'a, 'b> {
             .unwrap();
         Some(prop_cont.into())
     }
-    fn get_all(&mut self, msg: &Message<'a, 'b>) -> Message<'a, 'b> {
+    fn get_all(&mut self, msg: &Message) -> OutMessage {
         let interface = if let Some(interface) = &msg.interface {
             interface
         } else {
@@ -851,7 +864,7 @@ trait Properties<'a, 'b> {
         };
         if let Some(param) = self.get_all_inner(&interface) {
             let mut res = msg.make_response();
-            res.push_param(param);
+            res.body.push_old_param(&param);
             res
         } else {
             let err_msg = format!(
@@ -863,7 +876,7 @@ trait Properties<'a, 'b> {
         }
     }
 
-    fn get(&mut self, msg: &Message<'a, 'b>) -> Message<'a, 'b> {
+    fn get(&mut self, msg: &Message) -> OutMessage {
         if msg.params.len() < 2 {
             let err_str = "Expected two string arguments".to_string();
             return msg.make_error_response("Invalid arguments".to_string(), Some(err_str));
@@ -882,7 +895,7 @@ trait Properties<'a, 'b> {
         };
         if let Some(param) = self.get_inner(interface, prop) {
             let mut reply = msg.make_response();
-            reply.push_param(param);
+            reply.body.push_old_param(&param);
             reply
         } else {
             let s = format!("Property {} on interface {} not found.", prop, interface);
@@ -890,9 +903,9 @@ trait Properties<'a, 'b> {
         }
     }
     /// Should returng a variant containing if the property is found. If it is not found then it returns None.
-    fn get_inner(&mut self, interface: &str, prop: &str) -> Option<Param<'a, 'b>>;
+    fn get_inner<'a, 'b>(&mut self, interface: &str, prop: &str) -> Option<Param<'a, 'b>>;
     fn set_inner(&mut self, interface: &str, prop: &str, val: &params::Variant) -> Option<String>;
-    fn set(&mut self, msg: &Message<'a, 'b>) -> Message<'a, 'b> {
+    fn set(&mut self, msg: &Message) -> OutMessage {
         if msg.params.len() < 3 {
             return msg.make_error_response(
                 "InvalidParameters".to_string(),
@@ -927,9 +940,9 @@ trait Properties<'a, 'b> {
     }
 }
 
-impl<'a, 'b> Properties<'a, 'b> for Bluetooth<'_, '_> {
+impl Properties for Bluetooth<'_, '_> {
     const INTERFACES: &'static [(&'static str, &'static [&'static str])] = &[];
-    fn get_inner(&mut self, interface: &str, prop: &str) -> Option<Param<'a, 'b>> {
+    fn get_inner<'a, 'b>(&mut self, interface: &str, prop: &str) -> Option<Param<'a, 'b>> {
         None
     }
     fn set_inner(&mut self, interface: &str, prop: &str, val: &params::Variant) -> Option<String> {

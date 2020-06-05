@@ -74,9 +74,9 @@ impl AdType {
     }
 }
 
-impl<'a, 'b> Properties<'a, 'b> for Advertisement {
+impl Properties for Advertisement {
     const INTERFACES: &'static [(&'static str, &'static [&'static str])] = &[LEAD_IF, PROP_IF];
-    fn get_inner(&mut self, interface: &str, prop: &str) -> Option<Param<'a, 'b>> {
+    fn get_inner<'a, 'b>(&mut self, interface: &str, prop: &str) -> Option<Param<'a, 'b>> {
         match interface {
             LEAD_IF_STR => match prop {
                 TYPE_PROP => unimplemented!(),

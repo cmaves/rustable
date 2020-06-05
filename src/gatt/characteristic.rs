@@ -51,7 +51,7 @@ impl LocalCharBase {
             desc.update_path(&self.path);
         }
     }
-    pub(crate) fn char_call<'a, 'b>(&mut self, call: &Message<'a, 'b>) -> Message<'a, 'b> {
+    pub(crate) fn char_call<'a, 'b>(&mut self, call: &Message<'a, 'b>) -> OutMessage {
         if let Some(member) = &call.member {
             match &member[..] {
                 "ReadValue" => {
@@ -100,7 +100,7 @@ impl LocalCharBase {
                             values: vec,
                         }));
                         let mut res = call.make_response();
-                        res.add_param(val);
+                        res.body.push_old_param(&val);
                         res
                     } else {
                         call.make_error_response(
@@ -152,10 +152,10 @@ impl LocalCharBase {
                                 }
                             }
                             let mut res = call.make_response();
-                            res.add_param2(
+                            res.body.push_old_params(&[
                                 Param::Base(Base::Uint32(sock1.as_raw_fd() as u32)),
                                 Param::Base(Base::Uint16(ret)),
-                            );
+                            ]);
                             return res;
                         }
                         Err(_) => {
@@ -220,10 +220,10 @@ impl LocalCharBase {
                                     }
                                 }
                                 let mut res = call.make_response();
-                                res.add_param2(
+                                res.body.push_old_params(&[
                                     Param::Base(Base::UnixFd(sock1 as u32)),
                                     Param::Base(Base::Uint16(ret)),
-                                );
+                                ]);
                                 self.notify = Some(Notify::Fd(sock2));
                                 res
                             }
@@ -316,7 +316,7 @@ impl LocalCharactersitic<'_, '_, '_, '_> {
         //let (v, l) = self.get_char_base_mut().vf.to_value();
         let (v, l) = base.vf.to_value();
         let value = &v[..];
-        let mut params = Vec::with_capacity(3);
+        let mut params = Vec::with_capacity(3); // TODO: eliminate this allocations
         params.push(Param::Base(Base::String(CHAR_IF_STR.to_string())));
         let changed_vec: Vec<Param> = value
             .into_iter()
@@ -351,10 +351,13 @@ impl LocalCharactersitic<'_, '_, '_, '_> {
                 PROP_CHANGED_SIG.to_string(),
                 base.path.to_str().unwrap().to_string(),
             )
-            .with_params(params)
             .build();
+        msg.body.push_old_params(&params).unwrap();
         // eprintln!("msg to be send: {:#?}", msg);
-        self.service.bt.rpc_con.send_message(&mut msg, None)?;
+        self.service
+            .bt
+            .rpc_con
+            .send_message(&mut msg, Timeout::Infinite)?;
         Ok(())
     }
     pub fn notify(&mut self) -> Result<(), Error> {
@@ -561,9 +564,9 @@ impl Introspectable for LocalCharBase {
     }
 }
 
-impl<'a, 'b> Properties<'a, 'b> for LocalCharBase {
+impl Properties for LocalCharBase {
     const INTERFACES: &'static [(&'static str, &'static [&'static str])] = &[CHAR_IF, PROP_IF];
-    fn get_inner(&mut self, interface: &str, prop: &str) -> Option<Param<'a, 'b>> {
+    fn get_inner<'a, 'b>(&mut self, interface: &str, prop: &str) -> Option<Param<'a, 'b>> {
         // eprintln!("org.freedesktop.DBus.Charactersitic interface:\n{}, prop {}", interface, prop);
         match interface {
             CHAR_IF_STR => match prop {
@@ -669,7 +672,7 @@ impl<'a, 'b, 'c, 'd, 'e> RemoteChar<'a, 'b, 'c, 'd, 'e> {
             .with_interface(CHAR_IF_STR.to_string())
             .build();
         let blue = self.get_blue_mut();
-        let res_idx = blue.rpc_con.send_message(&mut msg, None)?;
+        let res_idx = blue.rpc_con.send_message(&mut msg, Timeout::Infinite)?;
         loop {
             blue.process_requests()?;
             if let Some(res) = blue.rpc_con.try_get_response(res_idx) {

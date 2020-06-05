@@ -72,9 +72,9 @@ impl DescFlags {
     }
 }
 
-impl<'a, 'b> Properties<'a, 'b> for LocalDescriptor {
+impl Properties for LocalDescriptor {
     const INTERFACES: &'static [(&'static str, &'static [&'static str])] = &[DESC_IF, PROP_IF];
-    fn get_inner(&mut self, interface: &str, prop: &str) -> Option<Param<'a, 'b>> {
+    fn get_inner<'a, 'b>(&mut self, interface: &str, prop: &str) -> Option<Param<'a, 'b>> {
         match interface {
             DESC_IF_STR => match prop {
                 UUID_PROP => Some(base_param_to_variant(self.uuid.to_string().into())),
@@ -93,7 +93,7 @@ impl<'a, 'b> Properties<'a, 'b> for LocalDescriptor {
     fn set_inner(&mut self, interface: &str, prop: &str, val: &params::Variant) -> Option<String> {
         unimplemented!()
     }
-    fn get_all(&mut self, msg: &Message<'a, 'b>) -> Message<'a, 'b> {
+    fn get_all(&mut self, msg: &Message) -> OutMessage {
         unimplemented!()
     }
 }
