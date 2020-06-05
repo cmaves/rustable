@@ -9,8 +9,10 @@ use rustbus::signature;
 use rustbus::standard_messages;
 use rustbus::{get_system_bus_path, Base, Container, Param};
 use std::cell::{RefCell, RefMut};
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashSet, HashMap, VecDeque};
+use std::collections::hash_map::Keys;
 use std::convert::{TryFrom, TryInto};
+use std::ffi::OsString;
 use std::fmt::Write;
 use std::fmt::{Debug, Display, Formatter};
 use std::io::ErrorKind;
@@ -21,7 +23,13 @@ use std::path::{Component, Path, PathBuf};
 use std::rc::Rc;
 use std::time::Duration;
 
+
 pub mod interfaces;
+
+mod advertisement;
+pub use advertisement::*;
+mod device;
+pub use device::*;
 
 use interfaces::*;
 pub mod gatt;
@@ -33,24 +41,29 @@ use introspect::Introspectable;
 mod tests;
 
 pub type UUID = Rc<str>;
+pub type MAC = Rc<str>;
 
 pub trait ToUUID {
-    fn to_uuid(&self) -> UUID;
+    fn to_uuid(self) -> UUID;
 }
 impl ToUUID for &str {
-    fn to_uuid(&self) -> UUID {
+    fn to_uuid(self) -> UUID {
         assert!(validate_uuid(self));
-        let deref = *self;
-        deref.into()
+        self.into()
     }
 }
 impl ToUUID for UUID {
-    fn to_uuid(&self) -> UUID {
+    fn to_uuid(self) -> UUID {
+        self
+    }
+}
+impl ToUUID for &UUID {
+    fn to_uuid(self) -> UUID {
         self.clone()
     }
 }
 impl ToUUID for u128 {
-    fn to_uuid(&self) -> UUID {
+    fn to_uuid(self) -> UUID {
         format!(
             "{:08x}-{:04x}-{:04x}-{:04x}-{:012x}",
             self >> 24,
@@ -61,6 +74,40 @@ impl ToUUID for u128 {
         )
         .into()
     }
+}
+fn validate_mac(mac: &str) -> bool {
+	if mac.len() != 17 {
+		return false;
+	}
+	let mut char_iter = mac.chars();
+	for _ in 0..5 {
+		if char_iter.next().unwrap().is_lowercase() {
+			return false;
+		}
+		if char_iter.next().unwrap().is_lowercase() {
+			return false;
+		}
+		if char_iter.next().unwrap() != ':' {
+			return false;
+		}
+	}
+	for i in 0..6 {
+		let tar = i * 3;
+		if u8::from_str_radix(&mac[tar..tar+2], 16).is_err() {
+			return false;
+		}
+	}
+	true
+}
+pub trait ToMAC {
+	fn to_mac(&self) -> MAC;
+}
+impl ToMAC for &str {
+	fn to_mac(&self) -> MAC {
+		assert!(validate_mac(self));
+		let ret: MAC = self.to_string().into();
+		ret
+	}
 }
 
 enum DbusObject<'a> {
@@ -76,6 +123,13 @@ pub enum Error {
     DbusClient(client_conn::Error),
     DbusReqErr(String),
     Bluez(String),
+	BadInput(String),
+	Unix(nix::Error)
+}
+impl From<nix::Error> for Error {
+	fn from(err: nix::Error) -> Self {
+		Error::Unix(err)	
+	}
 }
 impl Display for Error {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
@@ -89,13 +143,29 @@ impl From<client_conn::Error> for Error {
     }
 }
 
-/*
-pub struct Device {
-    services: Service
-}*/
+impl TryFrom<&'_ Message<'_, '_>> for Error {
+	type Error =  &'static str;
+	fn try_from(msg: &Message) -> Result<Self, Self::Error> {
+		match msg.typ {
+			MessageType::Error => (),
+			_ => return Err("Message was not an error")
+		}
+		let err_name = match &msg.error_name {
+			Some(name) => name,
+			None => return Err("Message was missing error name")
+		};
+		let err_text = if let Some(Param::Base(Base::String(err_text))) = msg.params.get(0) {
+			Some(err_text)
+		} else {
+			None
+		};
+		Ok(Error::DbusReqErr(format!("Dbus request error: {}, text: {:?}", err_name, err_text)))
+	}
+}
+
 pub struct Bluetooth<'a, 'b> {
     rpc_con: RpcConn<'a, 'b>,
-    blue_path: String,
+    blue_path: Rc<Path>,
     name: String,
     path: PathBuf,
     pub verbose: u8,
@@ -104,6 +174,8 @@ pub struct Bluetooth<'a, 'b> {
     pub filter_dest: Option<String>,
     pub ads: VecDeque<Advertisement>,
     service_index: u8,
+	devices: HashMap<MAC, RemoteDeviceBase>,
+	comp_map: HashMap<OsString, MAC>
 }
 
 impl<'a, 'b> Bluetooth<'a, 'b> {
@@ -128,17 +200,20 @@ impl<'a, 'b> Bluetooth<'a, 'b> {
         path.push('/');
         path.push_str(&name.replace(".", "/"));
         let path = PathBuf::from(path);
+		let blue_path: &Path = blue_path.as_ref();
         let mut ret = Bluetooth {
             rpc_con,
             name,
             verbose: 0,
             services,
             registered: false,
-            blue_path,
+            blue_path: blue_path.into(),
             path,
             filter_dest: Some(BLUEZ_DEST.to_string()),
             ads: VecDeque::new(),
             service_index: 0,
+			devices: HashMap::new(),
+			comp_map: HashMap::new()
         };
         ret.rpc_con.set_filter(Box::new(move |msg| match msg.typ {
             MessageType::Call => true,
@@ -163,7 +238,7 @@ impl<'a, 'b> Bluetooth<'a, 'b> {
         self.services.insert(service.uuid.clone(), service);
         Ok(())
     }
-    pub fn local_service<T: ToUUID>(&mut self, uuid: &T) -> Option<LocalService<'_, 'a, 'b>> {
+    pub fn get_service<T: ToUUID>(&mut self, uuid: T) -> Option<LocalService<'_, 'a, 'b>> {
         let uuid = uuid.to_uuid();
         if self.services.contains_key(&uuid) {
             Some(LocalService {
@@ -174,6 +249,19 @@ impl<'a, 'b> Bluetooth<'a, 'b> {
             None
         }
     }
+	pub fn get_device<'c>(&'c mut self, mac: &MAC) -> Option<RemoteDevice<'c, 'a, 'b>> {
+		let base = self.devices.get_mut(mac)?;
+		Some(RemoteDevice {
+			blue: self,
+			mac: mac.clone(),
+			#[cfg(feature = "unsafe-opt")]
+			ptr: base
+
+		})
+	}
+	pub fn devices(&self) -> HashSet<MAC> {
+		self.devices.keys().map(|x| x.clone()).collect()
+	}
     pub fn start_advertise(&mut self, adv: Advertisement) -> Result<(), Error> {
         unimplemented!()
     }
@@ -203,7 +291,7 @@ impl<'a, 'b> Bluetooth<'a, 'b> {
         );
         let mut msg = call_builder
             .with_interface(MANAGER_IF_STR.to_string())
-            .on(self.blue_path.to_string())
+            .on(self.blue_path.to_str().unwrap().to_string())
             .at(BLUEZ_DEST.to_string())
             .build();
 
@@ -250,6 +338,7 @@ impl<'a, 'b> Bluetooth<'a, 'b> {
     }
     pub fn process_requests(&mut self) -> Result<(), Error> {
         loop {
+			let mut done = false;
             match self.rpc_con.wait_call(Some(Duration::from_micros(500))) {
                 Ok(call) => {
                     eprintln!("received call {:#?}", call);
@@ -299,12 +388,50 @@ impl<'a, 'b> Bluetooth<'a, 'b> {
                     self.rpc_con.send_message(&mut reply, None)?;
                 }
                 Err(e) => match e {
-                    client_conn::Error::TimedOut => return Ok(()),
+                    client_conn::Error::TimedOut => done = true,
                     _ => return Err(e.into()),
                 },
             }
+			if let Some(sig) = self.rpc_con.try_get_signal() {
+				match sig.interface.as_ref().unwrap().as_str() {
+					OBJ_MANAGER_IF_STR => match sig.member.as_ref().unwrap().as_str() {
+						IF_ADDED_SIG => self.interface_added(sig)?,
+						IF_REMOVED_SIG => unimplemented!(),
+						_ => (),
+					}
+					_ => (),
+
+				}
+			} else {
+				if done {
+					return Ok(());
+				}
+			}
         }
     }
+	fn interface_added(&mut self, sig: Message) -> Result<(), Error>{
+		let path: &Path  = if let Some(Param::Base(Base::ObjectPath(path))) = sig.params.get(0) {
+			path.as_ref()
+		} else {
+			return Ok(());
+		};
+
+		let path = if let Ok(path) = path.strip_prefix(&self.blue_path) { path } else { return Ok(()); };
+		let mut comps = path.components();
+		let device = comps.next();
+		let service = comps.next();
+		let character = comps.next();
+		let desc = comps.next();
+		let end = comps.next();
+		if let Some(Component::Normal(device)) = device {
+			if let Some(Component::Normal(service)) = service {
+				unimplemented!()				
+			} else {
+				unimplemented!()
+			}
+		}
+		Ok(())
+	}
     fn match_root(&mut self, msg: &Message) -> Option<DbusObject> {
         let path = self.get_path();
         if let None = &msg.interface {
@@ -387,6 +514,150 @@ impl<'a, 'b> Bluetooth<'a, 'b> {
             None
         }
     }
+	pub fn discover_devices(&mut self) -> Result<HashSet<MAC>, Error> {
+		self.discover_devices_filter(self.blue_path.clone())
+	}
+	fn get_managed_objects(&mut self, dest: String, path: String, filter_path: &Path) -> Result<Vec<(PathBuf, HashMap<String, HashMap<String, params::Variant<'a, 'b>>>)>, Error> {
+		let mut msg = MessageBuilder::new().call(MANGAGED_OBJ_CALL.to_string())
+			.on(path).at(BLUEZ_DEST.to_string()).with_interface(OBJ_MANAGER_IF_STR.to_string()).build();
+		let res_idx = self.rpc_con.send_message(&mut msg, None)?;
+		loop {
+			self.process_requests()?;
+			if let Some(mut res) = self.rpc_con.try_get_response(res_idx) {
+				if res.params.len() < 1 {
+					return Err(Error::Bluez("GetManagedObjects called didn't return any parameters".to_string()));
+				}
+				res.params.truncate(1);
+				if let Param::Container(Container::Dict(path_dict)) = res.params.remove(0) {
+					let path_map = path_dict.map;
+					let mut pairs: Vec<(PathBuf, HashMap<String, HashMap<String, params::Variant>>)> = path_map.into_iter().filter_map(|pair| {
+						if let Base::ObjectPath(path) = pair.0 {
+							let path: PathBuf = path.into();
+							if path.starts_with(filter_path) {
+								let if_map = if_dict_to_map(pair.1);
+								return Some((path, if_map));
+							}
+						}
+						None			
+					}).collect();
+					pairs.sort_by(|pair1, pair2| {
+						pair1.0.cmp(&pair2.0)
+					});
+					return Ok(pairs);
+				}
+			}
+		}
+	}
+	fn discover_devices_filter<T: AsRef<Path>>(&mut self, filter_path: T) -> Result<HashSet<MAC>, Error> {
+		let pairs = self.get_managed_objects(BLUEZ_DEST.to_string(), "/".to_string(), filter_path.as_ref())?;
+		let mut set = HashSet::new();
+		for (path, if_map) in pairs {
+			if let Some(props) = if_map.get(DEV_IF_STR) {
+				let mut dev_comps = path.strip_prefix(&self.blue_path).unwrap().components();
+				/*if let None = match dev_comps.next() {
+					Some(comp) => comp,
+					None => return Err(Error::Bluez("Bluez returned invalid device".to_string()))
+				};*/
+				if let None = dev_comps.next() {
+					return Err(Error::Bluez("Bluez returned invalid device".to_string()));
+				}	
+				let device = RemoteDeviceBase::from_props(props, path)?;
+				set.insert(device.mac.clone());
+				self.insert_device(device);
+			} else if let Some(props) = if_map.get(SERV_IF_STR) {
+				unimplemented!();
+			} else if let Some(props) = if_map.get(CHAR_IF_STR) {
+				unimplemented!()
+
+			}
+		}
+		Ok(set)
+	}
+	fn insert_device(&mut self, device: RemoteDeviceBase) {
+		let devmac = device.mac.clone();
+		let comp = device.path.file_name().unwrap().to_os_string();
+		self.devices.insert(devmac.clone(), device);
+		self.comp_map.insert(comp, devmac);
+	}
+	pub fn discover_device(&mut self, mac: &MAC) -> Result<(), Error> {
+		let devmac: PathBuf = match mac_to_devmac(mac) {
+			Some(devmac) => devmac,
+			None => return Err(Error::BadInput("Invalid mac was given".to_string()))
+		}.into();
+		self.discover_devices_filter(&self.blue_path.join(devmac)).map(|_| ())
+		/*
+		let mut msg = MessageBuilder::new().call(GET_ALL_CALL.to_string())
+			.on(self.blue_path.join(&devmac).to_str().unwrap().to_string())
+			.at(BLUEZ_DEST.to_string()).with_interface(PROP_IF_STR.to_string()).build();
+		msg.add_param(Param::Base(DEV_IF_STR.into()));
+		let res_idx = self.rpc_con.send_message(&mut msg, None)?;
+		loop {
+			self.process_requests()?;
+			if let Some(res) = self.rpc_con.try_get_response(res_idx) {
+				match res.typ {
+					MessageType::Reply => {
+						let device = if let Some(props) = res.params.get(0) {
+							RemoteDevice::from_props(props)?
+						} else {
+							let err_str = format!("Response returned for GetAll call to bluez is missing parameter: {:?}", res);
+							return Err(Error::Bluez(err_str));
+						};
+						self.insert_device(device, devmac.into());
+						return Ok(());
+					},
+					MessageType::Error => {
+						let err_str = format!("Error returned for GetAll call to bluez: {:?}", res);
+						return Err(Error::Bluez(err_str));
+					},
+					_ => unreachable!()
+				}
+			}
+		}
+		*/
+		
+	} 
+}
+fn mac_to_devmac(mac: &MAC) -> Option<String> {
+	if !validate_mac(mac) {
+		return None;
+	}
+	let mut ret = String::with_capacity(21);
+	ret.push_str("dev");
+	for i in 0..6 {
+		let tar = i * 3;
+		ret.push('_');
+		ret.push_str(&mac[tar..tar+2]);
+	}
+	Some(ret)
+}
+fn validate_devmac(devmac: &str) -> bool {
+	if devmac.len() != 21 {
+		return false;
+	}
+	if !devmac.starts_with("dev") {
+		return false;
+	}
+	let devmac = &devmac[3..];
+	let mut chars = devmac.chars();
+	for i in 0..6 {
+		if chars.next().unwrap() != '_' {
+			return false;
+		}
+		if chars.next().unwrap().is_lowercase() || chars.next().unwrap().is_lowercase() {
+			return false;
+		}
+	}
+	true
+}
+fn devmac_to_mac(devmac: &str) -> Option<MAC> {
+	let mut ret = String::with_capacity(18);
+	for i in 0..5 {
+		let tar = i * 3;
+		ret.push_str(&devmac[tar..tar+2]);
+		ret.push(':');
+	}
+	ret.push_str(&devmac[15.. 17]);
+	Some(ret.into())
 }
 /*
 pub fn unknown_method<'a, 'b>(call: &Message<'_,'_>) -> Message<'a,'b> {
@@ -520,7 +791,7 @@ trait Properties<'a, 'b> {
         match msg.member.as_ref().unwrap().as_ref() {
             "Get" => self.get(msg),
             "Set" => self.set(msg),
-            "GetAll" => self.get_all(msg),
+            GET_ALL_CALL => self.get_all(msg),
             _ => standard_messages::unknown_method(&msg),
         }
     }
@@ -688,58 +959,7 @@ pub fn validate_uuid(uuid: &str) -> bool {
         false
     }
 }
-pub struct Advertisement {
-    pub typ: AdType,
-    pub service_uuids: Vec<String>,
-    // pub manu_data: HashMap<String, ()>
-    pub solicit_uuids: Vec<String>,
-    pub appearance: u16,
-    pub timeout: u16,
-    pub duration: u16,
-    pub localname: String,
-    pub index: u16,
-}
-pub enum AdType {
-    Peripheral,
-    Broadcast,
-}
-impl AdType {
-    pub fn to_str(&self) -> &'static str {
-        match self {
-            AdType::Peripheral => "peripheral",
-            AdType::Broadcast => "broadcast",
-        }
-    }
-}
 
-impl<'a, 'b> Properties<'a, 'b> for Advertisement {
-    const INTERFACES: &'static [(&'static str, &'static [&'static str])] = &[LEAD_IF, PROP_IF];
-    fn get_inner(&mut self, interface: &str, prop: &str) -> Option<Param<'a, 'b>> {
-        match interface {
-            LEAD_IF_STR => match prop {
-                TYPE_PROP => unimplemented!(),
-                SERV_UUIDS_PROP => unimplemented!(),
-                MANU_DATA_PROP => unimplemented!(),
-                SOLICIT_UUIDS_PROP => unimplemented!(),
-                SERV_DATA_PROP => unimplemented!(),
-                DATA_PROP => unimplemented!(),
-                DISCOVERABLE_PROP => unimplemented!(),
-                DISCOVERABLE_TO_PROP => unimplemented!(),
-                INCLUDES_PROP => unimplemented!(),
-                LOCAL_NAME_PROP => unimplemented!(),
-                APPEARANCE_PROP => unimplemented!(),
-                DURATION_PROP => unimplemented!(),
-                TO_PROP => unimplemented!(),
-                SND_CHANNEL_PROP => unimplemented!(),
-                _ => None,
-            },
-            _ => None,
-        }
-    }
-    fn set_inner(&mut self, interface: &str, prop: &str, val: &params::Variant) -> Option<String> {
-        unimplemented!()
-    }
-}
 
 pub enum ValOrFn {
     Value([u8; 255], usize),
@@ -764,4 +984,8 @@ impl ValOrFn {
             ValOrFn::Function(f) => f(),
         }
     }
+}
+
+fn pair_to_key<'a, 'b,'c>(pair: &'a (PathBuf, HashMap<String, HashMap<String, params::Variant<'b, 'c>>>)) -> &'a Path {
+	&pair.0
 }

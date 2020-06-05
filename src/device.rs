@@ -9,33 +9,39 @@ use std::path::{PathBuf};
 use std::rc::Rc;
 use std::ffi::OsString;
 
+pub enum AddrType {
+	Public,
+	Random
+}
 pub trait Device<'a>: Sized {
+	type ServiceBase;
 	type ServiceType: Service<'a>;
-	fn services(&'a mut self) -> ServIter<'a, Self>;
-	fn get_service(&mut self) -> Option<Self::ServiceType>;
-}
-pub struct ServIter<'a, T: Device<'a>> {
-	devptr: *mut T,
-	itermut: hash_map::IterMut<'a, UUID, RemoteServiceBase>
-}
-impl<'a, T: Device<'a>> Iterator for ServIter<'a, T> {
-	type Item = <T as Device<'a>>::ServiceType;	
-	fn next(&mut self) -> Option<Self::Item> {
-		let (uuid, base) = self.itermut.next()?;
-		Some(uuid.clone(), serv)
-	}
+	fn services(&mut self) -> hash_map::Keys<UUID, Self::ServiceBase>;
+	fn get_service(&'a mut self, uuid: &UUID) -> Option<Self::ServiceType>;
+	fn has_service(&self, uuid: &UUID) -> bool;
+	fn address(&self) -> &MAC;
+	fn address_type(&mut self) -> AddrType;
+	fn name(&mut self) -> String;
 }
 pub struct RemoteDeviceBase {
 	pub(crate) mac: MAC,
-	path: PathBuf,
+	pub(crate) path: PathBuf,
     pub(crate) services: HashMap<MAC, RemoteServiceBase>,
+	connected: State,
+	paired: State,
 	comp_map: HashMap<OsString, MAC>
 }
 impl RemoteDeviceBase {
-	fn from_props(value: &HashMap<String, params::Variant>, path: PathBuf) -> Result<Self, Error> {
+	pub(crate) fn from_props(value: &HashMap<String, params::Variant>, path: PathBuf) -> Result<Self, Error> {
 		unimplemented!()
 	}
 }
+enum State {
+	WaitRes(u32),
+	Yes,
+	No
+}
+	
 
 pub struct RemoteDevice<'a, 'b, 'c> {
 	pub(crate) mac: MAC,
@@ -56,28 +62,90 @@ impl RemoteDevice<'_, '_, '_> {
 		}
 		self.blue.devices.get_mut(&self.mac).unwrap()
 	}
-}
-impl<'a, 'c: 'a, 'd: 'a, 'e: 'a> Device<'a> for RemoteDevice<'c, 'd, 'e> {
-	type ServiceType = RemoteService<'a, 'c, 'd, 'e>;
-	fn services(&'a mut self) -> ServIter<'a, Self> {
-		let devptr: *mut Self = self;
-		let base = self.get_base_mut();
-		let itermut = base.services.iter_mut();
-		ServIter {
-			itermut,
-			devptr
+#[inline]
+	pub fn connected(&self) -> bool {
+		if let State::Yes = self.get_base().connected {
+			true
+		} else {
+			false
 		}
 	}
-	fn get_service(&mut self) -> Option<Self::ServiceType> {
+	pub fn connect(&mut self) -> Result<(), Error> {
 		unimplemented!()
+
+	}
+#[inline]
+	pub fn paired(&self) -> bool {
+		if let State::Yes = self.get_base().paired {
+			true
+		} else {
+			false
+		}
+	}
+	pub fn pair(&mut self) -> Result<(), Error> {
+		unimplemented!()
+
+	}
+}
+impl<'a, 'c: 'a, 'd: 'a, 'e: 'a> Device<'a> for RemoteDevice<'c, 'd, 'e> {
+	type ServiceBase = RemoteServiceBase;
+	type ServiceType = RemoteService<'a, 'c, 'd, 'e>;
+	fn services(&mut self) -> hash_map::Keys<UUID, Self::ServiceBase> {
+		let base = self.get_base_mut();
+		base.services.keys()
+	}
+	fn get_service(&'a mut self, uuid: &UUID) -> Option<Self::ServiceType> {
+		let base = self.get_base_mut();
+		let serv_base = base.services.get_mut(uuid)?;
+		Some( RemoteService {
+			dev: self,
+			uuid: uuid.clone(),
+			#[cfg(feature = "unsafe-opt")]
+			base: serv_base
+		})
+	}
+	fn has_service(&self, uuid: &UUID) -> bool {
+		self.get_base().services.contains_key(uuid)
+	}
+	fn address(&self) -> &MAC {
+		&self.mac
+	}
+	fn address_type(&mut self) -> AddrType {
+		unimplemented!()	
+	}
+	fn name(&mut self) -> String {
+		unimplemented!()
+	}
+}
+
+impl<'a, 'b: 'a, 'c: 'a> Device<'a>  for Bluetooth<'b, 'c> {
+	type ServiceBase = LocalServiceBase;
+	type ServiceType = LocalService<'a, 'b, 'c>;
+	fn services(&mut self) -> hash_map::Keys<UUID, Self::ServiceBase> {
+		self.services.keys()
 		
 	}
-	
+	fn get_service(&'a mut self, uuid: &UUID) -> Option<Self::ServiceType> {
+		let base = self.services.get_mut(uuid)?;
+		Some(LocalService {
+			bt: self,
+			uuid: uuid.clone(),
+			#[cfg(feature = "unsafe-opt")]
+			ptr: base
+		})
+	}
+	fn has_service(&self, uuid: &UUID) -> bool {
+		self.devices.contains_key(uuid)
+	}
+	fn address(&self) -> &MAC {
+		unimplemented!()
+	}
+	fn address_type(&mut self) -> AddrType {
+		unimplemented!()
+	}
+	fn name(&mut self) -> String {
+		unimplemented!()
+	}
 }
-/*
-impl<'a, 'b> Device<'a, 'b> for Bluetooth {
-
-}
-*/
 
 

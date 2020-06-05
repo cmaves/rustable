@@ -8,3 +8,4 @@ edition = "2018"
 
 [dependencies]
 rustbus = {path="/home/cmaves/rustbus", version = "0.3.2"}
+nix = "0.17.0"

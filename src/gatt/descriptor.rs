@@ -103,3 +103,5 @@ impl Introspectable for LocalDescriptor {
         unimplemented!()
     }
 }
+
+pub struct RemoteDescBase {}

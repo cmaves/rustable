@@ -3,26 +3,31 @@ use crate::introspect::*;
 use crate::*;
 use rustbus::message::Message;
 use rustbus::{Base, Container, Param};
-use std::os::unix::net::UnixDatagram;
+use std::os::unix::io::RawFd;
+use std::marker::PhantomData;
+use std::convert::TryFrom;
+use nix::unistd::close;
+use nix::sys::socket;
+use nix::sys::uio::IoVec;
+use nix::poll;
+use nix::sys::time::{TimeValLike, TimeVal};
 
-pub trait Charactersitic {
+pub trait Characteristic {
     fn read(&mut self) -> Result<([u8; 255], usize), Error>;
     fn read_value(&mut self) -> Result<([u8; 255], usize), Error>;
     fn write(&mut self, val: &[u8]) -> Result<(), Error>;
     fn uuid(&self) -> &str;
-    fn service(&self) -> &Path;
+    //    fn service(&self) -> &Path;
     fn write_acquired(&self) -> bool;
     fn notify_acquired(&self) -> bool;
     fn notifying(&self) -> bool;
     fn flags(&self) -> CharFlags;
-    /*pub fn start_notify(&self) -> ();
-    pub fn acquire_notify(&self) -> (); */
 }
 
 #[derive(Debug)]
 enum Notify {
     Signal,
-    Fd(UnixDatagram),
+    Fd(RawFd),
 }
 
 pub struct LocalCharBase {
@@ -32,7 +37,7 @@ pub struct LocalCharBase {
     pub(super) uuid: UUID,
     pub(crate) path: PathBuf,
     notify: Option<Notify>,
-    write: Option<UnixDatagram>,
+    write: Option<RawFd>,
     pub(crate) descs: HashMap<String, LocalDescriptor>,
     flags: CharFlags,
 }
@@ -184,7 +189,7 @@ impl LocalCharBase {
                             Some(err_str.to_string()),
                         )
                     } else {
-                        match UnixDatagram::pair() {
+                        match socket::socketpair(socket::AddressFamily::Unix, socket::SockType::SeqPacket, None, socket::SockFlag::SOCK_CLOEXEC) {
                             Ok((sock1, sock2)) => {
                                 let mut ret = 255;
                                 if let Some(dict) = call.params.get(0) {
@@ -211,7 +216,7 @@ impl LocalCharBase {
                                 }
                                 let mut res = call.make_response();
                                 res.add_param2(
-                                    Param::Base(Base::Uint32(sock1.as_raw_fd() as u32)),
+									Param::Base(Base::UnixFd(sock1 as u32)),
                                     Param::Base(Base::Uint16(ret)),
                                 );
                                 self.notify = Some(Notify::Fd(sock2));
@@ -274,8 +279,8 @@ impl LocalCharBase {
     pub(super) fn match_descs(&mut self, msg_path: &Path, msg: &Message) -> Option<DbusObject> {
         unimplemented!()
     }
-    pub fn new(uuid: String, flags: CharFlags) -> Self {
-        let uuid: Rc<str> = uuid.into();
+    pub fn new<T: ToUUID>(uuid: T, flags: CharFlags) -> Self {
+        let uuid: UUID = uuid.to_uuid();
         LocalCharBase {
             vf: ValOrFn::Value([0; 255], 0),
             index: 0,
@@ -354,7 +359,7 @@ impl LocalCharactersitic<'_, '_, '_, '_> {
             match notify {
                 Notify::Signal => self.signal_change()?,
                 Notify::Fd(sock) => {
-                    if let Err(_) = sock.send(&buf[..len]) {
+                    if let Err(_) = socket::send(*sock, &buf[..len], socket::MsgFlags::MSG_EOR) {
                         base.notify = None;
                     }
                 }
@@ -453,9 +458,35 @@ impl CharFlags {
         }
         ret
     }
+    fn from_strings(flags: &[String]) -> CharFlags {
+        let mut ret = CharFlags::default();
+        for flag in flags {
+            match flag.as_str() {
+                "broadcast" => ret.broadcast = true,
+                "read" => ret.read = true,
+                "write" => ret.write = true,
+                "write-without-response" => ret.write_wo_response = true,
+                "notify" => ret.notify = true,
+                "indicate" => ret.indicate = true,
+                "authenticated-signed-writes" => ret.auth_signed_writes = true,
+                "extended-properties" => ret.extended_properties = true,
+                "reliable-write" => ret.reliable_write = true,
+                "writable-auxiliaries" => ret.writable_auxiliaries = true,
+                "encrypt-read" => ret.encrypt_read = true,
+                "encrypt-write" => ret.encrypt_write = true,
+                "encrypt-authenticated-read" => ret.encrypt_auth_read = true,
+                "encrypt-authenticated-write" => ret.encrypt_auth_write = true,
+                "secure-write" => ret.secure_write = true,
+                "secure-read" => ret.secure_read = true,
+                "authorize" => ret.authorize = true,
+                _ => unimplemented!(),
+            }
+        }
+        ret
+    }
 }
 
-impl Charactersitic for LocalCharactersitic<'_, '_, '_, '_> {
+impl Characteristic for LocalCharactersitic<'_, '_, '_, '_> {
     fn read(&mut self) -> Result<([u8; 255], usize), Error> {
         let base = self.get_char_base_mut();
         match &mut base.vf {
@@ -473,10 +504,10 @@ impl Charactersitic for LocalCharactersitic<'_, '_, '_, '_> {
         self.write_val_or_fn(&mut val);
         Ok(())
     }
-    fn service(&self) -> &Path {
+    /*fn service(&self) -> &Path {
         let base = self.get_char_base();
         base.path.parent().unwrap()
-    }
+    }*/
     fn write_acquired(&self) -> bool {
         let base = self.get_char_base();
         if let Some(_) = base.write {
@@ -603,3 +634,141 @@ impl<'a, 'b> Properties<'a, 'b> for LocalCharBase {
         }
     }
 }
+pub struct RemoteCharBase {
+    uuid: UUID,
+    chars: HashMap<UUID, RemoteDescBase>,
+	notify_fd: Option<RawFd>,
+	path: PathBuf
+}
+impl Drop for RemoteCharBase {
+	fn drop(&mut self) {
+		if let Some(fd) = self.notify_fd {
+			close(fd);
+		}
+	}
+}
+pub struct RemoteChar<'a, 'b, 'c, 'd, 'e> {
+    pub(super) uuid: UUID,
+    pub(super) service: &'a mut RemoteService<'b, 'c, 'd, 'e>,
+#[cfg(feature = "unsafe-opt")]
+	ptr: *mut RemoteCharBase,
+}
+
+impl<'a, 'b, 'c, 'd, 'e> RemoteChar<'a, 'b, 'c, 'd, 'e> {
+    pub fn acquire_notify<'sel>(&'sel mut self) -> Result<RawFd, Error> {
+		let base = self.get_char_mut();
+		let mut msg = MessageBuilder::new().call("AcquireNotify".to_string()).on(base.path.to_str().unwrap().to_string()).at(BLUEZ_DEST.to_string()).with_interface(CHAR_IF_STR.to_string()).build();
+		let blue = self.get_blue_mut();
+		let res_idx = blue.rpc_con.send_message(&mut msg, None)?;
+		loop {
+			blue.process_requests()?;
+			if let Some(res) = blue.rpc_con.try_get_response(res_idx) {
+				return match res.typ {
+					MessageType::Reply => {
+						let fd = if let Some(Param::Base(Base::UnixFd(fd))) = res.params.get(0) {
+							*fd
+						} else {
+							return Err(Error::DbusReqErr("Response returned unexpected of parameter".to_string()))
+						};
+						let fd = fd as i32;
+						let base = self.get_char_mut();
+						base.notify_fd = Some(fd);
+						Ok(fd)
+					},
+					MessageType::Error => Err(Error::try_from(&res).unwrap()),
+					_ => unreachable!()
+				}
+			}
+		}
+	}
+	pub fn try_get_notify(&self) -> Result<Option<([u8; 255], usize)>, Error> {
+		let base = self.get_char();
+		let fd = match base.notify_fd {
+			Some(fd) => fd,
+			None => return Ok(None)
+		};
+		let mut ret = [0; 255];
+		let msg = socket::recvmsg(fd, &[IoVec::from_mut_slice(&mut ret)], None, socket::MsgFlags::MSG_DONTWAIT)?;
+		Ok(Some((ret, msg.bytes)))
+	}
+	pub fn wait_get_notify(&self, timeout: Option<Duration>) -> Result<Option<([u8; 255], usize)>, Error> {
+		let base = self.get_char();
+		let fd = match base.notify_fd {
+			Some(fd) => fd,
+			None => return Ok(None)
+		};
+		let timeout = match timeout {
+			Some(dur) => dur.as_micros(),
+			None => 0,
+		};
+		let mut ret = [0; 255];
+		let msg = if timeout == 0 {
+			socket::recvmsg(fd, &[IoVec::from_mut_slice(&mut ret)], None, socket::MsgFlags::MSG_DONTWAIT)?
+		} else {
+			let tv = TimeVal::microseconds(timeout.try_into().unwrap());
+			socket::setsockopt(fd, socket::sockopt::ReceiveTimeout, &tv)?;
+			socket::recvmsg(fd, &[IoVec::from_mut_slice(&mut ret)], None, socket::MsgFlags::empty())?
+		};
+		Ok(Some((ret, msg.bytes)))
+	}
+	pub fn get_notify_fd(&self) -> Option<RawFd> {
+		let base = self.get_char();
+		base.notify_fd
+	}
+	fn get_blue_mut(&mut self) -> &mut Bluetooth<'d, 'e> {
+		self.service.dev.blue
+	}
+    fn get_char(&self) -> &RemoteCharBase {
+        #[cfg(feature = "unsafe-opt")]
+        unsafe {
+            return &*self.ptr;
+        }
+		let service = &self.service;
+		let dev = &service.dev;
+		let blue = &dev.blue;
+		&blue.devices[&dev.mac].services[&service.uuid].chars[&self.uuid]
+    }
+    fn get_char_mut(&mut self) -> &mut RemoteCharBase {
+        #[cfg(feature = "unsafe-opt")]
+        unsafe {
+            return &mut *self.ptr;
+        }
+		let service = &mut self.service;
+		let dev = &mut service.dev;
+		let blue = &mut dev.blue;
+		blue.devices.get_mut(&dev.mac).unwrap().services.get_mut(&service.uuid).unwrap().chars.get_mut(&self.uuid).unwrap()
+    }
+    /*pub fn start_notify(&self) -> ();*/
+
+}
+
+impl Characteristic for RemoteChar<'_, '_, '_, '_, '_> {
+    fn read(&mut self) -> Result<([u8; 255], usize), Error> {
+        unimplemented!()
+    }
+    fn read_value(&mut self) -> Result<([u8; 255], usize), Error> {
+        unimplemented!()
+    }
+    fn write(&mut self, val: &[u8]) -> Result<(), Error> {
+        unimplemented!()
+    }
+    fn uuid(&self) -> &str {
+        &self.uuid
+    }
+    /*fn service(&self) -> &Path {
+        unimplemented!()
+    }*/
+    fn write_acquired(&self) -> bool {
+        unimplemented!()
+    }
+    fn notify_acquired(&self) -> bool {
+        unimplemented!()
+    }
+    fn notifying(&self) -> bool {
+        unimplemented!()
+    }
+    fn flags(&self) -> CharFlags {
+        unimplemented!()
+    }
+}
+

@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use std::path::{Component, Path, PathBuf};
 
 pub trait Service<'a> {
-    type CharType: Charactersitic;
+    type CharType: Characteristic;
     type Value;
     fn uuid(&self) -> &UUID;
     fn primary(&self) -> bool;
@@ -15,7 +15,7 @@ pub trait Service<'a> {
     fn includes(&self) -> &[&Path];
     fn handle(&self) -> u16;
     fn char_uuids(&self) -> Keys<UUID, Self::Value>;
-    fn get_char<V: ToUUID>(&'a mut self, uuid: &V) -> Option<Self::CharType>;
+    fn get_char<T: ToUUID>(&'a mut self, uuid: T) -> Option<Self::CharType>;
 }
 
 pub struct LocalServiceBase {
@@ -72,7 +72,7 @@ impl LocalServiceBase {
             None
         }
     }
-    pub fn new<T: ToUUID>(uuid: &T, primary: bool) -> Self {
+    pub fn new<T: ToUUID>(uuid: T, primary: bool) -> Self {
         let uuid = uuid.to_uuid();
         LocalServiceBase {
             index: 0,
@@ -88,6 +88,8 @@ impl LocalServiceBase {
 pub struct LocalService<'a, 'b, 'c> {
     pub(crate) uuid: UUID,
     pub(crate) bt: &'a mut Bluetooth<'b, 'c>,
+	#[cfg(feature = "unsafe-opt")]
+	ptr: *mut LocalServiceBase
 }
 impl<'a, 'b: 'a, 'c: 'a, 'd: 'a> Service<'a> for LocalService<'b, 'c, 'd> {
     type CharType = LocalCharactersitic<'a, 'b, 'c, 'd>;
@@ -103,7 +105,7 @@ impl<'a, 'b: 'a, 'c: 'a, 'd: 'a> Service<'a> for LocalService<'b, 'c, 'd> {
         let service = self.get_service();
         service.primary
     }
-    fn get_char<V: ToUUID>(&'a mut self, uuid: &V) -> Option<Self::CharType> {
+    fn get_char<T: ToUUID>(&'a mut self, uuid: T) -> Option<Self::CharType> {
         let service = self.get_service_mut();
         let uuid = uuid.to_uuid();
         if service.chars.contains_key(&uuid) {
@@ -197,5 +199,82 @@ impl Introspectable for LocalServiceBase {
         child_nodes(&children, &mut ret);
         ret.push_str(INTROSPECT_FMT_P3);
         ret
+    }
+}
+
+pub struct RemoteServiceBase {
+    uuid: UUID,
+    primary: bool,
+    path: PathBuf,
+    pub(super) chars: HashMap<UUID, RemoteCharBase>,
+}
+impl RemoteServiceBase {
+    fn init(blue: Bluetooth, path: &Path) -> Self {
+        unimplemented!()
+    }
+}
+impl TryFrom<&Message<'_, '_>> for RemoteServiceBase {
+    type Error = Error;
+    fn try_from(value: &Message) -> Result<Self, Self::Error> {
+        unimplemented!()
+    }
+}
+
+pub struct RemoteService<'a, 'b, 'c, 'd> {
+    pub(crate) uuid: UUID,
+    pub(crate) dev: &'a mut RemoteDevice<'b, 'c, 'd>,
+    #[cfg(feature = "unsafe-opt")]
+    pub(crate) ptr: *mut RemoteServiceBase,
+}
+impl RemoteService<'_, '_, '_, '_> {
+    fn get_service(&self) -> &RemoteServiceBase {
+        #[cfg(feature = "unsafe-opt")]
+        unsafe {
+            return &*self.ptr;
+        }
+		&self.dev.blue.devices[&self.dev.mac].services[&self.uuid]
+    }
+    fn get_service_mut(&mut self) -> &mut RemoteServiceBase {
+        #[cfg(feature = "unsafe-opt")]
+        unsafe {
+            return &mut *self.ptr;
+        }
+		self.dev.blue.devices.get_mut(&self.dev.mac).unwrap().services.get_mut(&self.uuid).unwrap()
+    }
+}
+
+impl<'a, 'b: 'a, 'c: 'a, 'd: 'a, 'e: 'a> Service<'a> for RemoteService<'b, 'c, 'd, 'e> {
+    type CharType = RemoteChar<'a, 'b, 'c, 'd, 'e>;
+    type Value = RemoteCharBase;
+    fn uuid(&self) -> &UUID {
+        &self.get_service().uuid
+    }
+    fn primary(&self) -> bool {
+        self.get_service().primary
+    }
+    fn device(&self) -> &Path {
+        self.get_service().path.parent().unwrap()
+    }
+    fn includes(&self) -> &[&Path] {
+        unimplemented!()
+    }
+    fn handle(&self) -> u16 {
+        unimplemented!()
+    }
+    fn char_uuids(&self) -> Keys<UUID, Self::Value> {
+        self.get_service().chars.keys()
+    }
+    fn get_char<T: ToUUID>(&'a mut self, uuid: T) -> Option<Self::CharType> {
+        let uuid = uuid.to_uuid();
+        if let Some(character) = self.get_service_mut().chars.get_mut(&uuid) {
+            Some(RemoteChar {
+                service: self,
+                uuid,
+                #[cfg(feature = "unsafe-opt")]
+                ptr: character,
+            })
+        } else {
+            None
+        }
     }
 }
