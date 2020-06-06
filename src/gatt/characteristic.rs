@@ -1,7 +1,6 @@
 use crate::interfaces::*;
 use crate::introspect::*;
 use crate::*;
-use nix::poll;
 use nix::sys::socket;
 use nix::sys::time::{TimeVal, TimeValLike};
 use nix::sys::uio::IoVec;
@@ -9,7 +8,6 @@ use nix::unistd::close;
 use rustbus::message::Message;
 use rustbus::{Base, Container, Param};
 use std::convert::TryFrom;
-use std::marker::PhantomData;
 use std::os::unix::io::RawFd;
 
 pub trait Characteristic {
@@ -29,7 +27,7 @@ enum Notify {
     Signal,
     Fd(RawFd),
 }
-
+#[derive(Debug)]
 pub struct LocalCharBase {
     vf: ValOrFn,
     pub(crate) index: u16,
@@ -45,7 +43,7 @@ impl LocalCharBase {
     pub(super) fn update_path(&mut self, base: &Path) {
         self.path = base.to_owned();
         let mut name = String::with_capacity(8);
-        write!(&mut name, "char{:04x}", self.index);
+        write!(&mut name, "char{:04x}", self.index).unwrap();
         self.path.push(name);
         for desc in self.descs.values_mut() {
             desc.update_path(&self.path);
@@ -100,7 +98,7 @@ impl LocalCharBase {
                             values: vec,
                         }));
                         let mut res = call.make_response();
-                        res.body.push_old_param(&val);
+                        res.body.push_old_param(&val).unwrap();
                         res
                     } else {
                         call.make_error_response(
@@ -125,9 +123,13 @@ impl LocalCharBase {
                     }
                 }
                 "AcquireWrite" => {
-                    match UnixDatagram::pair() {
-                        Ok((sock1, sock2)) => {
-                            unimplemented!();
+                    match socket::socketpair(
+                        socket::AddressFamily::Unix,
+                        socket::SockType::SeqPacket,
+                        None,
+                        socket::SockFlag::SOCK_CLOEXEC,
+                    ) {
+                        Ok((sock1, _sock2)) => {
                             let mut ret = 255;
                             if let Some(dict) = call.params.get(0) {
                                 if let Param::Container(Container::Dict(dict)) = dict {
@@ -152,10 +154,13 @@ impl LocalCharBase {
                                 }
                             }
                             let mut res = call.make_response();
-                            res.body.push_old_params(&[
-                                Param::Base(Base::Uint32(sock1.as_raw_fd() as u32)),
-                                Param::Base(Base::Uint16(ret)),
-                            ]);
+                            res.body
+                                .push_old_params(&[
+                                    Param::Base(Base::Uint32(sock1 as u32)),
+                                    Param::Base(Base::Uint16(ret)),
+                                ])
+                                .unwrap();
+                            unimplemented!();
                             return res;
                         }
                         Err(_) => {
@@ -220,10 +225,12 @@ impl LocalCharBase {
                                     }
                                 }
                                 let mut res = call.make_response();
-                                res.body.push_old_params(&[
-                                    Param::Base(Base::UnixFd(sock1 as u32)),
-                                    Param::Base(Base::Uint16(ret)),
-                                ]);
+                                res.body
+                                    .push_old_params(&[
+                                        Param::Base(Base::UnixFd(sock1 as u32)),
+                                        Param::Base(Base::Uint16(ret)),
+                                    ])
+                                    .unwrap();
                                 self.notify = Some(Notify::Fd(sock2));
                                 res
                             }
@@ -262,7 +269,7 @@ impl LocalCharBase {
                     }
                 }
                 "StopNotify" => {
-                    if let Some(notify) = self.notify.as_ref() {
+                    if let Some(_) = self.notify.as_ref() {
                         self.notify = None;
                         call.make_response()
                     } else {
@@ -281,7 +288,7 @@ impl LocalCharBase {
         }
     }
 
-    pub(super) fn match_descs(&mut self, msg_path: &Path, msg: &Message) -> Option<DbusObject> {
+    pub(super) fn match_descs(&mut self, _msg_path: &Path, _msg: &Message) -> Option<DbusObject> {
         unimplemented!()
     }
     pub fn new<T: ToUUID>(uuid: T, flags: CharFlags) -> Self {
@@ -315,7 +322,7 @@ impl LocalCharactersitic<'_, '_, '_, '_> {
         let base = self.get_char_base_mut();
         //let (v, l) = self.get_char_base_mut().vf.to_value();
         let (v, l) = base.vf.to_value();
-        let value = &v[..];
+        let value = &v[..l];
         let mut params = Vec::with_capacity(3); // TODO: eliminate this allocations
         params.push(Param::Base(Base::String(CHAR_IF_STR.to_string())));
         let changed_vec: Vec<Param> = value
@@ -507,6 +514,7 @@ impl Characteristic for LocalCharactersitic<'_, '_, '_, '_> {
     }
     fn write(&mut self, val: &[u8]) -> Result<(), Error> {
         let mut buf = [0; 255];
+        //eprintln!("writing to char: {:?}", val);
         buf[..val.len()].copy_from_slice(val);
         let mut val = ValOrFn::Value(buf, val.len());
         self.write_val_or_fn(&mut val);
@@ -567,7 +575,10 @@ impl Introspectable for LocalCharBase {
 impl Properties for LocalCharBase {
     const INTERFACES: &'static [(&'static str, &'static [&'static str])] = &[CHAR_IF, PROP_IF];
     fn get_inner<'a, 'b>(&mut self, interface: &str, prop: &str) -> Option<Param<'a, 'b>> {
-        // eprintln!("org.freedesktop.DBus.Charactersitic interface:\n{}, prop {}", interface, prop);
+        eprintln!(
+            "org.freedesktop.DBus.Charactersitic interface:\n{}, prop {}",
+            interface, prop
+        );
         match interface {
             CHAR_IF_STR => match prop {
                 UUID_PROP => Some(base_param_to_variant(self.uuid.to_string().into())),
@@ -576,7 +587,7 @@ impl Properties for LocalCharBase {
                 ))),
                 VALUE_PROP => {
                     let (v, l) = self.vf.to_value();
-                    // eprintln!("vf: {:?}\nValue: {:?}", self.vf, &v[..l]);
+                    eprintln!("vf: {:?}\nValue: {:?}", self.vf, &v[..l]);
                     let vec: Vec<Param> =
                         v[..l].into_iter().map(|i| Base::Byte(*i).into()).collect();
                     let val = Param::Container(Container::Array(params::Array {
@@ -651,7 +662,7 @@ pub struct RemoteCharBase {
 impl Drop for RemoteCharBase {
     fn drop(&mut self) {
         if let Some(fd) = self.notify_fd {
-            close(fd);
+            close(fd).ok();
         }
     }
 }
@@ -789,7 +800,7 @@ impl Characteristic for RemoteChar<'_, '_, '_, '_, '_> {
     fn read_value(&mut self) -> Result<([u8; 255], usize), Error> {
         unimplemented!()
     }
-    fn write(&mut self, val: &[u8]) -> Result<(), Error> {
+    fn write(&mut self, _val: &[u8]) -> Result<(), Error> {
         unimplemented!()
     }
     fn uuid(&self) -> &str {

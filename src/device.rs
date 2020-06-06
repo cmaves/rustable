@@ -4,9 +4,7 @@ use rustbus::params;
 use std::collections::hash_map;
 use std::collections::HashMap;
 use std::ffi::OsString;
-use std::iter::Map;
 use std::path::PathBuf;
-use std::rc::Rc;
 
 pub enum AddrType {
     Public,
@@ -97,12 +95,12 @@ impl<'a, 'c: 'a, 'd: 'a, 'e: 'a> Device<'a> for RemoteDevice<'c, 'd, 'e> {
     }
     fn get_service(&'a mut self, uuid: &UUID) -> Option<Self::ServiceType> {
         let base = self.get_base_mut();
-        let serv_base = base.services.get_mut(uuid)?;
+        let _serv_base = base.services.get_mut(uuid)?;
         Some(RemoteService {
             dev: self,
             uuid: uuid.clone(),
             #[cfg(feature = "unsafe-opt")]
-            base: serv_base,
+            base: _serv_base,
         })
     }
     fn has_service(&self, uuid: &UUID) -> bool {
@@ -126,12 +124,12 @@ impl<'a, 'b: 'a, 'c: 'a> Device<'a> for Bluetooth<'b, 'c> {
         self.services.keys()
     }
     fn get_service(&'a mut self, uuid: &UUID) -> Option<Self::ServiceType> {
-        let base = self.services.get_mut(uuid)?;
+        let _base = self.services.get_mut(uuid)?;
         Some(LocalService {
             bt: self,
             uuid: uuid.clone(),
             #[cfg(feature = "unsafe-opt")]
-            ptr: base,
+            ptr: _base,
         })
     }
     fn has_service(&self, uuid: &UUID) -> bool {

@@ -14,13 +14,13 @@ pub struct LocalDescriptor {
     uuid: Rc<String>,
 }
 impl LocalDescriptor {
-    pub fn new(uuid: String) -> Self {
+    pub fn new(_uuid: String) -> Self {
         unimplemented!()
     }
     pub(super) fn update_path(&mut self, base: &Path) {
         self.path = base.to_owned();
         let mut name = String::with_capacity(7);
-        write!(&mut name, "desc{:03x}", self.index);
+        write!(&mut name, "desc{:03x}", self.index).unwrap();
         self.path.push(name);
     }
 }
@@ -90,10 +90,12 @@ impl Properties for LocalDescriptor {
             _ => None,
         }
     }
-    fn set_inner(&mut self, interface: &str, prop: &str, val: &params::Variant) -> Option<String> {
-        unimplemented!()
-    }
-    fn get_all(&mut self, msg: &Message) -> OutMessage {
+    fn set_inner(
+        &mut self,
+        _interface: &str,
+        _prop: &str,
+        _val: &params::Variant,
+    ) -> Option<String> {
         unimplemented!()
     }
 }

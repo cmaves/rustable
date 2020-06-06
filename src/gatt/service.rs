@@ -4,6 +4,7 @@ use crate::*;
 use rustbus::Message;
 use std::collections::hash_map::Keys;
 use std::collections::HashMap;
+use std::ffi::OsStr;
 use std::path::{Component, Path, PathBuf};
 
 pub trait Service<'a> {
@@ -36,7 +37,7 @@ impl LocalServiceBase {
         self.chars.insert(character.uuid.clone(), character);
     }
 
-    pub fn service_call<'a, 'b>(&mut self, call: &Message<'a, 'b>) -> OutMessage {
+    pub fn service_call<'a, 'b>(&mut self, _call: &Message<'a, 'b>) -> OutMessage {
         unimplemented!()
     }
 
@@ -50,21 +51,23 @@ impl LocalServiceBase {
         }
     }
     pub(crate) fn match_chars(&mut self, msg_path: &Path, msg: &Message) -> Option<DbusObject> {
-        eprintln!("Checking for characteristic for match");
+        eprintln!("Checking for characteristic for match: {:?}", msg_path);
         let mut components = msg_path.components().take(2);
         if let Component::Normal(path) = components.next().unwrap() {
             let path = path.to_str()?;
             if !path.starts_with("char") {
                 return None;
             }
-            let mut char_str = String::new();
             for character in self.chars.values_mut() {
-                char_str.clear();
-                write!(&mut char_str, "char{:02}", character.index).unwrap();
-                if let Ok(path) = msg_path.strip_prefix(char_str) {
-                    return character.match_descs(path, msg);
-                } else {
-                    return Some(DbusObject::Char(character));
+                //write!(&mut char_str, "char{:02}", character.index).unwrap();
+                let char_name = character.path.file_name().unwrap();
+                if let Ok(path) = msg_path.strip_prefix(char_name) {
+                    eprintln!("match_chars() path: {:?}", path);
+                    if path == OsStr::new("") {
+                        return Some(DbusObject::Char(character));
+                    } else {
+                        return character.match_descs(path, msg);
+                    }
                 }
             }
             None
@@ -209,13 +212,13 @@ pub struct RemoteServiceBase {
     pub(super) chars: HashMap<UUID, RemoteCharBase>,
 }
 impl RemoteServiceBase {
-    fn init(blue: Bluetooth, path: &Path) -> Self {
+    fn init(_blue: Bluetooth, _path: &Path) -> Self {
         unimplemented!()
     }
 }
 impl TryFrom<&Message<'_, '_>> for RemoteServiceBase {
     type Error = Error;
-    fn try_from(value: &Message) -> Result<Self, Self::Error> {
+    fn try_from(_value: &Message) -> Result<Self, Self::Error> {
         unimplemented!()
     }
 }
@@ -273,12 +276,12 @@ impl<'a, 'b: 'a, 'c: 'a, 'd: 'a, 'e: 'a> Service<'a> for RemoteService<'b, 'c, '
     }
     fn get_char<T: ToUUID>(&'a mut self, uuid: T) -> Option<Self::CharType> {
         let uuid = uuid.to_uuid();
-        if let Some(character) = self.get_service_mut().chars.get_mut(&uuid) {
+        if let Some(_character) = self.get_service_mut().chars.get_mut(&uuid) {
             Some(RemoteChar {
                 service: self,
                 uuid,
                 #[cfg(feature = "unsafe-opt")]
-                ptr: character,
+                ptr: _character,
             })
         } else {
             None

@@ -1,24 +1,18 @@
 use gatt::*;
 use rustbus::client_conn;
 use rustbus::client_conn::{Conn, RpcConn, Timeout};
-use rustbus::get_session_bus_path;
 use rustbus::message::{Message, MessageType};
 use rustbus::message_builder::{MessageBuilder, OutMessage, OutMessageBody};
 use rustbus::params;
 use rustbus::signature;
 use rustbus::standard_messages;
 use rustbus::{get_system_bus_path, Base, Container, Param};
-use std::cell::{RefCell, RefMut};
-use std::collections::hash_map::Keys;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::convert::{TryFrom, TryInto};
 use std::ffi::OsString;
 use std::fmt::Write;
 use std::fmt::{Debug, Display, Formatter};
-use std::io::ErrorKind;
 use std::num::ParseIntError;
-use std::os::unix::io::AsRawFd;
-use std::os::unix::net::UnixDatagram;
 use std::path::{Component, Path, PathBuf};
 use std::rc::Rc;
 use std::time::Duration;
@@ -254,27 +248,27 @@ impl<'a, 'b> Bluetooth<'a, 'b> {
         }
     }
     pub fn get_device<'c>(&'c mut self, mac: &MAC) -> Option<RemoteDevice<'c, 'a, 'b>> {
-        let base = self.devices.get_mut(mac)?;
+        let _base = self.devices.get_mut(mac)?;
         Some(RemoteDevice {
             blue: self,
             mac: mac.clone(),
             #[cfg(feature = "unsafe-opt")]
-            ptr: base,
+            ptr: _base,
         })
     }
     pub fn devices(&self) -> HashSet<MAC> {
         self.devices.keys().map(|x| x.clone()).collect()
     }
-    pub fn start_advertise(&mut self, adv: Advertisement) -> Result<(), Error> {
+    pub fn start_advertise(&mut self, _adv: Advertisement) -> Result<(), Error> {
         unimplemented!()
     }
-    pub fn remove_service(&mut self, uuid: &str) -> Result<LocalService, Error> {
+    pub fn remove_service(&mut self, _uuid: &str) -> Result<LocalService, Error> {
         unimplemented!()
     }
-    fn register_advertisement(&mut self, advert: Advertisement) -> Result<u16, Error> {
+    pub fn register_advertisement(&mut self, _advert: Advertisement) -> Result<u16, Error> {
         unimplemented!()
     }
-    fn unregister_advertisement(&mut self, advert: Advertisement) -> Result<u16, Error> {
+    pub fn unregister_advertisement(&mut self, _advert: Advertisement) -> Result<u16, Error> {
         unimplemented!()
     }
     pub fn register_application(&mut self) -> Result<(), Error> {
@@ -285,7 +279,7 @@ impl<'a, 'b> Bluetooth<'a, 'b> {
             value_sig: signature::Type::Container(signature::Container::Variant),
             map: empty_dict,
         };
-        let mut call_builder = MessageBuilder::new().call(REGISTER_CALL.to_string());
+        let call_builder = MessageBuilder::new().call(REGISTER_CALL.to_string());
         /*call_builder.add_param2(
             Param::Base(Base::ObjectPath(
                 path.as_os_str().to_str().unwrap().to_string(),
@@ -352,17 +346,17 @@ impl<'a, 'b> Bluetooth<'a, 'b> {
     pub fn process_requests(&mut self) -> Result<(), Error> {
         let half_milli = Duration::from_micros(500);
         loop {
-            let mut done = false;
             match self.rpc_con.wait_call(Timeout::Duration(half_milli)) {
                 Ok(call) => {
                     eprintln!("received call {:#?}", call);
                     let interface = (&call.interface).as_ref().unwrap();
                     if let Some(dest) = &self.filter_dest {
                         if dest != call.destination.as_ref().unwrap() {
-                            let msg = call.make_error_response(
+                            let mut msg = call.make_error_response(
                                 BLUEZ_NOT_PERM.to_string(),
                                 Some("Sender is not allowed to perform this action.".to_string()),
                             );
+                            self.rpc_con.send_message(&mut msg, Timeout::Infinite)?;
                             continue;
                         }
                     }
@@ -394,33 +388,30 @@ impl<'a, 'b> Bluetooth<'a, 'b> {
                                 "org.freedesktop.DBus.Introspectable" => v.introspectable(&call),
                                 _ => unimplemented!(), // TODO: Added interface not found
                             },
-                            DbusObject::Ad(ad) => unimplemented!(),
+                            DbusObject::Ad(_ad) => unimplemented!(),
                         },
                         None => standard_messages::unknown_method(&call),
                     };
-                    eprintln!("replying: {:#?}", reply);
+                    // eprintln!("replying: {:#?}", reply);
                     self.rpc_con.send_message(&mut reply, Timeout::Infinite)?;
                 }
                 Err(e) => match e {
-                    client_conn::Error::TimedOut => done = true,
+                    client_conn::Error::TimedOut => break,
                     _ => return Err(e.into()),
                 },
             }
-            if let Some(sig) = self.rpc_con.try_get_signal() {
-                match sig.interface.as_ref().unwrap().as_str() {
-                    OBJ_MANAGER_IF_STR => match sig.member.as_ref().unwrap().as_str() {
-                        IF_ADDED_SIG => self.interface_added(sig)?,
-                        IF_REMOVED_SIG => unimplemented!(),
-                        _ => (),
-                    },
+        }
+        while let Some(sig) = self.rpc_con.try_get_signal() {
+            match sig.interface.as_ref().unwrap().as_str() {
+                OBJ_MANAGER_IF_STR => match sig.member.as_ref().unwrap().as_str() {
+                    IF_ADDED_SIG => self.interface_added(sig)?,
+                    IF_REMOVED_SIG => unimplemented!(),
                     _ => (),
-                }
-            } else {
-                if done {
-                    return Ok(());
-                }
+                },
+                _ => (),
             }
         }
+        Ok(())
     }
     fn interface_added(&mut self, sig: Message) -> Result<(), Error> {
         let path: &Path = if let Some(Param::Base(Base::ObjectPath(path))) = sig.params.get(0) {
@@ -437,11 +428,11 @@ impl<'a, 'b> Bluetooth<'a, 'b> {
         let mut comps = path.components();
         let device = comps.next();
         let service = comps.next();
-        let character = comps.next();
-        let desc = comps.next();
-        let end = comps.next();
-        if let Some(Component::Normal(device)) = device {
-            if let Some(Component::Normal(service)) = service {
+        let _character = comps.next();
+        let _desc = comps.next();
+        let _end = comps.next();
+        if let Some(Component::Normal(_device)) = device {
+            if let Some(Component::Normal(_service)) = service {
                 unimplemented!()
             } else {
                 unimplemented!()
@@ -483,7 +474,7 @@ impl<'a, 'b> Bluetooth<'a, 'b> {
             }
         }
     }
-    fn match_advertisement(&self, msg_path: &Path, msg: &Message) -> Option<DbusObject> {
+    fn match_advertisement(&self, msg_path: &Path, _msg: &Message) -> Option<DbusObject> {
         eprintln!("Checking for advertisement for match");
         let mut components = msg_path.components();
         let comp = components.next()?.as_os_str().to_str().unwrap();
@@ -536,7 +527,6 @@ impl<'a, 'b> Bluetooth<'a, 'b> {
     }
     fn get_managed_objects(
         &mut self,
-        dest: String,
         path: String,
         filter_path: &Path,
     ) -> Result<
@@ -590,11 +580,7 @@ impl<'a, 'b> Bluetooth<'a, 'b> {
         &mut self,
         filter_path: T,
     ) -> Result<HashSet<MAC>, Error> {
-        let pairs = self.get_managed_objects(
-            BLUEZ_DEST.to_string(),
-            "/".to_string(),
-            filter_path.as_ref(),
-        )?;
+        let pairs = self.get_managed_objects("/".to_string(), filter_path.as_ref())?;
         let mut set = HashSet::new();
         for (path, if_map) in pairs {
             if let Some(props) = if_map.get(DEV_IF_STR) {
@@ -609,9 +595,9 @@ impl<'a, 'b> Bluetooth<'a, 'b> {
                 let device = RemoteDeviceBase::from_props(props, path)?;
                 set.insert(device.mac.clone());
                 self.insert_device(device);
-            } else if let Some(props) = if_map.get(SERV_IF_STR) {
+            } else if let Some(_props) = if_map.get(SERV_IF_STR) {
                 unimplemented!();
-            } else if let Some(props) = if_map.get(CHAR_IF_STR) {
+            } else if let Some(_props) = if_map.get(CHAR_IF_STR) {
                 unimplemented!()
             }
         }
@@ -662,7 +648,7 @@ impl<'a, 'b> Bluetooth<'a, 'b> {
         */
     }
 }
-fn mac_to_devmac(mac: &MAC) -> Option<String> {
+pub fn mac_to_devmac(mac: &MAC) -> Option<String> {
     if !validate_mac(mac) {
         return None;
     }
@@ -675,7 +661,7 @@ fn mac_to_devmac(mac: &MAC) -> Option<String> {
     }
     Some(ret)
 }
-fn validate_devmac(devmac: &str) -> bool {
+pub fn validate_devmac(devmac: &str) -> bool {
     if devmac.len() != 21 {
         return false;
     }
@@ -684,7 +670,7 @@ fn validate_devmac(devmac: &str) -> bool {
     }
     let devmac = &devmac[3..];
     let mut chars = devmac.chars();
-    for i in 0..6 {
+    for _ in 0..6 {
         if chars.next().unwrap() != '_' {
             return false;
         }
@@ -694,7 +680,7 @@ fn validate_devmac(devmac: &str) -> bool {
     }
     true
 }
-fn devmac_to_mac(devmac: &str) -> Option<MAC> {
+pub fn devmac_to_mac(devmac: &str) -> Option<MAC> {
     let mut ret = String::with_capacity(18);
     for i in 0..5 {
         let tar = i * 3;
@@ -754,7 +740,6 @@ impl ObjectManager for Bluetooth<'_, '_> {
     fn get_managed_object(&mut self, msg: &Message) -> OutMessage {
         let mut reply = msg.make_response();
         let mut outer_dict: HashMap<Base, Param> = HashMap::new();
-        let path = self.get_path().to_path_buf();
         for service in self.services.values_mut() {
             //let service_path = path.join(format!("service{:02x}", service.index));
             for characteristic in service.chars.values_mut() {
@@ -819,7 +804,7 @@ impl ObjectManager for Bluetooth<'_, '_> {
         )
             .try_into()
             .unwrap();
-        reply.body.push_old_param(&outer_cont.into());
+        reply.body.push_old_param(&outer_cont.into()).unwrap();
         reply
     }
 }
@@ -857,14 +842,15 @@ trait Properties {
         Some(prop_cont.into())
     }
     fn get_all(&mut self, msg: &Message) -> OutMessage {
-        let interface = if let Some(interface) = &msg.interface {
+        let interface = if let Some(Param::Base(Base::String(interface))) = msg.params.get(0) {
+            eprintln!("get_all() interface: {}", interface);
             interface
         } else {
             return msg.make_error_response("Missing interface".to_string(), None);
         };
         if let Some(param) = self.get_all_inner(&interface) {
             let mut res = msg.make_response();
-            res.body.push_old_param(&param);
+            res.body.push_old_param(&param).unwrap();
             res
         } else {
             let err_msg = format!(
@@ -895,7 +881,7 @@ trait Properties {
         };
         if let Some(param) = self.get_inner(interface, prop) {
             let mut reply = msg.make_response();
-            reply.body.push_old_param(&param);
+            reply.body.push_old_param(&param).unwrap();
             reply
         } else {
             let s = format!("Property {} on interface {} not found.", prop, interface);
@@ -942,10 +928,15 @@ trait Properties {
 
 impl Properties for Bluetooth<'_, '_> {
     const INTERFACES: &'static [(&'static str, &'static [&'static str])] = &[];
-    fn get_inner<'a, 'b>(&mut self, interface: &str, prop: &str) -> Option<Param<'a, 'b>> {
+    fn get_inner<'a, 'b>(&mut self, _interface: &str, _prop: &str) -> Option<Param<'a, 'b>> {
         None
     }
-    fn set_inner(&mut self, interface: &str, prop: &str, val: &params::Variant) -> Option<String> {
+    fn set_inner(
+        &mut self,
+        _interface: &str,
+        _prop: &str,
+        _val: &params::Variant,
+    ) -> Option<String> {
         unimplemented!()
     }
 }
@@ -1028,13 +1019,4 @@ impl ValOrFn {
             ValOrFn::Function(f) => f(),
         }
     }
-}
-
-fn pair_to_key<'a, 'b, 'c>(
-    pair: &'a (
-        PathBuf,
-        HashMap<String, HashMap<String, params::Variant<'b, 'c>>>,
-    ),
-) -> &'a Path {
-    &pair.0
 }

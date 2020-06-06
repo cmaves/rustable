@@ -98,7 +98,12 @@ impl Properties for Advertisement {
             _ => None,
         }
     }
-    fn set_inner(&mut self, interface: &str, prop: &str, val: &params::Variant) -> Option<String> {
+    fn set_inner(
+        &mut self,
+        _interface: &str,
+        _prop: &str,
+        _val: &params::Variant,
+    ) -> Option<String> {
         unimplemented!()
     }
 }

@@ -1,7 +1,6 @@
-use crate::gatt::*;
 use crate::Bluetooth;
-use rustbus::message_builder::{OutMessage, OutMessageBody};
-use rustbus::{Base, Message, Param};
+use rustbus::message_builder::OutMessage;
+use rustbus::Message;
 use std::fmt::Write;
 use std::path::Path;
 pub(crate) const INTROSPECT_FMT_P1: &'static str = "<!DOCTYPE node PUBLIC \"-//freedesktop//DTD D-BUS Object Introspection 1.0//EN\" \"http://www.freedesktop.org/standards/dbus/1.0/introspect.dtd\">
@@ -88,9 +87,8 @@ pub(crate) fn child_nodes(children: &[&str], dst: &mut String) {
 }
 pub trait Introspectable {
     fn introspectable<'a, 'b>(&self, call: &Message<'a, 'b>) -> OutMessage {
-        let obj_path: &Path = call.object.as_ref().unwrap().as_ref();
         let mut reply = call.make_response();
-        reply.body.push_param(self.introspectable_str());
+        reply.body.push_param(self.introspectable_str()).unwrap();
         reply
     }
     fn introspectable_str(&self) -> String;
@@ -112,11 +110,11 @@ impl Introspectable for Bluetooth<'_, '_> {
             xml.push_str(&INTROSPECT_FMT_P2);
             child_nodes(&[child.as_os_str().to_str().unwrap()], &mut xml);
             xml.push_str(&INTROSPECT_FMT_P3);
-            reply.body.push_param(xml);
+            reply.body.push_param(xml).unwrap();
             reply
         } else {
             // handle the normal case
-            reply.body.push_param(self.introspectable_str());
+            reply.body.push_param(self.introspectable_str()).unwrap();
             reply
         }
     }

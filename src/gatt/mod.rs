@@ -1,7 +1,5 @@
 use crate::{Error, UUID};
 use nix::poll::{poll, PollFd, PollFlags};
-use nix::sys::socket::recvmsg;
-use std::fmt::{Debug, Formatter};
 use std::os::unix::io::RawFd;
 use std::time::Duration;
 
