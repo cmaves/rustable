@@ -344,62 +344,57 @@ impl<'a, 'b> Bluetooth<'a, 'b> {
         Ok(())
     }
     pub fn process_requests(&mut self) -> Result<(), Error> {
-        let half_milli = Duration::from_micros(500);
-        loop {
-            match self.rpc_con.wait_call(Timeout::Duration(half_milli)) {
-                Ok(call) => {
-                    eprintln!("received call {:#?}", call);
-                    let interface = (&call.interface).as_ref().unwrap();
-                    if let Some(dest) = &self.filter_dest {
-                        if dest != call.destination.as_ref().unwrap() {
-                            let mut msg = call.make_error_response(
-                                BLUEZ_NOT_PERM.to_string(),
-                                Some("Sender is not allowed to perform this action.".to_string()),
-                            );
-                            self.rpc_con.send_message(&mut msg, Timeout::Infinite)?;
-                            continue;
-                        }
-                    }
-                    let mut reply = match self.match_root(&call) {
-                        Some(v) => match v {
-                            DbusObject::Appl => match interface.as_ref() {
-                                "org.freedesktop.DBus.Properties" => self.properties_call(&call),
-                                "org.freedesktop.DBus.ObjectManager" => {
-                                    self.objectmanager_call(&call)
-                                }
-                                "org.freedesktop.DBus.Introspectable" => self.introspectable(&call),
-                                _ => unimplemented!(), // TODO: Added interface not found
-                            },
-                            DbusObject::Serv(v) => match interface.as_ref() {
-                                "org.freedesktop.DBus.Properties" => v.properties_call(&call),
-                                "org.bluez.GattService1" => v.service_call(&call),
-                                "org.freedesktop.DBus.Introspectable" => v.introspectable(&call),
-                                _ => unimplemented!(), // TODO: Added interface not found
-                            },
-                            DbusObject::Char(v) => match interface.as_ref() {
-                                "org.freedesktop.DBus.Properties" => v.properties_call(&call),
-                                "org.bluez.GattCharacteristic1" => v.char_call(&call),
-                                "org.freedesktop.DBus.Introspectable" => v.introspectable(&call),
-                                _ => unimplemented!(), // TODO: Added interface not found
-                            },
-                            DbusObject::Desc(v) => match interface.as_ref() {
-                                "org.freedesktop.DBus.Properties" => v.properties_call(&call),
-                                "org.bluez.GattDescriptor1" => unimplemented!(),
-                                "org.freedesktop.DBus.Introspectable" => v.introspectable(&call),
-                                _ => unimplemented!(), // TODO: Added interface not found
-                            },
-                            DbusObject::Ad(_ad) => unimplemented!(),
-                        },
-                        None => standard_messages::unknown_method(&call),
-                    };
-                    // eprintln!("replying: {:#?}", reply);
-                    self.rpc_con.send_message(&mut reply, Timeout::Infinite)?;
+        let responses = self.rpc_con.refill_all()?;
+        for mut response in responses {
+            self.rpc_con
+                .send_message(&mut response, Timeout::Infinite)?;
+        }
+
+        while let Some(call) = self.rpc_con.try_get_call() {
+            eprintln!("received call {:#?}", call);
+            let interface = (&call.interface).as_ref().unwrap();
+            if let Some(dest) = &self.filter_dest {
+                if dest != call.destination.as_ref().unwrap() {
+                    let mut msg = call.make_error_response(
+                        BLUEZ_NOT_PERM.to_string(),
+                        Some("Sender is not allowed to perform this action.".to_string()),
+                    );
+                    self.rpc_con.send_message(&mut msg, Timeout::Infinite)?;
+                    continue;
                 }
-                Err(e) => match e {
-                    client_conn::Error::TimedOut => break,
-                    _ => return Err(e.into()),
-                },
             }
+            let mut reply = match self.match_root(&call) {
+                Some(v) => match v {
+                    DbusObject::Appl => match interface.as_ref() {
+                        "org.freedesktop.DBus.Properties" => self.properties_call(&call),
+                        "org.freedesktop.DBus.ObjectManager" => self.objectmanager_call(&call),
+                        "org.freedesktop.DBus.Introspectable" => self.introspectable(&call),
+                        _ => unimplemented!(), // TODO: Added interface not found
+                    },
+                    DbusObject::Serv(v) => match interface.as_ref() {
+                        "org.freedesktop.DBus.Properties" => v.properties_call(&call),
+                        "org.bluez.GattService1" => v.service_call(&call),
+                        "org.freedesktop.DBus.Introspectable" => v.introspectable(&call),
+                        _ => unimplemented!(), // TODO: Added interface not found
+                    },
+                    DbusObject::Char(v) => match interface.as_ref() {
+                        "org.freedesktop.DBus.Properties" => v.properties_call(&call),
+                        "org.bluez.GattCharacteristic1" => v.char_call(&call),
+                        "org.freedesktop.DBus.Introspectable" => v.introspectable(&call),
+                        _ => unimplemented!(), // TODO: Added interface not found
+                    },
+                    DbusObject::Desc(v) => match interface.as_ref() {
+                        "org.freedesktop.DBus.Properties" => v.properties_call(&call),
+                        "org.bluez.GattDescriptor1" => unimplemented!(),
+                        "org.freedesktop.DBus.Introspectable" => v.introspectable(&call),
+                        _ => unimplemented!(), // TODO: Added interface not found
+                    },
+                    DbusObject::Ad(_ad) => unimplemented!(),
+                },
+                None => standard_messages::unknown_method(&call),
+            };
+            // eprintln!("replying: {:#?}", reply);
+            self.rpc_con.send_message(&mut reply, Timeout::Infinite)?;
         }
         while let Some(sig) = self.rpc_con.try_get_signal() {
             match sig.interface.as_ref().unwrap().as_str() {

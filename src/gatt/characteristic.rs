@@ -227,10 +227,12 @@ impl LocalCharBase {
                                 let mut res = call.make_response();
                                 res.body
                                     .push_old_params(&[
-                                        Param::Base(Base::UnixFd(sock1 as u32)),
+                                        Param::Base(Base::UnixFd(0)),
                                         Param::Base(Base::Uint16(ret)),
                                     ])
                                     .unwrap();
+                                res.num_fds = Some(1);
+                                res.raw_fds.push(sock1);
                                 self.notify = Some(Notify::Fd(sock2));
                                 res
                             }
