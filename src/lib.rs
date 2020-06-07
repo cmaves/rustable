@@ -170,6 +170,7 @@ pub struct Bluetooth<'a, 'b> {
     pub filter_dest: Option<String>,
     pub ads: VecDeque<Advertisement>,
     service_index: u8,
+    ad_index: u16,
     devices: HashMap<MAC, RemoteDeviceBase>,
     comp_map: HashMap<OsString, MAC>,
 }
@@ -210,6 +211,7 @@ impl<'a, 'b> Bluetooth<'a, 'b> {
             filter_dest: Some(BLUEZ_DEST.to_string()),
             ads: VecDeque::new(),
             service_index: 0,
+            ad_index: 0,
             devices: HashMap::new(),
             comp_map: HashMap::new(),
         };
@@ -259,8 +261,72 @@ impl<'a, 'b> Bluetooth<'a, 'b> {
     pub fn devices(&self) -> HashSet<MAC> {
         self.devices.keys().map(|x| x.clone()).collect()
     }
-    pub fn start_advertise(&mut self, _adv: Advertisement) -> Result<(), Error> {
-        unimplemented!()
+    pub fn start_advertise(&mut self, mut adv: Advertisement) -> Result<(), Error> {
+        let idx = self.ads.len();
+        adv.index = self.ad_index;
+        self.ad_index += 1;
+        self.ads.push_back(adv);
+        let mut msg = MessageBuilder::new()
+            .call("RegisterAdvertisement".to_string())
+            .with_interface("org.bluez.LEAdvertisingManager1".to_string())
+            .on(self.blue_path.to_str().unwrap().to_string())
+            .at(BLUEZ_DEST.to_string())
+            .build();
+
+        let dict = params::Dict {
+            key_sig: signature::Base::String,
+            value_sig: signature::Type::Container(signature::Container::Variant),
+            map: HashMap::new(),
+        };
+        msg.body
+            .push_old_params(&[
+                Param::Base(Base::ObjectPath(
+                    self.path
+                        .join(format!("adv{:04x}", self.ads[idx].index))
+                        .to_str()
+                        .unwrap()
+                        .to_string(),
+                )),
+                Param::Container(Container::Dict(dict)),
+            ])
+            .unwrap();
+        let res_idx = self.rpc_con.send_message(&mut msg, Timeout::Infinite)?;
+        loop {
+            self.process_requests()?;
+            if let Some(res) = self.rpc_con.try_get_response(res_idx) {
+                return match res.typ {
+                    MessageType::Error => {
+                        self.ads.pop_back();
+                        let mut err = None;
+                        if let Some(err_str) = res.params.get(0) {
+                            if let Param::Base(Base::String(err_str)) = err_str {
+                                err = Some(err_str);
+                            }
+                        }
+                        let err_str = if let Some(err) = err {
+                            format!(
+                                "Failed to register application with bluez: {}: {:?}",
+                                res.error_name.unwrap(),
+                                err
+                            )
+                        } else {
+                            format!(
+                                "Failed to register application with bluez: {}",
+                                res.error_name.unwrap()
+                            )
+                        };
+                        eprintln!("error: {}", err_str);
+                        Err(Error::Bluez(err_str))
+                    }
+                    _ => {
+                        if self.verbose >= 1 {
+                            eprintln!("Registered application with bluez.");
+                        };
+                        Ok(())
+                    }
+                };
+            }
+        }
     }
     pub fn remove_service(&mut self, _uuid: &str) -> Result<LocalService, Error> {
         unimplemented!()
