@@ -49,8 +49,9 @@ impl LocalCharBase {
             desc.update_path(&self.path);
         }
     }
-    pub(crate) fn char_call<'a, 'b>(&mut self, call: &Message<'a, 'b>) -> OutMessage {
-        if let Some(member) = &call.member {
+    pub(crate) fn char_call<'a, 'b>(&mut self, call: MarshalledMessage) -> MarshalledMessage {
+        let call = call.unmarshall_all().unwrap();
+        if let Some(member) = &call.dynheader.member {
             match &member[..] {
                 "ReadValue" => {
                     if self.flags.read
@@ -69,10 +70,10 @@ impl LocalCharBase {
                                         if let Param::Base(Base::Uint16(offset)) = offset.value {
                                             start = l.min(offset as usize);
                                         } else {
-                                            return call.make_error_response("UnexpectedType".to_string(), Some("Expected a dict of variants as first parameter".to_string()));
+                                            return call.dynheader.make_error_response("UnexpectedType".to_string(), Some("Expected a dict of variants as first parameter".to_string()));
                                         }
                                     } else {
-                                        return call.make_error_response(
+                                        return call.dynheader.make_error_response(
                                             "UnexpectedType".to_string(),
                                             Some(
                                                 "Expected a dict of variants as first parameter"
@@ -82,7 +83,7 @@ impl LocalCharBase {
                                     }
                                 }
                             } else {
-                                return call.make_error_response(
+                                return call.dynheader.make_error_response(
                                     "UnexpectedType".to_string(),
                                     Some("Expected a dict as first parameter".to_string()),
                                 );
@@ -101,7 +102,7 @@ impl LocalCharBase {
                         res.body.push_old_param(&val).unwrap();
                         res
                     } else {
-                        call.make_error_response(
+                        call.dynheader.make_error_response(
                             BLUEZ_NOT_PERM.to_string(),
                             Some("This is not a readable characteristic.".to_string()),
                         )
@@ -116,7 +117,7 @@ impl LocalCharBase {
                     {
                         unimplemented!();
                     } else {
-                        call.make_error_response(
+                        call.dynheader.make_error_response(
                             BLUEZ_NOT_PERM.to_string(),
                             Some("This is not a writable characteristic.".to_string()),
                         )
@@ -140,14 +141,14 @@ impl LocalCharBase {
                                             if let Param::Base(Base::Uint16(mtu)) = mtu.value {
                                                 ret = ret.min(mtu);
                                             } else {
-                                                return call.make_error_response("UnexpectedType".to_string(), Some("Expected a dict of UInt16 as first offset type".to_string()));
+                                                return call.dynheader.make_error_response("UnexpectedType".to_string(), Some("Expected a dict of UInt16 as first offset type".to_string()));
                                             }
                                         } else {
-                                            return call.make_error_response("UnexpectedType".to_string(), Some("Expected a dict of variants as first parameter".to_string()));
+                                            return call.dynheader.make_error_response("UnexpectedType".to_string(), Some("Expected a dict of variants as first parameter".to_string()));
                                         }
                                     }
                                 } else {
-                                    return call.make_error_response(
+                                    return call.dynheader.make_error_response(
                                         "UnexpectedType".to_string(),
                                         Some("Expected a dict as first parameter".to_string()),
                                     );
@@ -164,7 +165,7 @@ impl LocalCharBase {
                             return res;
                         }
                         Err(_) => {
-                            return call.make_error_response(
+                            return call.dynheader.make_error_response(
                                 BLUEZ_FAILED.to_string(),
                                 Some(
                                     "An IO Error occured when creating the unix datagram socket."
@@ -176,7 +177,7 @@ impl LocalCharBase {
                 }
                 "AcquireNotify" => {
                     if !self.flags.notify {
-                        call.make_error_response(
+                        call.dynheader.make_error_response(
                             BLUEZ_NOT_PERM.to_string(),
                             Some("This characteristic doesn't not permit notifying.".to_string()),
                         )
@@ -189,7 +190,7 @@ impl LocalCharBase {
                                 "This characteristic is already notifying via a socket."
                             }
                         };
-                        call.make_error_response(
+                        call.dynheader.make_error_response(
                             "org.bluez.Error.InProgress".to_string(),
                             Some(err_str.to_string()),
                         )
@@ -211,14 +212,14 @@ impl LocalCharBase {
                                                 if let Param::Base(Base::Uint16(mtu)) = mtu.value {
                                                     ret = ret.min(mtu);
                                                 } else {
-                                                    return call.make_error_response("UnexpectedType".to_string(), Some("Expected a dict of UInt16 as first offset type".to_string()));
+                                                    return call.dynheader.make_error_response("UnexpectedType".to_string(), Some("Expected a dict of UInt16 as first offset type".to_string()));
                                                 }
                                             } else {
-                                                return call.make_error_response("UnexpectedType".to_string(), Some("Expected a dict of variants as first parameter".to_string()));
+                                                return call.dynheader.make_error_response("UnexpectedType".to_string(), Some("Expected a dict of variants as first parameter".to_string()));
                                             }
                                         }
                                     } else {
-                                        return call.make_error_response(
+                                        return call.dynheader.make_error_response(
                                             "UnexpectedType".to_string(),
                                             Some("Expected a dict as first parameter".to_string()),
                                         );
@@ -231,12 +232,12 @@ impl LocalCharBase {
                                         Param::Base(Base::Uint16(ret)),
                                     ])
                                     .unwrap();
-                                res.num_fds = Some(1);
+                                res.dynheader.num_fds = Some(1);
                                 res.raw_fds.push(sock1);
                                 self.notify = Some(Notify::Fd(sock2));
                                 res
                             }
-                            Err(_) => call.make_error_response(
+                            Err(_) => call.dynheader.make_error_response(
                                 BLUEZ_FAILED.to_string(),
                                 Some(
                                     "An IO Error occured when creating the unix datagram socket."
@@ -248,7 +249,7 @@ impl LocalCharBase {
                 }
                 "StartNotify" => {
                     if !self.flags.notify {
-                        call.make_error_response(
+                        call.dynheader.make_error_response(
                             BLUEZ_NOT_PERM.to_string(),
                             Some("This characteristic doesn't not permit notifying.".to_string()),
                         )
@@ -261,7 +262,7 @@ impl LocalCharBase {
                                 "This characteristic is already notifying via a socket."
                             }
                         };
-                        call.make_error_response(
+                        call.dynheader.make_error_response(
                             "org.bluez.Error.InProgress".to_string(),
                             Some(err_str.to_string()),
                         )
@@ -275,14 +276,16 @@ impl LocalCharBase {
                         self.notify = None;
                         call.make_response()
                     } else {
-                        call.make_error_response(
+                        call.dynheader.make_error_response(
                             BLUEZ_FAILED.to_string(),
                             Some("Notify has not been started".to_string()),
                         )
                     }
                 }
                 "Confirm" => call.make_response(),
-                _ => call.make_error_response(UNKNOWN_METHOD.to_string(), None),
+                _ => call
+                    .dynheader
+                    .make_error_response(UNKNOWN_METHOD.to_string(), None),
             }
         } else {
             // TODO: remove this statement if unneeded
@@ -290,7 +293,11 @@ impl LocalCharBase {
         }
     }
 
-    pub(super) fn match_descs(&mut self, _msg_path: &Path, _msg: &Message) -> Option<DbusObject> {
+    pub(super) fn match_descs(
+        &mut self,
+        _msg_path: &Path,
+        _header: &DynamicHeader,
+    ) -> Option<DbusObject> {
         unimplemented!()
     }
     pub fn new<T: ToUUID>(uuid: T, flags: CharFlags) -> Self {
@@ -309,13 +316,13 @@ impl LocalCharBase {
     }
 }
 
-pub struct LocalCharactersitic<'a, 'b: 'a, 'c: 'a, 'd: 'a> {
+pub struct LocalCharactersitic<'a, 'b: 'a> {
     pub(super) uuid: UUID,
-    pub(super) service: &'a mut LocalService<'b, 'c, 'd>,
+    pub(super) service: &'a mut LocalService<'b>,
     #[cfg(feature = "unsafe-opt")]
     base: *mut LocalCharBase,
 }
-impl LocalCharactersitic<'_, '_, '_, '_> {
+impl LocalCharactersitic<'_, '_> {
     pub fn write_val_or_fn(&mut self, val: &mut ValOrFn) {
         let base = self.get_char_base_mut();
         std::mem::swap(&mut base.vf, val);
@@ -503,7 +510,7 @@ impl CharFlags {
     }
 }
 
-impl Characteristic for LocalCharactersitic<'_, '_, '_, '_> {
+impl Characteristic for LocalCharactersitic<'_, '_> {
     fn read(&mut self) -> Result<([u8; 255], usize), Error> {
         let base = self.get_char_base_mut();
         match &mut base.vf {
@@ -636,12 +643,12 @@ impl Properties for LocalCharBase {
             _ => None,
         }
     }
-    fn set_inner(&mut self, interface: &str, prop: &str, val: &params::Variant) -> Option<String> {
+    fn set_inner(&mut self, interface: &str, prop: &str, val: Variant) -> Option<String> {
         match interface {
             SERV_IF_STR => match prop {
                 HANDLE_PROP => {
-                    if let Param::Base(Base::Uint16(handle)) = val.value {
-                        eprintln!("setting Handle prop: {:?}", val.value); // TODO remove
+                    if let Variant::Uint16(handle) = val {
+                        eprintln!("setting Handle prop: {:?}", handle); // TODO remove
                         self.handle = handle;
                         None
                     } else {
@@ -668,14 +675,14 @@ impl Drop for RemoteCharBase {
         }
     }
 }
-pub struct RemoteChar<'a, 'b, 'c, 'd, 'e> {
+pub struct RemoteChar<'a, 'b, 'c> {
     pub(super) uuid: UUID,
-    pub(super) service: &'a mut RemoteService<'b, 'c, 'd, 'e>,
+    pub(super) service: &'a mut RemoteService<'b, 'c>,
     #[cfg(feature = "unsafe-opt")]
     ptr: *mut RemoteCharBase,
 }
 
-impl<'a, 'b, 'c, 'd, 'e> RemoteChar<'a, 'b, 'c, 'd, 'e> {
+impl<'a, 'b, 'c> RemoteChar<'a, 'b, 'c> {
     pub fn acquire_notify<'sel>(&'sel mut self) -> Result<RawFd, Error> {
         let base = self.get_char_mut();
         let mut msg = MessageBuilder::new()
@@ -689,6 +696,7 @@ impl<'a, 'b, 'c, 'd, 'e> RemoteChar<'a, 'b, 'c, 'd, 'e> {
         loop {
             blue.process_requests()?;
             if let Some(res) = blue.rpc_con.try_get_response(res_idx) {
+                let res = res.unmarshall_all().unwrap();
                 return match res.typ {
                     MessageType::Reply => {
                         let fd = if let Some(Param::Base(Base::UnixFd(fd))) = res.params.get(0) {
@@ -761,7 +769,7 @@ impl<'a, 'b, 'c, 'd, 'e> RemoteChar<'a, 'b, 'c, 'd, 'e> {
         let base = self.get_char();
         base.notify_fd
     }
-    fn get_blue_mut(&mut self) -> &mut Bluetooth<'d, 'e> {
+    fn get_blue_mut(&mut self) -> &mut Bluetooth {
         self.service.dev.blue
     }
     fn get_char(&self) -> &RemoteCharBase {
@@ -795,7 +803,7 @@ impl<'a, 'b, 'c, 'd, 'e> RemoteChar<'a, 'b, 'c, 'd, 'e> {
     /*pub fn start_notify(&self) -> ();*/
 }
 
-impl Characteristic for RemoteChar<'_, '_, '_, '_, '_> {
+impl Characteristic for RemoteChar<'_, '_, '_> {
     fn read(&mut self) -> Result<([u8; 255], usize), Error> {
         unimplemented!()
     }

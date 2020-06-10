@@ -90,12 +90,7 @@ impl Properties for LocalDescriptor {
             _ => None,
         }
     }
-    fn set_inner(
-        &mut self,
-        _interface: &str,
-        _prop: &str,
-        _val: &params::Variant,
-    ) -> Option<String> {
+    fn set_inner(&mut self, _interface: &str, _prop: &str, _val: Variant) -> Option<String> {
         unimplemented!()
     }
 }

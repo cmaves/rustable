@@ -37,7 +37,7 @@ impl LocalServiceBase {
         self.chars.insert(character.uuid.clone(), character);
     }
 
-    pub fn service_call<'a, 'b>(&mut self, _call: &Message<'a, 'b>) -> OutMessage {
+    pub fn service_call<'a, 'b>(&mut self, _call: MarshalledMessage) -> MarshalledMessage {
         unimplemented!()
     }
 
@@ -50,7 +50,11 @@ impl LocalServiceBase {
             character.update_path(&self.path);
         }
     }
-    pub(crate) fn match_chars(&mut self, msg_path: &Path, msg: &Message) -> Option<DbusObject> {
+    pub(crate) fn match_chars(
+        &mut self,
+        msg_path: &Path,
+        header: &DynamicHeader,
+    ) -> Option<DbusObject> {
         eprintln!("Checking for characteristic for match: {:?}", msg_path);
         let mut components = msg_path.components().take(2);
         if let Component::Normal(path) = components.next().unwrap() {
@@ -66,7 +70,7 @@ impl LocalServiceBase {
                     if path == OsStr::new("") {
                         return Some(DbusObject::Char(character));
                     } else {
-                        return character.match_descs(path, msg);
+                        return character.match_descs(path, header);
                     }
                 }
             }
@@ -88,14 +92,14 @@ impl LocalServiceBase {
         }
     }
 }
-pub struct LocalService<'a, 'b, 'c> {
+pub struct LocalService<'a> {
     pub(crate) uuid: UUID,
-    pub(crate) bt: &'a mut Bluetooth<'b, 'c>,
+    pub(crate) bt: &'a mut Bluetooth,
     #[cfg(feature = "unsafe-opt")]
     ptr: *mut LocalServiceBase,
 }
-impl<'a, 'b: 'a, 'c: 'a, 'd: 'a> Service<'a> for LocalService<'b, 'c, 'd> {
-    type CharType = LocalCharactersitic<'a, 'b, 'c, 'd>;
+impl<'a, 'b: 'a, 'c: 'a, 'd: 'a> Service<'a> for LocalService<'b> {
+    type CharType = LocalCharactersitic<'a, 'b>;
     type Value = LocalCharBase;
     fn uuid(&self) -> &UUID {
         &self.uuid
@@ -137,7 +141,7 @@ impl<'a, 'b: 'a, 'c: 'a, 'd: 'a> Service<'a> for LocalService<'b, 'c, 'd> {
     }
 }
 
-impl LocalService<'_, '_, '_> {
+impl LocalService<'_> {
     pub(super) fn get_service(&self) -> &LocalServiceBase {
         &self.bt.services[&self.uuid]
     }
@@ -166,12 +170,12 @@ impl Properties for LocalServiceBase {
             _ => None,
         }
     }
-    fn set_inner(&mut self, interface: &str, prop: &str, val: &params::Variant) -> Option<String> {
+    fn set_inner(&mut self, interface: &str, prop: &str, val: Variant) -> Option<String> {
         match interface {
             SERV_IF_STR => match prop {
                 HANDLE_PROP => {
-                    if let Param::Base(Base::Uint16(handle)) = val.value {
-                        eprintln!("setting Handle prop: {:?}", val.value); // TODO remove
+                    if let Variant::Uint16(handle) = val {
+                        eprintln!("setting Handle prop: {:?}", handle); // TODO remove
                         self.handle = handle;
                         None
                     } else {
@@ -223,13 +227,13 @@ impl TryFrom<&Message<'_, '_>> for RemoteServiceBase {
     }
 }
 
-pub struct RemoteService<'a, 'b, 'c, 'd> {
+pub struct RemoteService<'a, 'b> {
     pub(crate) uuid: UUID,
-    pub(crate) dev: &'a mut RemoteDevice<'b, 'c, 'd>,
+    pub(crate) dev: &'a mut RemoteDevice<'b>,
     #[cfg(feature = "unsafe-opt")]
     pub(crate) ptr: *mut RemoteServiceBase,
 }
-impl RemoteService<'_, '_, '_, '_> {
+impl RemoteService<'_, '_> {
     fn get_service(&self) -> &RemoteServiceBase {
         #[cfg(feature = "unsafe-opt")]
         unsafe {
@@ -253,8 +257,8 @@ impl RemoteService<'_, '_, '_, '_> {
     }
 }
 
-impl<'a, 'b: 'a, 'c: 'a, 'd: 'a, 'e: 'a> Service<'a> for RemoteService<'b, 'c, 'd, 'e> {
-    type CharType = RemoteChar<'a, 'b, 'c, 'd, 'e>;
+impl<'a, 'b: 'a, 'c: 'a> Service<'a> for RemoteService<'b, 'c> {
+    type CharType = RemoteChar<'a, 'b, 'c>;
     type Value = RemoteCharBase;
     fn uuid(&self) -> &UUID {
         &self.get_service().uuid

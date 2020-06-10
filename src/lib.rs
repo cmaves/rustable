@@ -1,11 +1,16 @@
 use gatt::*;
 use rustbus::client_conn;
 use rustbus::client_conn::{Conn, RpcConn, Timeout};
+use rustbus::message::{ByteOrder, DynamicHeader};
 use rustbus::message::{Message, MessageType};
-use rustbus::message_builder::{MessageBuilder, OutMessage, OutMessageBody};
+use rustbus::message_builder::{MarshalledMessage, MarshalledMessageBody, MessageBuilder};
 use rustbus::params;
 use rustbus::signature;
 use rustbus::standard_messages;
+use rustbus::wire::marshal_trait::{Marshal, Signature};
+use rustbus::wire::unmarshal;
+use rustbus::wire::unmarshal_trait::Unmarshal;
+use rustbus::wire::util::align_offset;
 use rustbus::{get_system_bus_path, Base, Container, Param};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::convert::{TryFrom, TryInto};
@@ -107,7 +112,7 @@ enum DbusObject<'a> {
     Char(&'a mut LocalCharBase),
     Serv(&'a mut LocalServiceBase),
     Desc(&'a mut LocalDescriptor),
-    Ad(&'a Advertisement),
+    Ad(&'a mut Advertisement),
     Appl,
 }
 
@@ -143,7 +148,7 @@ impl TryFrom<&'_ Message<'_, '_>> for Error {
             MessageType::Error => (),
             _ => return Err("Message was not an error"),
         }
-        let err_name = match &msg.error_name {
+        let err_name = match &msg.dynheader.error_name {
             Some(name) => name,
             None => return Err("Message was missing error name"),
         };
@@ -159,8 +164,8 @@ impl TryFrom<&'_ Message<'_, '_>> for Error {
     }
 }
 
-pub struct Bluetooth<'a, 'b> {
-    rpc_con: RpcConn<'a, 'b>,
+pub struct Bluetooth {
+    rpc_con: RpcConn,
     blue_path: Rc<Path>,
     name: String,
     path: PathBuf,
@@ -175,7 +180,7 @@ pub struct Bluetooth<'a, 'b> {
     comp_map: HashMap<OsString, MAC>,
 }
 
-impl<'a, 'b> Bluetooth<'a, 'b> {
+impl Bluetooth {
     pub fn new(dbus_name: &str, blue_path: String) -> Result<Self, Error> {
         let session_path = get_system_bus_path()?;
         let conn = Conn::connect_to_bus(session_path, true)?;
@@ -188,7 +193,7 @@ impl<'a, 'b> Bluetooth<'a, 'b> {
             Timeout::Infinite,
         )?;
         let res = rpc_con.wait_response(namereq, Timeout::Infinite)?;
-        if let Some(_) = &res.error_name {
+        if let Some(_) = &res.dynheader.error_name {
             return Err(Error::DbusReqErr(format!(
                 "Error Dbus client name {:?}",
                 res
@@ -238,7 +243,7 @@ impl<'a, 'b> Bluetooth<'a, 'b> {
         self.services.insert(service.uuid.clone(), service);
         Ok(())
     }
-    pub fn get_service<T: ToUUID>(&mut self, uuid: T) -> Option<LocalService<'_, 'a, 'b>> {
+    pub fn get_service<T: ToUUID>(&mut self, uuid: T) -> Option<LocalService<'_>> {
         let uuid = uuid.to_uuid();
         if self.services.contains_key(&uuid) {
             Some(LocalService {
@@ -249,7 +254,7 @@ impl<'a, 'b> Bluetooth<'a, 'b> {
             None
         }
     }
-    pub fn get_device<'c>(&'c mut self, mac: &MAC) -> Option<RemoteDevice<'c, 'a, 'b>> {
+    pub fn get_device<'c>(&'c mut self, mac: &MAC) -> Option<RemoteDevice<'c>> {
         let _base = self.devices.get_mut(mac)?;
         Some(RemoteDevice {
             blue: self,
@@ -265,6 +270,8 @@ impl<'a, 'b> Bluetooth<'a, 'b> {
         let idx = self.ads.len();
         adv.index = self.ad_index;
         self.ad_index += 1;
+        let adv_path = self.path.join(format!("adv{:04x}", adv.index));
+        adv.path = adv_path;
         self.ads.push_back(adv);
         let mut msg = MessageBuilder::new()
             .call("RegisterAdvertisement".to_string())
@@ -278,15 +285,10 @@ impl<'a, 'b> Bluetooth<'a, 'b> {
             value_sig: signature::Type::Container(signature::Container::Variant),
             map: HashMap::new(),
         };
+        let adv_path_str = self.ads[idx].path.to_str().unwrap().to_string();
         msg.body
             .push_old_params(&[
-                Param::Base(Base::ObjectPath(
-                    self.path
-                        .join(format!("adv{:04x}", self.ads[idx].index))
-                        .to_str()
-                        .unwrap()
-                        .to_string(),
-                )),
+                Param::Base(Base::ObjectPath(adv_path_str)),
                 Param::Container(Container::Dict(dict)),
             ])
             .unwrap();
@@ -298,6 +300,7 @@ impl<'a, 'b> Bluetooth<'a, 'b> {
                     MessageType::Error => {
                         self.ads.pop_back();
                         let mut err = None;
+                        let res = res.unmarshall_all().unwrap();
                         if let Some(err_str) = res.params.get(0) {
                             if let Param::Base(Base::String(err_str)) = err_str {
                                 err = Some(err_str);
@@ -306,13 +309,13 @@ impl<'a, 'b> Bluetooth<'a, 'b> {
                         let err_str = if let Some(err) = err {
                             format!(
                                 "Failed to register application with bluez: {}: {:?}",
-                                res.error_name.unwrap(),
+                                res.dynheader.error_name.unwrap(),
                                 err
                             )
                         } else {
                             format!(
                                 "Failed to register application with bluez: {}",
-                                res.error_name.unwrap()
+                                res.dynheader.error_name.unwrap()
                             )
                         };
                         eprintln!("error: {}", err_str);
@@ -358,7 +361,7 @@ impl<'a, 'b> Bluetooth<'a, 'b> {
             .at(BLUEZ_DEST.to_string())
             .build();
 
-        let mut body = OutMessageBody::new();
+        let mut body = MarshalledMessageBody::new();
         body.push_old_params(&[
             Param::Base(Base::ObjectPath(
                 path.as_os_str().to_str().unwrap().to_string(),
@@ -376,6 +379,7 @@ impl<'a, 'b> Bluetooth<'a, 'b> {
             if let Some(res) = self.rpc_con.try_get_response(msg_idx) {
                 return if let MessageType::Error = res.typ {
                     let mut err = None;
+                    let res = res.unmarshall_all().unwrap();
                     if let Some(err_str) = res.params.get(0) {
                         if let Param::Base(Base::String(err_str)) = err_str {
                             err = Some(err_str);
@@ -384,13 +388,13 @@ impl<'a, 'b> Bluetooth<'a, 'b> {
                     let err_str = if let Some(err) = err {
                         format!(
                             "Failed to register application with bluez: {}: {:?}",
-                            res.error_name.unwrap(),
+                            res.dynheader.error_name.unwrap(),
                             err
                         )
                     } else {
                         format!(
                             "Failed to register application with bluez: {}",
-                            res.error_name.unwrap()
+                            res.dynheader.error_name.unwrap()
                         )
                     };
                     eprintln!("error: {}", err_str);
@@ -418,10 +422,10 @@ impl<'a, 'b> Bluetooth<'a, 'b> {
 
         while let Some(call) = self.rpc_con.try_get_call() {
             eprintln!("received call {:#?}", call);
-            let interface = (&call.interface).as_ref().unwrap();
+            let interface = (&call.dynheader.interface).as_ref().unwrap();
             if let Some(dest) = &self.filter_dest {
-                if dest != call.destination.as_ref().unwrap() {
-                    let mut msg = call.make_error_response(
+                if dest != call.dynheader.destination.as_ref().unwrap() {
+                    let mut msg = call.dynheader.make_error_response(
                         BLUEZ_NOT_PERM.to_string(),
                         Some("Sender is not allowed to perform this action.".to_string()),
                     );
@@ -429,42 +433,47 @@ impl<'a, 'b> Bluetooth<'a, 'b> {
                     continue;
                 }
             }
-            let mut reply = match self.match_root(&call) {
+            let mut reply = match self.match_root(&call.dynheader) {
                 Some(v) => match v {
                     DbusObject::Appl => match interface.as_ref() {
-                        "org.freedesktop.DBus.Properties" => self.properties_call(&call),
-                        "org.freedesktop.DBus.ObjectManager" => self.objectmanager_call(&call),
-                        "org.freedesktop.DBus.Introspectable" => self.introspectable(&call),
-                        _ => unimplemented!(), // TODO: Added interface not found
+                        PROP_IF_STR => self.properties_call(call),
+                        OBJ_MANAGER_IF_STR => self.objectmanager_call(call),
+                        INTRO_IF_STR => self.introspectable(call),
+                        _ => standard_messages::unknown_method(&call.dynheader),
                     },
                     DbusObject::Serv(v) => match interface.as_ref() {
-                        "org.freedesktop.DBus.Properties" => v.properties_call(&call),
-                        "org.bluez.GattService1" => v.service_call(&call),
-                        "org.freedesktop.DBus.Introspectable" => v.introspectable(&call),
-                        _ => unimplemented!(), // TODO: Added interface not found
+                        PROP_IF_STR => v.properties_call(call),
+                        SERV_IF_STR => v.service_call(call),
+                        INTRO_IF_STR => v.introspectable(call),
+                        _ => standard_messages::unknown_method(&call.dynheader),
                     },
                     DbusObject::Char(v) => match interface.as_ref() {
-                        "org.freedesktop.DBus.Properties" => v.properties_call(&call),
-                        "org.bluez.GattCharacteristic1" => v.char_call(&call),
-                        "org.freedesktop.DBus.Introspectable" => v.introspectable(&call),
-                        _ => unimplemented!(), // TODO: Added interface not found
+                        PROP_IF_STR => v.properties_call(call),
+                        CHAR_IF_STR => v.char_call(call),
+                        INTRO_IF_STR => v.introspectable(call),
+                        _ => standard_messages::unknown_method(&call.dynheader),
                     },
                     DbusObject::Desc(v) => match interface.as_ref() {
-                        "org.freedesktop.DBus.Properties" => v.properties_call(&call),
-                        "org.bluez.GattDescriptor1" => unimplemented!(),
-                        "org.freedesktop.DBus.Introspectable" => v.introspectable(&call),
-                        _ => unimplemented!(), // TODO: Added interface not found
+                        PROP_IF_STR => v.properties_call(call),
+                        DESC_IF_STR => unimplemented!(),
+                        INTRO_IF_STR => v.introspectable(call),
+                        _ => standard_messages::unknown_method(&call.dynheader),
                     },
-                    DbusObject::Ad(_ad) => unimplemented!(),
+                    DbusObject::Ad(ad) => match interface.as_ref() {
+                        PROP_IF_STR => ad.properties_call(call),
+                        LEAD_IF_STR => unimplemented!(),
+                        INTRO_IF_STR => ad.introspectable(call),
+                        _ => standard_messages::unknown_method(&call.dynheader),
+                    },
                 },
-                None => standard_messages::unknown_method(&call),
+                None => standard_messages::unknown_method(&call.dynheader),
             };
             // eprintln!("replying: {:#?}", reply);
             self.rpc_con.send_message(&mut reply, Timeout::Infinite)?;
         }
         while let Some(sig) = self.rpc_con.try_get_signal() {
-            match sig.interface.as_ref().unwrap().as_str() {
-                OBJ_MANAGER_IF_STR => match sig.member.as_ref().unwrap().as_str() {
+            match sig.dynheader.interface.as_ref().unwrap().as_str() {
+                OBJ_MANAGER_IF_STR => match sig.dynheader.member.as_ref().unwrap().as_str() {
                     IF_ADDED_SIG => self.interface_added(sig)?,
                     IF_REMOVED_SIG => unimplemented!(),
                     _ => (),
@@ -474,7 +483,8 @@ impl<'a, 'b> Bluetooth<'a, 'b> {
         }
         Ok(())
     }
-    fn interface_added(&mut self, sig: Message) -> Result<(), Error> {
+    fn interface_added(&mut self, sig: MarshalledMessage) -> Result<(), Error> {
+        let sig = sig.unmarshall_all().unwrap();
         let path: &Path = if let Some(Param::Base(Base::ObjectPath(path))) = sig.params.get(0) {
             path.as_ref()
         } else {
@@ -501,16 +511,16 @@ impl<'a, 'b> Bluetooth<'a, 'b> {
         }
         Ok(())
     }
-    fn match_root(&mut self, msg: &Message) -> Option<DbusObject> {
+    fn match_root(&mut self, dynheader: &DynamicHeader) -> Option<DbusObject> {
         let path = self.get_path();
-        if let None = &msg.interface {
+        if let None = &dynheader.interface {
             return None;
         }
-        if let None = &msg.member {
+        if let None = &dynheader.member {
             return None;
         }
         eprintln!("For path: {:?}, Checking msg for match", path);
-        let object = &msg.object.as_ref()?;
+        let object = &dynheader.object.as_ref()?;
         let obj_path: &Path = object.as_ref();
 
         if path.starts_with(obj_path) {
@@ -523,33 +533,33 @@ impl<'a, 'b> Bluetooth<'a, 'b> {
                       match_service is over.
                     */
                     let ptr: *mut Self = self;
-                    if let Some(object) = self.match_service(service_path, msg) {
+                    if let Some(object) = self.match_service(service_path, dynheader) {
                         return Some(object);
                     }
                     ptr.as_mut().unwrap()
                 };
-                self0.match_advertisement(service_path, msg)
+                self0.match_advertisement(service_path, dynheader)
             //unimplemented!()
             } else {
                 None
             }
         }
     }
-    fn match_advertisement(&self, msg_path: &Path, _msg: &Message) -> Option<DbusObject> {
+    fn match_advertisement(&mut self, msg_path: &Path, _msg: &DynamicHeader) -> Option<DbusObject> {
         eprintln!("Checking for advertisement for match");
         let mut components = msg_path.components();
         let comp = components.next()?.as_os_str().to_str().unwrap();
-        if let None = components.next() {
+        if let Some(_) = components.next() {
             return None;
         }
-        if comp.len() != 10 {
+        if comp.len() != 7 {
             return None;
         }
-        if &comp[0..6] != "advert" {
+        if &comp[0..3] != "adv" {
             return None;
         }
-        if let Ok(u) = u16::from_str_radix(&comp[6..10], 16) {
-            if let Some(ad) = self.ads.iter().find(|x| x.index == u) {
+        if let Ok(u) = u16::from_str_radix(&comp[3..7], 16) {
+            if let Some(ad) = self.ads.iter_mut().find(|x| x.index == u) {
                 Some(DbusObject::Ad(ad))
             } else {
                 None
@@ -558,7 +568,7 @@ impl<'a, 'b> Bluetooth<'a, 'b> {
             None
         }
     }
-    fn match_service(&mut self, msg_path: &Path, msg: &Message) -> Option<DbusObject> {
+    fn match_service(&mut self, msg_path: &Path, msg: &DynamicHeader) -> Option<DbusObject> {
         eprintln!("Checking for service for match");
         let mut components = msg_path.components().take(2);
         if let Component::Normal(path) = components.next().unwrap() {
@@ -586,7 +596,7 @@ impl<'a, 'b> Bluetooth<'a, 'b> {
     pub fn discover_devices(&mut self) -> Result<HashSet<MAC>, Error> {
         self.discover_devices_filter(self.blue_path.clone())
     }
-    fn get_managed_objects(
+    fn get_managed_objects<'a, 'b>(
         &mut self,
         path: String,
         filter_path: &Path,
@@ -606,7 +616,8 @@ impl<'a, 'b> Bluetooth<'a, 'b> {
         let res_idx = self.rpc_con.send_message(&mut msg, Timeout::Infinite)?;
         loop {
             self.process_requests()?;
-            if let Some(mut res) = self.rpc_con.try_get_response(res_idx) {
+            if let Some(res) = self.rpc_con.try_get_response(res_idx) {
+                let mut res = res.unmarshall_all().unwrap();
                 if res.params.len() < 1 {
                     return Err(Error::Bluez(
                         "GetManagedObjects called didn't return any parameters".to_string(),
@@ -678,35 +689,6 @@ impl<'a, 'b> Bluetooth<'a, 'b> {
         .into();
         self.discover_devices_filter(&self.blue_path.join(devmac))
             .map(|_| ())
-        /*
-        let mut msg = MessageBuilder::new().call(GET_ALL_CALL.to_string())
-            .on(self.blue_path.join(&devmac).to_str().unwrap().to_string())
-            .at(BLUEZ_DEST.to_string()).with_interface(PROP_IF_STR.to_string()).build();
-        msg.add_param(Param::Base(DEV_IF_STR.into()));
-        let res_idx = self.rpc_con.send_message(&mut msg, None)?;
-        loop {
-            self.process_requests()?;
-            if let Some(res) = self.rpc_con.try_get_response(res_idx) {
-                match res.typ {
-                    MessageType::Reply => {
-                        let device = if let Some(props) = res.params.get(0) {
-                            RemoteDevice::from_props(props)?
-                        } else {
-                            let err_str = format!("Response returned for GetAll call to bluez is missing parameter: {:?}", res);
-                            return Err(Error::Bluez(err_str));
-                        };
-                        self.insert_device(device, devmac.into());
-                        return Ok(());
-                    },
-                    MessageType::Error => {
-                        let err_str = format!("Error returned for GetAll call to bluez: {:?}", res);
-                        return Err(Error::Bluez(err_str));
-                    },
-                    _ => unreachable!()
-                }
-            }
-        }
-        */
     }
 }
 pub fn mac_to_devmac(mac: &MAC) -> Option<String> {
@@ -772,7 +754,7 @@ pub fn unknown_method<'a, 'b>(call: &Message<'_,'_>) -> Message<'a,'b> {
             num_fds: None,
             sender: None,
             response_serial: call.serial,
-            error_name: Some(err_name),
+            dynheader.error_name: Some(err_name),
             flags: 0,
         };
         err_resp.push_param(text);
@@ -781,10 +763,10 @@ pub fn unknown_method<'a, 'b>(call: &Message<'_,'_>) -> Message<'a,'b> {
 }
 */
 trait ObjectManager {
-    fn objectmanager_call(&mut self, msg: &Message<'_, '_>) -> OutMessage {
-        match msg.member.as_ref().unwrap().as_ref() {
+    fn objectmanager_call(&mut self, msg: MarshalledMessage) -> MarshalledMessage {
+        match msg.dynheader.member.as_ref().unwrap().as_ref() {
             MANGAGED_OBJ_CALL => self.get_managed_object(msg),
-            _ => standard_messages::unknown_method(&msg),
+            _ => standard_messages::unknown_method(&msg.dynheader),
         }
     }
     fn object_manager_type() -> signature::Type {
@@ -794,12 +776,12 @@ trait ObjectManager {
         ))
     }
 
-    fn get_managed_object(&mut self, msg: &Message<'_, '_>) -> OutMessage;
+    fn get_managed_object(&mut self, msg: MarshalledMessage) -> MarshalledMessage;
 }
 
-impl ObjectManager for Bluetooth<'_, '_> {
-    fn get_managed_object(&mut self, msg: &Message) -> OutMessage {
-        let mut reply = msg.make_response();
+impl ObjectManager for Bluetooth {
+    fn get_managed_object(&mut self, msg: MarshalledMessage) -> MarshalledMessage {
+        let mut reply = msg.dynheader.make_response();
         let mut outer_dict: HashMap<Base, Param> = HashMap::new();
         for service in self.services.values_mut() {
             //let service_path = path.join(format!("service{:02x}", service.index));
@@ -878,12 +860,12 @@ trait Properties {
         ))
     }
     const INTERFACES: &'static [(&'static str, &'static [&'static str])];
-    fn properties_call(&mut self, msg: &Message) -> OutMessage {
-        match msg.member.as_ref().unwrap().as_ref() {
+    fn properties_call(&mut self, msg: MarshalledMessage) -> MarshalledMessage {
+        match msg.dynheader.member.as_ref().unwrap().as_ref() {
             "Get" => self.get(msg),
             "Set" => self.set(msg),
             GET_ALL_CALL => self.get_all(msg),
-            _ => standard_messages::unknown_method(&msg),
+            _ => standard_messages::unknown_method(&msg.dynheader),
         }
     }
     fn get_all_inner<'a, 'b>(&mut self, interface: &str) -> Option<Param<'a, 'b>> {
@@ -902,12 +884,15 @@ trait Properties {
             .unwrap();
         Some(prop_cont.into())
     }
-    fn get_all(&mut self, msg: &Message) -> OutMessage {
+    fn get_all(&mut self, msg: MarshalledMessage) -> MarshalledMessage {
+        let msg = msg.unmarshall_all().unwrap();
         let interface = if let Some(Param::Base(Base::String(interface))) = msg.params.get(0) {
             eprintln!("get_all() interface: {}", interface);
             interface
         } else {
-            return msg.make_error_response("Missing interface".to_string(), None);
+            return msg
+                .dynheader
+                .make_error_response("Missing interface".to_string(), None);
         };
         if let Some(param) = self.get_all_inner(&interface) {
             let mut res = msg.make_response();
@@ -917,28 +902,36 @@ trait Properties {
             let err_msg = format!(
                 "Interface {} is not known on {}",
                 interface,
-                msg.object.as_ref().unwrap()
+                msg.dynheader.object.as_ref().unwrap()
             );
-            msg.make_error_response("InterfaceNotFound".to_string(), Some(err_msg))
+            msg.dynheader
+                .make_error_response("InterfaceNotFound".to_string(), Some(err_msg))
         }
     }
 
-    fn get(&mut self, msg: &Message) -> OutMessage {
+    fn get(&mut self, msg: MarshalledMessage) -> MarshalledMessage {
+        let msg = msg.unmarshall_all().unwrap();
         if msg.params.len() < 2 {
             let err_str = "Expected two string arguments".to_string();
-            return msg.make_error_response("Invalid arguments".to_string(), Some(err_str));
+            return msg
+                .dynheader
+                .make_error_response("Invalid arguments".to_string(), Some(err_str));
         }
         let interface = if let Param::Base(Base::String(interface)) = &msg.params[0] {
             interface
         } else {
             let err_str = "Expected string interface as first argument!".to_string();
-            return msg.make_error_response("Invalid arguments".to_string(), Some(err_str));
+            return msg
+                .dynheader
+                .make_error_response("Invalid arguments".to_string(), Some(err_str));
         };
         let prop = if let Param::Base(Base::String(prop)) = &msg.params[1] {
             prop
         } else {
             let err_str = "Expected string property as second argument!".to_string();
-            return msg.make_error_response("Invalid arguments".to_string(), Some(err_str));
+            return msg
+                .dynheader
+                .make_error_response("Invalid arguments".to_string(), Some(err_str));
         };
         if let Some(param) = self.get_inner(interface, prop) {
             let mut reply = msg.make_response();
@@ -946,58 +939,37 @@ trait Properties {
             reply
         } else {
             let s = format!("Property {} on interface {} not found.", prop, interface);
-            msg.make_error_response("PropertyNotFound".to_string(), Some(s))
+            msg.dynheader
+                .make_error_response("PropertyNotFound".to_string(), Some(s))
         }
     }
     /// Should returng a variant containing if the property is found. If it is not found then it returns None.
     fn get_inner<'a, 'b>(&mut self, interface: &str, prop: &str) -> Option<Param<'a, 'b>>;
-    fn set_inner(&mut self, interface: &str, prop: &str, val: &params::Variant) -> Option<String>;
-    fn set(&mut self, msg: &Message) -> OutMessage {
-        if msg.params.len() < 3 {
-            return msg.make_error_response(
-                "InvalidParameters".to_string(),
-                Some("Expected three parameters".to_string()),
-            );
-        }
-        let interface = if let Param::Base(Base::String(interface)) = &msg.params[0] {
-            interface
-        } else {
-            return msg.make_error_response(
-                "InvalidParameters".to_string(),
-                Some("Expected string (interface) as first parameter".to_string()),
-            );
-        };
-        let prop = if let Param::Base(Base::String(prop)) = &msg.params[1] {
-            prop
-        } else {
-            return msg.make_error_response(
-                "InvalidParameters".to_string(),
-                Some("Expected string (property) as second parameter".to_string()),
-            );
-        };
-        if let Param::Container(Container::Variant(val)) = &msg.params[2] {
-            if let Some(err_str) = self.set_inner(&interface, &prop, &val) {
-                msg.make_error_response(err_str, None)
-            } else {
-                msg.make_response()
+    fn set_inner(&mut self, interface: &str, prop: &str, val: Variant) -> Option<String>;
+    fn set(&mut self, msg: MarshalledMessage) -> MarshalledMessage {
+        let (interface, prop, var): (&str, &str, Variant) = match msg.body.parser().get3() {
+            Ok(vals) => vals,
+            Err(err) => {
+                return msg.dynheader.make_error_response(
+                    "InvalidParameters".to_string(),
+                    Some(format!("{:?}", err)),
+                )
             }
+        };
+        if let Some(err_str) = self.set_inner(interface, prop, var) {
+            msg.dynheader.make_error_response(err_str, None)
         } else {
-            unimplemented!()
+            msg.dynheader.make_response()
         }
     }
 }
 
-impl Properties for Bluetooth<'_, '_> {
+impl Properties for Bluetooth {
     const INTERFACES: &'static [(&'static str, &'static [&'static str])] = &[];
     fn get_inner<'a, 'b>(&mut self, _interface: &str, _prop: &str) -> Option<Param<'a, 'b>> {
         None
     }
-    fn set_inner(
-        &mut self,
-        _interface: &str,
-        _prop: &str,
-        _val: &params::Variant,
-    ) -> Option<String> {
+    fn set_inner(&mut self, _interface: &str, _prop: &str, _val: Variant) -> Option<String> {
         unimplemented!()
     }
 }
@@ -1078,6 +1050,148 @@ impl ValOrFn {
         match self {
             ValOrFn::Value(v, l) => (*v, *l),
             ValOrFn::Function(f) => f(),
+        }
+    }
+}
+
+pub enum Variant<'a> {
+    Double(u64),
+    Byte(u8),
+    Int16(i16),
+    Uint16(u16),
+    Int32(i32),
+    Uint32(u32),
+    UnixFd(u32),
+    Int64(i64),
+    Uint64(u64),
+    String(String),
+    StringRef(&'a str),
+    Signature(String),
+    SigRef(&'a str),
+    ObjectPath(PathBuf),
+    ObjectPathRef(&'a Path),
+    Boolean(bool),
+    Variant(usize, Vec<u8>),
+    VariantRef(usize, &'a [u8]),
+}
+impl ToOwned for Variant<'_> {
+    type Owned = Self;
+    fn to_owned(&self) -> Self::Owned {
+        let test = [0_u8, 1, 2, 3, 4, 5];
+        let owned: Vec<u8> = test[1..].to_owned();
+        match self {
+            Variant::Double(v) => Variant::Double(*v),
+            Variant::Byte(v) => Variant::Byte(*v),
+            Variant::Int16(v) => Variant::Int16(*v),
+            Variant::Uint16(v) => Variant::Uint16(*v),
+            Variant::Int32(v) => Variant::Int32(*v),
+            Variant::Uint32(v) => Variant::Uint32(*v),
+            Variant::UnixFd(v) => Variant::UnixFd(*v),
+            Variant::Int64(v) => Variant::Int64(*v),
+            Variant::Uint64(v) => Variant::Uint64(*v),
+            Variant::String(v) => Variant::String(v.to_string()),
+            Variant::StringRef(v) => Variant::String(v.to_string()),
+            Variant::Signature(v) => Variant::Signature(v.to_string()),
+            Variant::SigRef(v) => Variant::Signature(v.to_string()),
+            Variant::ObjectPath(v) => Variant::ObjectPath(v.to_path_buf()),
+            Variant::ObjectPathRef(v) => Variant::ObjectPath(v.to_path_buf()),
+            Variant::Boolean(v) => Variant::Boolean(*v),
+            Variant::Variant(u, v) => Variant::Variant(*u, v.to_owned()),
+            Variant::VariantRef(u, v) => Variant::Variant(*u, (*v).to_owned()),
+        }
+    }
+}
+impl Signature for Variant<'_> {
+    fn signature() -> signature::Type {
+        signature::Type::Container(signature::Container::Variant)
+    }
+    fn alignment() -> usize {
+        Self::signature().get_alignment()
+    }
+}
+
+impl<'r, 'buf: 'r> Unmarshal<'r, 'buf> for Variant<'buf> {
+    fn unmarshal(
+        byteorder: ByteOrder,
+        buf: &'buf [u8],
+        offset: usize,
+    ) -> unmarshal::UnmarshalResult<Self> {
+        let sig_len = buf[offset];
+        let child_offset = offset + 1 + sig_len as usize;
+        let sig_str = std::str::from_utf8(&buf[offset + 1..child_offset])
+            .map_err(|_| unmarshal::Error::InvalidUtf8)?;
+        let types = signature::Type::parse_description(sig_str)
+            .map_err(|_| unmarshal::Error::InvalidSignature)?;
+        if types.len() != 1 {
+            return Err(unmarshal::Error::InvalidSignature);
+        }
+        match &types[0] {
+            signature::Type::Base(base) => match base {
+                signature::Base::Byte => {
+                    let (offset, value) = Unmarshal::unmarshal(byteorder, buf, child_offset)?;
+                    Ok((offset, Variant::Byte(value)))
+                }
+                signature::Base::Int16 => {
+                    let (offset, value) = Unmarshal::unmarshal(byteorder, buf, child_offset)?;
+                    Ok((offset, Variant::Int16(value)))
+                }
+                signature::Base::Uint16 => {
+                    let (offset, value) = Unmarshal::unmarshal(byteorder, buf, child_offset)?;
+                    Ok((offset, Variant::Uint16(value)))
+                }
+                signature::Base::Int32 => {
+                    let (offset, value) = Unmarshal::unmarshal(byteorder, buf, child_offset)?;
+                    Ok((offset, Variant::Int32(value)))
+                }
+                signature::Base::Uint32 => {
+                    let (offset, value) = Unmarshal::unmarshal(byteorder, buf, child_offset)?;
+                    Ok((offset, Variant::Uint32(value)))
+                }
+                signature::Base::UnixFd => {
+                    let (offset, value) = Unmarshal::unmarshal(byteorder, buf, child_offset)?;
+                    Ok((offset, Variant::UnixFd(value)))
+                }
+                signature::Base::Int64 => {
+                    let (offset, value) = Unmarshal::unmarshal(byteorder, buf, child_offset)?;
+                    Ok((offset, Variant::Int64(value)))
+                }
+                signature::Base::Uint64 => {
+                    let (offset, value) = Unmarshal::unmarshal(byteorder, buf, child_offset)?;
+                    Ok((offset, Variant::Uint64(value)))
+                }
+                signature::Base::Double => {
+                    let (offset, value) = Unmarshal::unmarshal(byteorder, buf, child_offset)?;
+                    Ok((offset, Variant::Double(value)))
+                }
+                signature::Base::String => {
+                    let (offset, value) = Unmarshal::unmarshal(byteorder, buf, child_offset)?;
+                    Ok((offset, Variant::StringRef(value)))
+                }
+                signature::Base::Signature => {
+                    let (offset, value) = Unmarshal::unmarshal(byteorder, buf, child_offset)?;
+                    match params::validate_signature(value) {
+                        Ok(_) => Ok((offset, Variant::SigRef(value))),
+                        Err(_) => Err(unmarshal::Error::InvalidSignature),
+                    }
+                }
+                signature::Base::ObjectPath => {
+                    let (offset, value) = Unmarshal::unmarshal(byteorder, buf, child_offset)?;
+                    match params::validate_object_path(value) {
+                        Ok(_) => Ok((offset, Variant::ObjectPathRef(value.as_ref()))),
+                        Err(_) => Err(unmarshal::Error::InvalidSignature),
+                    }
+                }
+                signature::Base::Boolean => {
+                    let (offset, value) = Unmarshal::unmarshal(byteorder, buf, child_offset)?;
+                    Ok((offset, Variant::Boolean(value)))
+                }
+            },
+            signature::Type::Container(on) => match on {
+                signature::Container::Array(_) => unimplemented!(),
+                signature::Container::Struct(_) => unimplemented!(),
+                signature::Container::Dict(_, _) => unimplemented!(),
+                signature::Container::Variant => unimplemented!(),
+            },
         }
     }
 }

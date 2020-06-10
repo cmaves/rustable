@@ -2,14 +2,15 @@ use rustbus::params;
 use rustbus::{Base, Container, Param};
 use std::collections::HashMap;
 
-pub const PROP_IF_STR: &'static str = "org.freedesktop.Properties";
-pub const OBJ_MANAGER_IF_STR: &'static str = "org.freedesktop.GetManagedObjects";
+pub const PROP_IF_STR: &'static str = "org.freedesktop.DBus.Properties";
+pub const OBJ_MANAGER_IF_STR: &'static str = "org.freedesktop.DBus.GetManagedObjects";
 pub const SERV_IF_STR: &'static str = "org.bluez.GattService1";
 pub const CHAR_IF_STR: &'static str = "org.bluez.GattCharacteristic1";
 pub const DESC_IF_STR: &'static str = "org.bluez.GattDescriptor1";
 pub const DEV_IF_STR: &'static str = "org.bluez.Device1";
 pub const MANAGER_IF_STR: &'static str = "org.bluez.GattManager1";
 pub const LEAD_IF_STR: &'static str = "org.bluez.LEAdvertisement1";
+pub const INTRO_IF_STR: &'static str = "org.freedesktop.DBus.Introspectable";
 
 pub const UUID_PROP: &'static str = "UUID";
 pub const SERVICE_PROP: &'static str = "Service";
@@ -57,15 +58,15 @@ pub(crate) const LEAD_IF_PROPS: &[&'static str] = &[
     SERV_UUIDS_PROP,
     MANU_DATA_PROP,
     SERV_DATA_PROP,
-    DATA_PROP,
-    DISCOVERABLE_PROP,
-    DISCOVERABLE_TO_PROP,
+    // DATA_PROP,
+    /* TODO: implement: DISCOVERABLE_PROP,
+    DISCOVERABLE_TO_PROP,*/
     INCLUDES_PROP,
     LOCAL_NAME_PROP,
     APPEARANCE_PROP,
     DURATION_PROP,
     TO_PROP,
-    SND_CHANNEL_PROP,
+    //SND_CHANNEL_PROP,
 ];
 
 pub(crate) const PROP_IF: (&'static str, &[&'static str]) = (PROP_IF_STR, &[]);

@@ -42,13 +42,13 @@ enum State {
     No,
 }
 
-pub struct RemoteDevice<'a, 'b, 'c> {
+pub struct RemoteDevice<'a> {
     pub(crate) mac: MAC,
-    pub(crate) blue: &'a mut Bluetooth<'b, 'c>,
+    pub(crate) blue: &'a mut Bluetooth,
     #[cfg(feature = "unsafe-opt")]
     ptr: *mut RemoteDeviceBase,
 }
-impl RemoteDevice<'_, '_, '_> {
+impl RemoteDevice<'_> {
     fn get_base(&self) -> &RemoteDeviceBase {
         #[cfg(feature = "unsafe-opt")]
         {
@@ -86,9 +86,9 @@ impl RemoteDevice<'_, '_, '_> {
         unimplemented!()
     }
 }
-impl<'a, 'c: 'a, 'd: 'a, 'e: 'a> Device<'a> for RemoteDevice<'c, 'd, 'e> {
+impl<'a, 'c: 'a> Device<'a> for RemoteDevice<'c> {
     type ServiceBase = RemoteServiceBase;
-    type ServiceType = RemoteService<'a, 'c, 'd, 'e>;
+    type ServiceType = RemoteService<'a, 'c>;
     fn services(&mut self) -> hash_map::Keys<UUID, Self::ServiceBase> {
         let base = self.get_base_mut();
         base.services.keys()
@@ -117,9 +117,9 @@ impl<'a, 'c: 'a, 'd: 'a, 'e: 'a> Device<'a> for RemoteDevice<'c, 'd, 'e> {
     }
 }
 
-impl<'a, 'b: 'a, 'c: 'a> Device<'a> for Bluetooth<'b, 'c> {
+impl<'a, 'b: 'a, 'c: 'a> Device<'a> for Bluetooth {
     type ServiceBase = LocalServiceBase;
-    type ServiceType = LocalService<'a, 'b, 'c>;
+    type ServiceType = LocalService<'a>;
     fn services(&mut self) -> hash_map::Keys<UUID, Self::ServiceBase> {
         self.services.keys()
     }

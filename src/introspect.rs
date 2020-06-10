@@ -1,5 +1,5 @@
 use crate::Bluetooth;
-use rustbus::message_builder::OutMessage;
+use rustbus::message_builder::MarshalledMessage;
 use rustbus::Message;
 use std::fmt::Write;
 use std::path::Path;
@@ -30,6 +30,23 @@ pub(crate) const PROP_STR: &'static str = "\t<interface name=\"org.freedesktop.D
 \t\t\t<arg name=\"value\" type=\"v\" direction=\"in\"/>
 \t\t</method>
 \t</interface>\n";
+pub(crate) const ADV_STR: &'static str = "\t<interface name=\"org.bluez.LEAdvertisement1\">
+\t\t<method name=\"Release\"/>
+\t\t<property name=\"Type\" type=\"s\" access=\"readwrite\"/>
+\t\t<property name=\"ServiceUUIDs\" type=\"as\" access=\"readwrite\"/>
+\t\t<property name=\"SolicitUUIDs\" type=\"as\" access=\"readwrite\"/>
+\t\t<property name=\"ServiceData\" type=\"a{sv}\" access=\"readwrite\"/>
+\t\t<property name=\"Data\" type=\"a{sv}\" access=\"readwrite\"/>
+\t\t<property name=\"Discoverable\" type=\"b\" access=\"readwrite\"/>
+\t\t<property name=\"DiscoverableTimeout\" type=\"q\" access=\"readwrite\"/>
+\t\t<property name=\"Includes\" type=\"as\" access=\"readwrite\"/>
+\t\t<property name=\"LocalName\" type=\"s\" access=\"readwrite\"/>
+\t\t<property name=\"Appearance\" type=\"q\" access=\"readwrite\"/>
+\t\t<property name=\"Duration\" type=\"q\" access=\"readwrite\"/>
+\t\t<property name=\"Timeout\" type=\"q\" access=\"readwrite\"/>
+\t\t<property name=\"SecondaryChannel\" type=\"s\" access=\"readwrite\"/>
+\t</interface>\n";
+//TODO: implement for ADV_STR: \t\t<property name=\"ManufacturerData\" type=\"a{sv}\" access=\"readwrite\"/>
 pub(crate) const SERVICE_STR: &'static str = "\t<interface name=\"org.bluez.GattService1\">
 \t\t<property name=\"UUID\" type=\"s\" access=\"read\"/>
 \t\t<property name=\"Primary\" type=\"b\" access=\"read\"/>
@@ -86,7 +103,8 @@ pub(crate) fn child_nodes(children: &[&str], dst: &mut String) {
     }
 }
 pub trait Introspectable {
-    fn introspectable<'a, 'b>(&self, call: &Message<'a, 'b>) -> OutMessage {
+    fn introspectable(&self, call: MarshalledMessage) -> MarshalledMessage {
+        let call = call.unmarshall_all().unwrap();
         let mut reply = call.make_response();
         reply.body.push_param(self.introspectable_str()).unwrap();
         reply
@@ -94,12 +112,12 @@ pub trait Introspectable {
     fn introspectable_str(&self) -> String;
 }
 
-impl Introspectable for Bluetooth<'_, '_> {
-    fn introspectable<'a, 'b>(&self, call: &Message<'a, 'b>) -> OutMessage {
-        let object: &Path = call.object.as_ref().unwrap().as_ref();
+impl Introspectable for Bluetooth {
+    fn introspectable<'a, 'b>(&self, call: MarshalledMessage) -> MarshalledMessage {
+        let object: &Path = call.dynheader.object.as_ref().unwrap().as_ref();
         let path = self.get_path();
         let stripped = path.strip_prefix(object).unwrap();
-        let mut reply = call.make_response();
+        let mut reply = call.dynheader.make_response();
         eprintln!("{:?}", stripped);
         if let Some(child) = stripped.components().nth(0) {
             // Handle if the introspection is for a parent of the Bluetooth dev
