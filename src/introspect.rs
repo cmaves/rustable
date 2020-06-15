@@ -144,11 +144,13 @@ impl Introspectable for Bluetooth {
         ret.push_str(INTROSPECT_FMT_P2);
         ret.push_str(MANGAGER_STR);
         //ret.push_str(PROP_STR);
-        let children: Vec<&str> = self
+        let mut children: Vec<&str> = self
             .services
             .values()
             .map(|s| s.path.file_name().unwrap().to_str().unwrap())
             .collect();
+        let ads = self.ads.iter().map(|s| s.path.file_name().unwrap().to_str().unwrap());
+        children.extend(ads);
         child_nodes(&children, &mut ret);
         ret.push_str(INTROSPECT_FMT_P3);
         ret

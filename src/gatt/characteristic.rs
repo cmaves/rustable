@@ -663,10 +663,31 @@ impl Properties for LocalCharBase {
     }
 }
 pub struct RemoteCharBase {
-    uuid: UUID,
+    pub(crate) uuid: UUID,
     chars: HashMap<UUID, RemoteDescBase>,
     notify_fd: Option<RawFd>,
     path: PathBuf,
+}
+impl RemoteCharBase {
+    pub(crate) fn from_props(
+        value: &mut HashMap<String, params::Variant>,
+        path: PathBuf,
+    ) -> Result<Self, Error> {
+        let uuid = match value.remove("UUID") {
+            Some(addr) => if let Param::Base(Base::String(addr)) = addr.value {
+                addr.into()
+            } else {
+                return Err(Error::DbusReqErr("Invalid device returned; UUID field is invalid type".to_string()))
+            },
+            None => return Err(Error::DbusReqErr("Invalid device returned; missing UUID field".to_string()))
+        };
+        Ok(RemoteCharBase {
+            uuid,
+            chars: HashMap::new(),
+            notify_fd: None,
+            path
+        })
+    }
 }
 impl Drop for RemoteCharBase {
     fn drop(&mut self) {

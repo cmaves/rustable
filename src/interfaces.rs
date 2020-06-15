@@ -3,7 +3,7 @@ use rustbus::{Base, Container, Param};
 use std::collections::HashMap;
 
 pub const PROP_IF_STR: &'static str = "org.freedesktop.DBus.Properties";
-pub const OBJ_MANAGER_IF_STR: &'static str = "org.freedesktop.DBus.GetManagedObjects";
+pub const OBJ_MANAGER_IF_STR: &'static str = "org.freedesktop.DBus.ObjectManager";
 pub const SERV_IF_STR: &'static str = "org.bluez.GattService1";
 pub const CHAR_IF_STR: &'static str = "org.bluez.GattCharacteristic1";
 pub const DESC_IF_STR: &'static str = "org.bluez.GattDescriptor1";
@@ -11,6 +11,7 @@ pub const DEV_IF_STR: &'static str = "org.bluez.Device1";
 pub const MANAGER_IF_STR: &'static str = "org.bluez.GattManager1";
 pub const LEAD_IF_STR: &'static str = "org.bluez.LEAdvertisement1";
 pub const INTRO_IF_STR: &'static str = "org.freedesktop.DBus.Introspectable";
+pub const ADAPTER_IF_STR: &'static str = "org.bluez.Adapter1";
 
 pub const UUID_PROP: &'static str = "UUID";
 pub const SERVICE_PROP: &'static str = "Service";
@@ -80,6 +81,7 @@ pub const BLUEZ_DEST: &'static str = "org.bluez";
 pub const PROP_CHANGED_SIG: &'static str = "PropertiesChanged";
 pub const MANGAGED_OBJ_CALL: &'static str = "GetManagedObjects";
 pub const REGISTER_CALL: &'static str = "RegisterApplication";
+pub const UNREGISTER_CALL: &'static str = "UnregisterApplication";
 pub const GET_ALL_CALL: &'static str = "GetAll";
 
 // Bluez Errors

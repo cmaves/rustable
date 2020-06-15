@@ -1,10 +1,12 @@
 use crate::gatt::*;
 use crate::{Bluetooth, Error, MAC, UUID};
 use rustbus::params;
+use rustbus::{Param,Base};
 use std::collections::hash_map;
 use std::collections::HashMap;
 use std::ffi::OsString;
 use std::path::PathBuf;
+use std::rc::Rc;
 
 pub enum AddrType {
     Public,
@@ -26,20 +28,59 @@ pub struct RemoteDeviceBase {
     pub(crate) services: HashMap<MAC, RemoteServiceBase>,
     connected: State,
     paired: State,
-    comp_map: HashMap<OsString, MAC>,
+    //comp_map: HashMap<OsString, MAC>,
 }
 impl RemoteDeviceBase {
     pub(crate) fn from_props(
-        value: &HashMap<String, params::Variant>,
+        value: &mut HashMap<String, params::Variant>,
         path: PathBuf,
     ) -> Result<Self, Error> {
-        unimplemented!()
+        let mac = match value.remove("Address") {
+            Some(addr) => if let Param::Base(Base::String(addr)) = addr.value {
+                addr.into()
+            } else {
+                return Err(Error::DbusReqErr("Invalid device returned; Address field is invalid type".to_string()))
+            },
+            None => return Err(Error::DbusReqErr("Invalid device returned; missing Address field".to_string()))
+        };
+        let connected = match value.remove("Connected") {
+            Some(val) => if let Param::Base(Base::Boolean(val)) = val.value {
+                val.into()
+            } else {
+                return Err(Error::DbusReqErr("Invalid device returned; Address field is invalid type".to_string()))
+            },
+            None => return Err(Error::DbusReqErr("Invalid device returned; missing Address field".to_string()))
+        };
+        let paired = match value.remove("Paired") {
+            Some(val) => if let Param::Base(Base::Boolean(val)) = val.value {
+                val.into()
+            } else {
+                return Err(Error::DbusReqErr("Invalid device returned; Address field is invalid type".to_string()))
+            },
+            None => return Err(Error::DbusReqErr("Invalid device returned; missing Address field".to_string()))
+        };
+        Ok(RemoteDeviceBase {
+            mac,
+            path,
+            connected,
+            paired,
+            services: HashMap::new()
+        })
     }
 }
 enum State {
     WaitRes(u32),
     Yes,
     No,
+}
+impl From<bool> for State {
+    fn from(b: bool) -> Self {
+        if b {
+            State::Yes
+        } else {
+            State::No
+        }
+    }
 }
 
 pub struct RemoteDevice<'a> {

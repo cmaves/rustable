@@ -11,7 +11,7 @@ use std::time::Instant;
 pub struct Advertisement {
     pub typ: AdType,
     pub service_uuids: Vec<UUID>,
-    pub manu_data: HashMap<String, ()>,
+    pub manu_data: HashMap<u16, ([u8; 27], usize)>,
     pub solicit_uuids: Vec<UUID>,
     pub includes: Vec<String>,
     pub timeout: u16,
@@ -112,10 +112,27 @@ impl Properties for Advertisement {
                 }
                 MANU_DATA_PROP => {
                     //let manu_data = Param::Container(Container::Array(params::Array));
-                    unimplemented!()
+                    let manu_data: HashMap<Base, Param> = self.manu_data.iter().map(|(key, (v, l))| {
+                        let key = Base::Uint16(*key);
+                        let byte_vec: Vec<Param> = v[..*l].iter().map(|x| Param::Base(Base::Byte(*x))).collect();
+                        let base = Box::new(signature::Type::Base(signature::Base::Byte));
+                        let typ = signature::Type::Container(signature::Container::Array(base));
+                        let array = Param::Container(Container::Array( params::Array{ element_sig: typ, values: byte_vec}));
+                        (key, array)
+                    }).collect();
+                    let cont: Container = manu_data.try_into().unwrap();
+                    Some(cont.into())
                 }
-                SOLICIT_UUIDS_PROP => unimplemented!(),
-                SERV_DATA_PROP => unimplemented!(),
+                SOLICIT_UUIDS_PROP => {
+                    let uuids: Vec<Param> = self.solicit_uuids.iter().map(|x| Param::Base(Base::String(x.to_string()))).collect();
+                    let uuids: Container = uuids.try_into().unwrap();
+                    Some(uuids.into())
+                },
+                SERV_DATA_PROP => {
+                    let uuids: Vec<Param> = self.service_uuids.iter().map(|x| Param::Base(Base::String(x.to_string()))).collect();
+                    let uuids: Container = uuids.try_into().unwrap();
+                    Some(uuids.into())
+                },
                 /*TODO: implement: DATA_PROP => unimplemented!(),
                 DISCOVERABLE_PROP => unimplemented!(),
                 DISCOVERABLE_TO_PROP => unimplemented!(),*/
@@ -133,8 +150,16 @@ impl Properties for Advertisement {
                 }
                 LOCAL_NAME_PROP => Some(Param::Base(self.localname.to_string().into())),
                 APPEARANCE_PROP => Some(Param::Base(self.appearance.into())),
-                DURATION_PROP => Some(Param::Base(self.duration.into())),
-                TO_PROP => Some(Param::Base(self.timeout.into())),
+                DURATION_PROP => {
+                    let duration = self.duration as u64;
+                    let time = duration.saturating_sub(Instant::now().duration_since(self.duration_start).as_secs());
+                    Some(Param::Base(time.into()))
+                },
+                TO_PROP => {
+                    let timeout = self.timeout as u64;
+                    let time = timeout.saturating_sub(Instant::now().duration_since(self.timeout_start).as_secs());
+                    Some(Param::Base(time.into()))
+                },
                 //TODO:implement SND_CHANNEL_PROP => unimplemented!(),
                 _ => None,
             },
