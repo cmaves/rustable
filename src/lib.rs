@@ -342,7 +342,7 @@ impl Bluetooth {
             }
         };
         let mut msg = MessageBuilder::new()
-            .call(UNREGISTER_CALL.to_string())
+            .call("UnregisterAdvertisement".to_string())
             .with_interface(LEAD_IF_STR.to_string())
             .on(self.blue_path.to_str().unwrap().to_string())
             .at(BLUEZ_DEST.to_string())
