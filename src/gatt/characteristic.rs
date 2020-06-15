@@ -674,18 +674,26 @@ impl RemoteCharBase {
         path: PathBuf,
     ) -> Result<Self, Error> {
         let uuid = match value.remove("UUID") {
-            Some(addr) => if let Param::Base(Base::String(addr)) = addr.value {
-                addr.into()
-            } else {
-                return Err(Error::DbusReqErr("Invalid device returned; UUID field is invalid type".to_string()))
-            },
-            None => return Err(Error::DbusReqErr("Invalid device returned; missing UUID field".to_string()))
+            Some(addr) => {
+                if let Param::Base(Base::String(addr)) = addr.value {
+                    addr.into()
+                } else {
+                    return Err(Error::DbusReqErr(
+                        "Invalid device returned; UUID field is invalid type".to_string(),
+                    ));
+                }
+            }
+            None => {
+                return Err(Error::DbusReqErr(
+                    "Invalid device returned; missing UUID field".to_string(),
+                ))
+            }
         };
         Ok(RemoteCharBase {
             uuid,
             chars: HashMap::new(),
             notify_fd: None,
-            path
+            path,
         })
     }
 }

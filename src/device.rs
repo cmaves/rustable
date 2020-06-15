@@ -1,7 +1,7 @@
 use crate::gatt::*;
 use crate::{Bluetooth, Error, MAC, UUID};
 use rustbus::params;
-use rustbus::{Param,Base};
+use rustbus::{Base, Param};
 use std::collections::hash_map;
 use std::collections::HashMap;
 use std::ffi::OsString;
@@ -36,35 +36,59 @@ impl RemoteDeviceBase {
         path: PathBuf,
     ) -> Result<Self, Error> {
         let mac = match value.remove("Address") {
-            Some(addr) => if let Param::Base(Base::String(addr)) = addr.value {
-                addr.into()
-            } else {
-                return Err(Error::DbusReqErr("Invalid device returned; Address field is invalid type".to_string()))
-            },
-            None => return Err(Error::DbusReqErr("Invalid device returned; missing Address field".to_string()))
+            Some(addr) => {
+                if let Param::Base(Base::String(addr)) = addr.value {
+                    addr.into()
+                } else {
+                    return Err(Error::DbusReqErr(
+                        "Invalid device returned; Address field is invalid type".to_string(),
+                    ));
+                }
+            }
+            None => {
+                return Err(Error::DbusReqErr(
+                    "Invalid device returned; missing Address field".to_string(),
+                ))
+            }
         };
         let connected = match value.remove("Connected") {
-            Some(val) => if let Param::Base(Base::Boolean(val)) = val.value {
-                val.into()
-            } else {
-                return Err(Error::DbusReqErr("Invalid device returned; Address field is invalid type".to_string()))
-            },
-            None => return Err(Error::DbusReqErr("Invalid device returned; missing Address field".to_string()))
+            Some(val) => {
+                if let Param::Base(Base::Boolean(val)) = val.value {
+                    val.into()
+                } else {
+                    return Err(Error::DbusReqErr(
+                        "Invalid device returned; Address field is invalid type".to_string(),
+                    ));
+                }
+            }
+            None => {
+                return Err(Error::DbusReqErr(
+                    "Invalid device returned; missing Address field".to_string(),
+                ))
+            }
         };
         let paired = match value.remove("Paired") {
-            Some(val) => if let Param::Base(Base::Boolean(val)) = val.value {
-                val.into()
-            } else {
-                return Err(Error::DbusReqErr("Invalid device returned; Address field is invalid type".to_string()))
-            },
-            None => return Err(Error::DbusReqErr("Invalid device returned; missing Address field".to_string()))
+            Some(val) => {
+                if let Param::Base(Base::Boolean(val)) = val.value {
+                    val.into()
+                } else {
+                    return Err(Error::DbusReqErr(
+                        "Invalid device returned; Address field is invalid type".to_string(),
+                    ));
+                }
+            }
+            None => {
+                return Err(Error::DbusReqErr(
+                    "Invalid device returned; missing Address field".to_string(),
+                ))
+            }
         };
         Ok(RemoteDeviceBase {
             mac,
             path,
             connected,
             paired,
-            services: HashMap::new()
+            services: HashMap::new(),
         })
     }
 }

@@ -91,7 +91,6 @@ impl LocalServiceBase {
             primary,
         }
     }
-
 }
 pub struct LocalService<'a> {
     pub(crate) uuid: UUID,
@@ -217,34 +216,49 @@ pub struct RemoteServiceBase {
     pub(crate) chars: HashMap<UUID, RemoteCharBase>,
 }
 impl RemoteServiceBase {
-    pub fn from_props(        
+    pub fn from_props(
         value: &mut HashMap<String, params::Variant>,
         path: PathBuf,
     ) -> Result<Self, Error> {
         let uuid = match value.remove("UUID") {
-            Some(addr) => if let Param::Base(Base::String(addr)) = addr.value {
-                addr.into()
-            } else {
-                return Err(Error::DbusReqErr("Invalid device returned; UUID field is invalid type".to_string()))
-            },
-            None => return Err(Error::DbusReqErr("Invalid device returned; missing UUID field".to_string()))
+            Some(addr) => {
+                if let Param::Base(Base::String(addr)) = addr.value {
+                    addr.into()
+                } else {
+                    return Err(Error::DbusReqErr(
+                        "Invalid device returned; UUID field is invalid type".to_string(),
+                    ));
+                }
+            }
+            None => {
+                return Err(Error::DbusReqErr(
+                    "Invalid device returned; missing UUID field".to_string(),
+                ))
+            }
         };
         let primary = match value.remove("Primary") {
-            Some(p) => if let Param::Base(Base::Boolean(p)) = p.value {
-                p.into()
-            } else {
-                return Err(Error::DbusReqErr("Invalid device returned; UUID field is invalid type".to_string()))
-            },
-            None => return Err(Error::DbusReqErr("Invalid device returned; missing UUID field".to_string()))
-        };       
+            Some(p) => {
+                if let Param::Base(Base::Boolean(p)) = p.value {
+                    p.into()
+                } else {
+                    return Err(Error::DbusReqErr(
+                        "Invalid device returned; UUID field is invalid type".to_string(),
+                    ));
+                }
+            }
+            None => {
+                return Err(Error::DbusReqErr(
+                    "Invalid device returned; missing UUID field".to_string(),
+                ))
+            }
+        };
         Ok(RemoteServiceBase {
             uuid,
             primary,
             path,
-            chars: HashMap::new()
+            chars: HashMap::new(),
         })
     }
-
 }
 impl TryFrom<&Message<'_, '_>> for RemoteServiceBase {
     type Error = Error;

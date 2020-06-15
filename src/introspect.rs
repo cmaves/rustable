@@ -149,7 +149,10 @@ impl Introspectable for Bluetooth {
             .values()
             .map(|s| s.path.file_name().unwrap().to_str().unwrap())
             .collect();
-        let ads = self.ads.iter().map(|s| s.path.file_name().unwrap().to_str().unwrap());
+        let ads = self
+            .ads
+            .iter()
+            .map(|s| s.path.file_name().unwrap().to_str().unwrap());
         children.extend(ads);
         child_nodes(&children, &mut ret);
         ret.push_str(INTROSPECT_FMT_P3);
