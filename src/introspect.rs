@@ -1,6 +1,6 @@
 use crate::Bluetooth;
 use rustbus::message_builder::MarshalledMessage;
-use rustbus::Message;
+use rustbus::params::message::Message;
 use std::fmt::Write;
 use std::path::Path;
 pub(crate) const INTROSPECT_FMT_P1: &'static str = "<!DOCTYPE node PUBLIC \"-//freedesktop//DTD D-BUS Object Introspection 1.0//EN\" \"http://www.freedesktop.org/standards/dbus/1.0/introspect.dtd\">

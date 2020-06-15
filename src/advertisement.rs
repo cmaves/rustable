@@ -3,9 +3,8 @@ use crate::introspect::*;
 use crate::*;
 
 use rustbus::params;
+use rustbus::params::Param;
 use rustbus::signature;
-use rustbus::wire::marshal_trait::Marshal;
-use rustbus::Param;
 use std::time::Instant;
 
 pub struct Advertisement {

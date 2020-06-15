@@ -1,7 +1,7 @@
 use crate::gatt::*;
 use crate::{Bluetooth, Error, MAC, UUID};
 use rustbus::params;
-use rustbus::{Base, Param};
+use rustbus::params::{Base, Param};
 use std::collections::hash_map;
 use std::collections::HashMap;
 use std::ffi::OsString;

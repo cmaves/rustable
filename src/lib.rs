@@ -1,17 +1,16 @@
 use gatt::*;
 use rustbus::client_conn;
 use rustbus::client_conn::{Conn, RpcConn, Timeout};
-use rustbus::message::{ByteOrder, DynamicHeader};
-use rustbus::message::{Message, MessageType};
-use rustbus::message_builder::{MarshalledMessage, MarshalledMessageBody, MessageBuilder};
+use rustbus::message_builder::{DynamicHeader, MarshalledMessage, MessageBuilder, MessageType};
 use rustbus::params;
+use rustbus::params::message::Message;
+use rustbus::params::{Base, Container, Param};
 use rustbus::signature;
 use rustbus::standard_messages;
-use rustbus::wire::marshal_trait::{Marshal, ObjectPath, Signature};
+use rustbus::wire::marshal::traits::Signature;
 use rustbus::wire::unmarshal;
-use rustbus::wire::unmarshal_trait::Unmarshal;
-use rustbus::wire::util::align_offset;
-use rustbus::{get_system_bus_path, Base, Container, Param};
+use rustbus::wire::unmarshal::traits::Unmarshal;
+use rustbus::{get_system_bus_path, ByteOrder};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::convert::{TryFrom, TryInto};
 use std::ffi::OsString;
@@ -1250,11 +1249,11 @@ impl<'r, 'buf: 'r> Unmarshal<'r, 'buf> for Variant<'buf> {
         let sig_len = buf[offset];
         let child_offset = offset + 1 + sig_len as usize;
         let sig_str = std::str::from_utf8(&buf[offset + 1..child_offset])
-            .map_err(|_| unmarshal::Error::InvalidUtf8)?;
+            .map_err(|_| unmarshal::Error::InvalidType)?;
         let types = signature::Type::parse_description(sig_str)
-            .map_err(|_| unmarshal::Error::InvalidSignature)?;
+            .map_err(|_| unmarshal::Error::NoSignature)?;
         if types.len() != 1 {
-            return Err(unmarshal::Error::InvalidSignature);
+            return Err(unmarshal::Error::NoSignature);
         }
         match &types[0] {
             signature::Type::Base(base) => match base {
@@ -1302,14 +1301,14 @@ impl<'r, 'buf: 'r> Unmarshal<'r, 'buf> for Variant<'buf> {
                     let (offset, value) = Unmarshal::unmarshal(byteorder, buf, child_offset)?;
                     match params::validate_signature(value) {
                         Ok(_) => Ok((offset, Variant::SigRef(value))),
-                        Err(_) => Err(unmarshal::Error::InvalidSignature),
+                        Err(_) => Err(unmarshal::Error::NoSignature),
                     }
                 }
                 signature::Base::ObjectPath => {
                     let (offset, value) = Unmarshal::unmarshal(byteorder, buf, child_offset)?;
                     match params::validate_object_path(value) {
                         Ok(_) => Ok((offset, Variant::ObjectPathRef(value.as_ref()))),
-                        Err(_) => Err(unmarshal::Error::InvalidSignature),
+                        Err(_) => Err(unmarshal::Error::NoSignature),
                     }
                 }
                 signature::Base::Boolean => {

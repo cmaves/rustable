@@ -1,5 +1,5 @@
 use rustbus::params;
-use rustbus::{Base, Container, Param};
+use rustbus::params::{Base, Container, Param};
 use std::collections::HashMap;
 
 pub const PROP_IF_STR: &'static str = "org.freedesktop.DBus.Properties";

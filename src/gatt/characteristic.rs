@@ -5,8 +5,8 @@ use nix::sys::socket;
 use nix::sys::time::{TimeVal, TimeValLike};
 use nix::sys::uio::IoVec;
 use nix::unistd::close;
-use rustbus::message::Message;
-use rustbus::{Base, Container, Param};
+use rustbus::params::message::Message;
+use rustbus::params::{Base, Container, Param};
 use std::convert::TryFrom;
 use std::os::unix::io::RawFd;
 

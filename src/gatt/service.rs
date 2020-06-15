@@ -1,7 +1,7 @@
 use crate::gatt::*;
 use crate::introspect::*;
 use crate::*;
-use rustbus::Message;
+use rustbus::params::message::Message;
 use std::collections::hash_map::Keys;
 use std::collections::HashMap;
 use std::ffi::OsStr;
