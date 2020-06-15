@@ -321,12 +321,13 @@ impl Bluetooth {
                         eprintln!("error: {}", err_str);
                         Err(Error::Bluez(err_str))
                     }
-                    _ => {
+                    MessageType::Reply => {
                         if self.verbose >= 1 {
                             eprintln!("Registered application with bluez.");
                         };
                         Ok(ret_idx)
                     }
+                    _ => unreachable!(),
                 };
             }
         }
@@ -343,14 +344,13 @@ impl Bluetooth {
         };
         let mut msg = MessageBuilder::new()
             .call("UnregisterAdvertisement".to_string())
-            .with_interface(LEAD_IF_STR.to_string())
+            .with_interface("org.bluez.LEAdvertisingManager1".to_string())
             .on(self.blue_path.to_str().unwrap().to_string())
             .at(BLUEZ_DEST.to_string())
             .build();
+        let path = self.ads[idx].path.to_str().unwrap().to_string();
         msg.body
-            .push_old_param(&Param::Base(Base::ObjectPath(
-                self.ads[idx].path.to_str().unwrap().to_string(),
-            )))
+            .push_old_param(&Param::Base(Base::ObjectPath(path)))
             .unwrap();
         let res_idx = self.rpc_con.send_message(&mut msg, Timeout::Infinite)?;
         loop {
