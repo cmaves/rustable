@@ -518,7 +518,16 @@ impl Bluetooth {
                     },
                     DbusObject::Ad(ad) => match interface.as_ref() {
                         PROP_IF_STR => ad.properties_call(call),
-                        LEAD_IF_STR => unimplemented!(),
+                        LEAD_IF_STR => {
+                            if call.dynheader.member.as_ref().unwrap() == "Release" {
+                                let index = ad.index;
+                                let idx = self.ads.iter().position(|x| x.index == index).unwrap();
+                                self.ads.remove(idx);
+                                call.dynheader.make_response()
+                            } else {
+                                standard_messages::unknown_method(&call.dynheader)
+                            }
+                        }
                         INTRO_IF_STR => ad.introspectable(call),
                         _ => standard_messages::unknown_method(&call.dynheader),
                     },
@@ -1002,10 +1011,16 @@ trait Properties {
             let val = self.get_inner(interface, prop).unwrap();
             prop_map.insert(prop.to_string().into(), val);
         }
-        let prop_cont: Container = (signature::Base::String, Self::GET_ALL_ITEM, prop_map)
-            .try_into()
-            .unwrap();
-        Some(prop_cont.into())
+        let prop_cont = Container::Dict(params::Dict {
+            key_sig: signature::Base::String,
+            value_sig: Self::GET_ALL_ITEM,
+            map: prop_map,
+        });
+        /*let prop_cont: Container = (signature::Base::String, Self::GET_ALL_ITEM, prop_map)
+        .try_into()
+        .unwrap();*/
+        //Some(prop_cont.into())
+        Some(Param::Container(prop_cont))
     }
     fn get_all(&mut self, msg: MarshalledMessage) -> MarshalledMessage {
         let msg = msg.unmarshall_all().unwrap();
@@ -1118,6 +1133,30 @@ fn base_param_to_variant(b: Base) -> Param {
         Base::Byte(b) => params::Variant {
             sig: signature::Type::Base(signature::Base::Byte),
             value: Param::Base(b.into()),
+        },
+        Base::Uint64(b) => params::Variant {
+            sig: rustbus::signature::Type::Base(signature::Base::Uint64),
+            value: Param::Base(b.into()),
+        },
+        _ => unimplemented!(),
+    };
+    Param::Container(Container::Variant(Box::new(var)))
+}
+
+fn container_param_to_variant<'a, 'b>(c: Container<'a, 'b>) -> Param<'a, 'b> {
+    let var = match c {
+        Container::Dict(dict) => params::Variant {
+            sig: signature::Type::Container(rustbus::signature::Container::Dict(
+                dict.key_sig.clone(),
+                Box::new(dict.value_sig.clone()),
+            )),
+            value: Param::Container(Container::Dict(dict)),
+        },
+        Container::Array(array) => params::Variant {
+            sig: rustbus::signature::Type::Container(rustbus::signature::Container::Array(
+                Box::new(array.element_sig.clone()),
+            )),
+            value: Param::Container(Container::Array(array)),
         },
         _ => unimplemented!(),
     };

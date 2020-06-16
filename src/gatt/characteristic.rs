@@ -720,6 +720,12 @@ impl<'a, 'b, 'c> RemoteChar<'a, 'b, 'c> {
             .at(BLUEZ_DEST.to_string())
             .with_interface(CHAR_IF_STR.to_string())
             .build();
+        let options = Param::Container(Container::Dict(params::Dict {
+            key_sig: signature::Base::String,
+            value_sig: signature::Type::Container(signature::Container::Variant),
+            map: HashMap::new(),
+        }));
+        msg.body.push_old_param(&options).unwrap();
         let blue = self.get_blue_mut();
         let res_idx = blue.rpc_con.send_message(&mut msg, Timeout::Infinite)?;
         loop {
@@ -735,7 +741,7 @@ impl<'a, 'b, 'c> RemoteChar<'a, 'b, 'c> {
                                 "Response returned unexpected of parameter".to_string(),
                             ));
                         };
-                        let fd = fd as i32;
+                        let fd = res.raw_fds[fd as usize];
                         let base = self.get_char_mut();
                         base.notify_fd = Some(fd);
                         Ok(fd)

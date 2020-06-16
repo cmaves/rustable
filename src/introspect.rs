@@ -36,6 +36,7 @@ pub(crate) const ADV_STR: &'static str = "\t<interface name=\"org.bluez.LEAdvert
 \t\t<property name=\"ServiceUUIDs\" type=\"as\" access=\"readwrite\"/>
 \t\t<property name=\"SolicitUUIDs\" type=\"as\" access=\"readwrite\"/>
 \t\t<property name=\"ServiceData\" type=\"a{sv}\" access=\"readwrite\"/>
+\t\t<property name=\"ManufacturerData\" type=\"a{qa{y}}\" access=\"readwrite\"/>
 \t\t<property name=\"Data\" type=\"a{sv}\" access=\"readwrite\"/>
 \t\t<property name=\"Discoverable\" type=\"b\" access=\"readwrite\"/>
 \t\t<property name=\"DiscoverableTimeout\" type=\"q\" access=\"readwrite\"/>
