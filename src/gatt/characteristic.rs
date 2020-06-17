@@ -39,6 +39,16 @@ pub struct LocalCharBase {
     pub(crate) descs: HashMap<String, LocalDescriptor>,
     flags: CharFlags,
 }
+impl Drop for LocalCharBase {
+    fn drop(&mut self) {
+        if let Some(Notify::Fd(fd)) = self.notify {
+            close(fd).ok(); // ignore error
+        }
+        if let Some(fd) = self.write {
+            close(fd).ok();
+        }
+    }
+}
 impl LocalCharBase {
     pub(super) fn update_path(&mut self, base: &Path) {
         self.path = base.to_owned();

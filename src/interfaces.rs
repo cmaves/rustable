@@ -4,6 +4,7 @@ use std::collections::HashMap;
 
 pub const PROP_IF_STR: &'static str = "org.freedesktop.DBus.Properties";
 pub const OBJ_MANAGER_IF_STR: &'static str = "org.freedesktop.DBus.ObjectManager";
+pub const DBUS_IF_STR: &'static str = "org.freedesktop.DBus";
 pub const SERV_IF_STR: &'static str = "org.bluez.GattService1";
 pub const CHAR_IF_STR: &'static str = "org.bluez.GattCharacteristic1";
 pub const DESC_IF_STR: &'static str = "org.bluez.GattDescriptor1";
@@ -93,6 +94,7 @@ pub const UNKNOWN_METHOD: &'static str = "org.dbus.freedesktop.UnknownMethod";
 
 pub const IF_ADDED_SIG: &'static str = "InterfaceAdded";
 pub const IF_REMOVED_SIG: &'static str = "InterfaceRemoved";
+pub const NAME_LOST_SIG: &'static str = "NameLost";
 
 pub(crate) fn if_dict_to_map<'a, 'b>(
     if_dict: Param<'a, 'b>,

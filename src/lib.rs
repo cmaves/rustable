@@ -369,6 +369,12 @@ impl Bluetooth {
             }
         }
     }
+    pub fn remove_advertise_no_dbus(&mut self, index: u16) -> Result<Advertisement, Error> {
+         match self.ads.iter().position(|ad| ad.index == index) {
+            Some(idx) => Ok(self.ads.remove(idx).unwrap()),
+            None => Err(Error::BadInput(format!("Advertisement index {} not found.",index)))
+        }       
+    }
     pub fn set_discoverable(&mut self, on: bool) -> Result<(), Error> {
         let mut msg = MessageBuilder::new()
             .call("Set".to_string())
@@ -391,7 +397,7 @@ impl Bluetooth {
                 match res.typ {
                     MessageType::Reply => return Ok(()),
                     MessageType::Error => {
-                        return Err(Error::DbusReqErr(format!("Set call failed: {:?}", res)))
+                        return Err(Error::DbusReqErr(format!("Set discoverable call failed: {:?}", res)))
                     }
                     _ => unreachable!(),
                 }
@@ -544,6 +550,19 @@ impl Bluetooth {
                     IF_REMOVED_SIG => unimplemented!(),
                     _ => (),
                 },
+                DBUS_IF_STR => match sig.dynheader.member.as_ref().unwrap().as_str() {
+                    NAME_LOST_SIG => if let Some(filter) = &self.filter_dest {
+                        if let Ok(lost_name) = sig.body.parser().get() {
+                            let lost_name: &str = lost_name;
+                            if filter == lost_name {
+                                let err = Err(Error::Bluez(format!("{} has disconnected from DBus!", filter)));
+                                self.clear_devices();
+                                return err;
+                            }
+                        }
+                    },
+                    _ => ()
+                },
                 _ => (),
             }
         }
@@ -659,6 +678,9 @@ impl Bluetooth {
             None
         }
     }
+    pub fn clear_devices(&mut self) {
+        self.devices.clear()
+    }
     pub fn discover_devices(&mut self) -> Result<HashSet<MAC>, Error> {
         self.discover_devices_filter(self.blue_path.clone())
     }
@@ -731,7 +753,8 @@ impl Bluetooth {
         &mut self,
         filter_path: T,
     ) -> Result<HashSet<MAC>, Error> {
-        let mut pairs = self.get_managed_objects("/".to_string(), filter_path.as_ref())?;
+        self.devices.clear();
+        let pairs = self.get_managed_objects("/".to_string(), filter_path.as_ref())?;
         let mut set = HashSet::new();
         let mut device_base: Option<RemoteDeviceBase> = None;
         let mut service_base: Option<RemoteServiceBase> = None;

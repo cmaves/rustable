@@ -150,6 +150,9 @@ impl RemoteDevice<'_> {
     pub fn pair(&mut self) -> Result<(), Error> {
         unimplemented!()
     }
+    pub fn forget_service(&mut self, uuid: &UUID) ->  bool {
+        self.get_base_mut().services.remove(uuid).is_some()
+    }
 }
 impl<'a, 'c: 'a> Device<'a> for RemoteDevice<'c> {
     type ServiceBase = RemoteServiceBase;

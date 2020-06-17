@@ -28,15 +28,11 @@ pub struct NotifyPoller {
 
 impl NotifyPoller {
     pub fn new(polls: &[RawFd]) -> Self {
-        let mut fds = Vec::new();
-        let mut indices = Vec::new();
-        for (i, poll) in polls.iter().enumerate() {
-            fds.push(PollFd::new(*poll, PollFlags::POLLIN));
-            indices.push(i);
-        }
+        let fds: Vec<PollFd> = polls.iter().map(|fd| PollFd::new(*fd, PollFlags::POLLIN | PollFlags::POLLERR)).collect();
+        let indices = Vec::with_capacity(fds.len());
         NotifyPoller { fds, indices }
     }
-    pub fn poll(&mut self, timeout: Option<Duration>) -> Result<Vec<usize>, Error> {
+    pub fn poll(&mut self, timeout: Option<Duration>) -> Result<&[usize] ,Error> {
         let timeout = if let Some(dur) = timeout {
             if dur.subsec_millis() % 1000 == 0 {
                 dur.as_millis().min(std::i32::MAX as u128) as i32
@@ -46,22 +42,28 @@ impl NotifyPoller {
         } else {
             -1
         };
+        self.indices.clear();
         let mut res = poll(&mut self.fds, timeout)? as usize;
-        let mut ret1 = Vec::with_capacity(res);
         if res > 0 {
             for (i, fd) in self.fds.iter().enumerate() {
                 if let Some(events) = fd.revents() {
-                    if events.contains(PollFlags::POLLIN) {
-                        ret1.push(self.indices[i]);
+                    if events.intersects(PollFlags::POLLIN | PollFlags::POLLERR) {
+                        self.indices.push(i);
+                        res -= 1;
                         if res <= 0 {
                             break;
                         }
-                        res -= 1;
                     }
                 }
             }
         }
         debug_assert_eq!(res, 0);
-        Ok(ret1)
+        Ok(&self.indices[..])
+    }
+    pub fn get_ready(&self) -> &[usize] {
+        &self.indices[..]
+    }
+    pub fn get_flags(&self, idx: usize) -> Option<PollFlags> {
+        self.fds[idx].revents()
     }
 }
