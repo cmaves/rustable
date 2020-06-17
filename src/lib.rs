@@ -1,4 +1,5 @@
 use gatt::*;
+use nix::unistd::close;
 use rustbus::client_conn;
 use rustbus::client_conn::{Conn, RpcConn, Timeout};
 use rustbus::message_builder::{DynamicHeader, MarshalledMessage, MessageBuilder, MessageType};
@@ -542,6 +543,9 @@ impl Bluetooth {
             };
             // eprintln!("replying: {:#?}", reply);
             self.rpc_con.send_message(&mut reply, Timeout::Infinite)?;
+            for fd in reply.raw_fds {
+                close(fd).ok();
+            }
         }
         while let Some(sig) = self.rpc_con.try_get_signal() {
             match sig.dynheader.interface.as_ref().unwrap().as_str() {
