@@ -140,6 +140,11 @@ impl From<client_conn::Error> for Error {
         Error::DbusClient(err)
     }
 }
+impl From<rustbus::wire::unmarshal::Error> for Error {
+    fn from(err: rustbus::wire::unmarshal::Error) -> Self {
+        Error::DbusReqErr(format!("Parameter failed to unmarshal: {:?}", err))
+    }
+}
 
 impl TryFrom<&'_ Message<'_, '_>> for Error {
     type Error = &'static str;
@@ -399,6 +404,35 @@ impl Bluetooth {
                     MessageType::Reply => return Ok(()),
                     MessageType::Error => {
                         return Err(Error::DbusReqErr(format!("Set discoverable call failed: {:?}", res)))
+                    }
+                    _ => unreachable!(),
+                }
+            }
+        }
+    }
+    pub fn set_power(&mut self, on: bool) -> Result<(), Error> {
+        let mut msg = MessageBuilder::new()
+            .call("Set".to_string())
+            .on(self.blue_path.to_str().unwrap().to_string())
+            .with_interface(PROP_IF_STR.to_string())
+            .at(BLUEZ_DEST.to_string())
+            .build();
+        msg.body
+            .push_param2(ADAPTER_IF_STR, "Powered")
+            .unwrap();
+        let variant = Param::Container(Container::Variant(Box::new(params::Variant {
+            sig: rustbus::signature::Type::Base(rustbus::signature::Base::Boolean),
+            value: Param::Base(Base::Boolean(on)),
+        })));
+        msg.body.push_old_param(&variant).unwrap();
+        let res_idx = self.rpc_con.send_message(&mut msg, Timeout::Infinite)?;
+        loop {
+            self.process_requests()?;
+            if let Some(res) = self.rpc_con.try_get_response(res_idx) {
+                match res.typ {
+                    MessageType::Reply => return Ok(()),
+                    MessageType::Error => {
+                        return Err(Error::DbusReqErr(format!("Set power call failed: {:?}", res)))
                     }
                     _ => unreachable!(),
                 }
@@ -1219,8 +1253,8 @@ pub fn validate_uuid(uuid: &str) -> bool {
 }
 
 pub enum ValOrFn {
-    Value([u8; 255], usize),
-    Function(Box<dyn FnMut() -> ([u8; 255], usize)>),
+    Value([u8; 512], usize),
+    Function(Box<dyn FnMut() -> ([u8; 512], usize)>),
 }
 
 impl Debug for ValOrFn {
@@ -1235,7 +1269,7 @@ impl Debug for ValOrFn {
 
 impl ValOrFn {
     #[inline]
-    pub fn to_value(&mut self) -> ([u8; 255], usize) {
+    pub fn to_value(&mut self) -> ([u8; 512], usize) {
         match self {
             ValOrFn::Value(v, l) => (*v, *l),
             ValOrFn::Function(f) => f(),

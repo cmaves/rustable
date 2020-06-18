@@ -11,8 +11,8 @@ use std::convert::TryFrom;
 use std::os::unix::io::RawFd;
 
 pub trait Characteristic {
-    fn read(&mut self) -> Result<([u8; 255], usize), Error>;
-    fn read_value(&mut self) -> Result<([u8; 255], usize), Error>;
+    fn read(&mut self) -> Result<([u8; 512], usize), Error>;
+    fn read_value(&mut self) -> Result<([u8; 512], usize), Error>;
     fn write(&mut self, val: &[u8]) -> Result<(), Error>;
     fn uuid(&self) -> &str;
     //    fn service(&self) -> &Path;
@@ -313,7 +313,7 @@ impl LocalCharBase {
     pub fn new<T: ToUUID>(uuid: T, flags: CharFlags) -> Self {
         let uuid: UUID = uuid.to_uuid();
         LocalCharBase {
-            vf: ValOrFn::Value([0; 255], 0),
+            vf: ValOrFn::Value([0; 512], 0),
             index: 0,
             handle: 0,
             write: None,
@@ -521,18 +521,20 @@ impl CharFlags {
 }
 
 impl Characteristic for LocalCharactersitic<'_, '_> {
-    fn read(&mut self) -> Result<([u8; 255], usize), Error> {
+    fn read(&mut self) -> Result<([u8; 512], usize), Error> {
         let base = self.get_char_base_mut();
-        match &mut base.vf {
+        Ok(base.vf.to_value())
+        /*match &mut base.vf {
             ValOrFn::Value(buf, len) => Ok((*buf, *len)),
             ValOrFn::Function(f) => Ok(f()),
-        }
+        }*/
     }
-    fn read_value(&mut self) -> Result<([u8; 255], usize), Error> {
+#[inline]
+    fn read_value(&mut self) -> Result<([u8; 512], usize), Error> {
         self.read()
     }
     fn write(&mut self, val: &[u8]) -> Result<(), Error> {
-        let mut buf = [0; 255];
+        let mut buf = [0; 512];
         //eprintln!("writing to char: {:?}", val);
         buf[..val.len()].copy_from_slice(val);
         let mut val = ValOrFn::Value(buf, val.len());
@@ -849,10 +851,33 @@ impl<'a, 'b, 'c> RemoteChar<'a, 'b, 'c> {
 }
 
 impl Characteristic for RemoteChar<'_, '_, '_> {
-    fn read(&mut self) -> Result<([u8; 255], usize), Error> {
+    fn read(&mut self) -> Result<([u8; 512], usize), Error> {
+        let base = self.get_char_mut();
+        let path = base.path.to_str().unwrap().to_string();
+        let mut msg = MessageBuilder::new().call("ReadValue".to_string()).on(path).at(BLUEZ_DEST.to_string()).with_interface(CHAR_IF_STR.to_string()).build();
+        let cont: Container = (signature::Base::String, signature::Type::Container(signature::Container::Variant), HashMap::new()).try_into().unwrap();
+        msg.body.push_old_param(&mut cont.into()).unwrap();
+        let blue = &mut self.service.dev.blue;
+        let res_idx = blue.rpc_con.send_message(&mut msg, Timeout::Infinite)?;
+        loop {
+            blue.process_requests()?;
+            if let Some(res) = blue.rpc_con.try_get_response(res_idx) {
+                match res.typ {
+                    MessageType::Reply => {
+                        let mut v = [0; 512];
+                        let buf: &[u8] = res.body.parser().get()?;
+                        let l = buf.len();
+                        v[..l].copy_from_slice(buf);
+                        return Ok((v, l));
+                    },
+                    MessageType::Error => return Err(Error::DbusReqErr(format!("Read call failed: {:?}", res))),
+                    _ => unreachable!(),
+                }
+            }
+        }
         unimplemented!()
     }
-    fn read_value(&mut self) -> Result<([u8; 255], usize), Error> {
+    fn read_value(&mut self) -> Result<([u8; 512], usize), Error> {
         unimplemented!()
     }
     fn write(&mut self, _val: &[u8]) -> Result<(), Error> {
