@@ -529,7 +529,7 @@ impl Characteristic for LocalCharactersitic<'_, '_> {
             ValOrFn::Function(f) => Ok(f()),
         }*/
     }
-#[inline]
+    #[inline]
     fn read_value(&mut self) -> Result<([u8; 512], usize), Error> {
         self.read()
     }
@@ -854,8 +854,19 @@ impl Characteristic for RemoteChar<'_, '_, '_> {
     fn read(&mut self) -> Result<([u8; 512], usize), Error> {
         let base = self.get_char_mut();
         let path = base.path.to_str().unwrap().to_string();
-        let mut msg = MessageBuilder::new().call("ReadValue".to_string()).on(path).at(BLUEZ_DEST.to_string()).with_interface(CHAR_IF_STR.to_string()).build();
-        let cont: Container = (signature::Base::String, signature::Type::Container(signature::Container::Variant), HashMap::new()).try_into().unwrap();
+        let mut msg = MessageBuilder::new()
+            .call("ReadValue".to_string())
+            .on(path)
+            .at(BLUEZ_DEST.to_string())
+            .with_interface(CHAR_IF_STR.to_string())
+            .build();
+        let cont: Container = (
+            signature::Base::String,
+            signature::Type::Container(signature::Container::Variant),
+            HashMap::new(),
+        )
+            .try_into()
+            .unwrap();
         msg.body.push_old_param(&mut cont.into()).unwrap();
         let blue = &mut self.service.dev.blue;
         let res_idx = blue.rpc_con.send_message(&mut msg, Timeout::Infinite)?;
@@ -869,8 +880,10 @@ impl Characteristic for RemoteChar<'_, '_, '_> {
                         let l = buf.len();
                         v[..l].copy_from_slice(buf);
                         return Ok((v, l));
-                    },
-                    MessageType::Error => return Err(Error::DbusReqErr(format!("Read call failed: {:?}", res))),
+                    }
+                    MessageType::Error => {
+                        return Err(Error::DbusReqErr(format!("Read call failed: {:?}", res)))
+                    }
                     _ => unreachable!(),
                 }
             }

@@ -28,11 +28,14 @@ pub struct NotifyPoller {
 
 impl NotifyPoller {
     pub fn new(polls: &[RawFd]) -> Self {
-        let fds: Vec<PollFd> = polls.iter().map(|fd| PollFd::new(*fd, PollFlags::POLLIN | PollFlags::POLLERR)).collect();
+        let fds: Vec<PollFd> = polls
+            .iter()
+            .map(|fd| PollFd::new(*fd, PollFlags::POLLIN | PollFlags::POLLERR))
+            .collect();
         let indices = Vec::with_capacity(fds.len());
         NotifyPoller { fds, indices }
     }
-    pub fn poll(&mut self, timeout: Option<Duration>) -> Result<&[usize] ,Error> {
+    pub fn poll(&mut self, timeout: Option<Duration>) -> Result<&[usize], Error> {
         let timeout = if let Some(dur) = timeout {
             if dur.subsec_millis() % 1000 == 0 {
                 dur.as_millis().min(std::i32::MAX as u128) as i32

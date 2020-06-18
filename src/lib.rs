@@ -376,10 +376,13 @@ impl Bluetooth {
         }
     }
     pub fn remove_advertise_no_dbus(&mut self, index: u16) -> Result<Advertisement, Error> {
-         match self.ads.iter().position(|ad| ad.index == index) {
+        match self.ads.iter().position(|ad| ad.index == index) {
             Some(idx) => Ok(self.ads.remove(idx).unwrap()),
-            None => Err(Error::BadInput(format!("Advertisement index {} not found.",index)))
-        }       
+            None => Err(Error::BadInput(format!(
+                "Advertisement index {} not found.",
+                index
+            ))),
+        }
     }
     pub fn set_discoverable(&mut self, on: bool) -> Result<(), Error> {
         let mut msg = MessageBuilder::new()
@@ -403,7 +406,10 @@ impl Bluetooth {
                 match res.typ {
                     MessageType::Reply => return Ok(()),
                     MessageType::Error => {
-                        return Err(Error::DbusReqErr(format!("Set discoverable call failed: {:?}", res)))
+                        return Err(Error::DbusReqErr(format!(
+                            "Set discoverable call failed: {:?}",
+                            res
+                        )))
                     }
                     _ => unreachable!(),
                 }
@@ -417,9 +423,7 @@ impl Bluetooth {
             .with_interface(PROP_IF_STR.to_string())
             .at(BLUEZ_DEST.to_string())
             .build();
-        msg.body
-            .push_param2(ADAPTER_IF_STR, "Powered")
-            .unwrap();
+        msg.body.push_param2(ADAPTER_IF_STR, "Powered").unwrap();
         let variant = Param::Container(Container::Variant(Box::new(params::Variant {
             sig: rustbus::signature::Type::Base(rustbus::signature::Base::Boolean),
             value: Param::Base(Base::Boolean(on)),
@@ -432,7 +436,10 @@ impl Bluetooth {
                 match res.typ {
                     MessageType::Reply => return Ok(()),
                     MessageType::Error => {
-                        return Err(Error::DbusReqErr(format!("Set power call failed: {:?}", res)))
+                        return Err(Error::DbusReqErr(format!(
+                            "Set power call failed: {:?}",
+                            res
+                        )))
                     }
                     _ => unreachable!(),
                 }
@@ -589,17 +596,22 @@ impl Bluetooth {
                     _ => (),
                 },
                 DBUS_IF_STR => match sig.dynheader.member.as_ref().unwrap().as_str() {
-                    NAME_LOST_SIG => if let Some(filter) = &self.filter_dest {
-                        if let Ok(lost_name) = sig.body.parser().get() {
-                            let lost_name: &str = lost_name;
-                            if filter == lost_name {
-                                let err = Err(Error::Bluez(format!("{} has disconnected from DBus!", filter)));
-                                self.clear_devices();
-                                return err;
+                    NAME_LOST_SIG => {
+                        if let Some(filter) = &self.filter_dest {
+                            if let Ok(lost_name) = sig.body.parser().get() {
+                                let lost_name: &str = lost_name;
+                                if filter == lost_name {
+                                    let err = Err(Error::Bluez(format!(
+                                        "{} has disconnected from DBus!",
+                                        filter
+                                    )));
+                                    self.clear_devices();
+                                    return err;
+                                }
                             }
                         }
-                    },
-                    _ => ()
+                    }
+                    _ => (),
                 },
                 _ => (),
             }
