@@ -7,18 +7,29 @@ use std::collections::HashMap;
 use std::ffi::OsStr;
 use std::path::{Component, Path, PathBuf};
 
+
+/// Describes the methods avaliable on remote and local GATT services
 pub trait Service<'a> {
     type CharType: Characteristic;
+	/// The Value type for the Keys iterator on `Service::char_uuids()`
+	/// [`Service::char_uuids()`]: ./trait.Service.html#method.char_uuids
     type Value;
+	/// Return the `UUID` of the service.
     fn uuid(&self) -> &UUID;
+	/// Return in a service is primary service.
     fn primary(&self) -> bool;
+	/// Get the path to the parent service.
     fn device(&self) -> &Path;
     fn includes(&self) -> &[&Path];
+	/// Get the Bluetooth handle of service
     fn handle(&self) -> u16;
+	/// Get an iterator of all the keys on the valu
     fn char_uuids(&self) -> Keys<UUID, Self::Value>;
+	/// Get a characteristic of a GATT service by UUID.
     fn get_char<T: ToUUID>(&'a mut self, uuid: T) -> Option<Self::CharType>;
 }
 
+/// `LocalServiceBase` is used to construct local service to be provided by the local GATT server.
 pub struct LocalServiceBase {
     pub(crate) index: u8,
     char_index: u16,
@@ -29,15 +40,16 @@ pub struct LocalServiceBase {
     primary: bool,
 }
 impl LocalServiceBase {
+	/// Add a characteristic to the service
     pub fn add_char(&mut self, mut character: LocalCharBase) {
         // TODO: add check for duplicate UUIDs
-        assert!(self.chars.len() < 65535);
+        //assert!(self.chars.len() < 65535);
         character.index = self.char_index;
         self.char_index += 1;
         self.chars.insert(character.uuid.clone(), character);
     }
-
-    pub fn service_call<'a, 'b>(&mut self, _call: MarshalledMessage) -> MarshalledMessage {
+	/// Handle method calls on the local servic
+    fn service_call<'a, 'b>(&mut self,_call: MarshalledMessage) -> MarshalledMessage {
         unimplemented!()
     }
 
@@ -79,6 +91,8 @@ impl LocalServiceBase {
             None
         }
     }
+	/// Construct a new `LocalServiceBase` to construct as service with.
+	/// [`LocalServiceBase`]: ./struct.LocalServiceBase.html
     pub fn new<T: ToUUID>(uuid: T, primary: bool) -> Self {
         let uuid = uuid.to_uuid();
         LocalServiceBase {
@@ -92,12 +106,14 @@ impl LocalServiceBase {
         }
     }
 }
+/// Struct representing service currently being hosted by the local GATT server
 pub struct LocalService<'a> {
     pub(crate) uuid: UUID,
     pub(crate) bt: &'a mut Bluetooth,
     #[cfg(feature = "unsafe-opt")]
     ptr: *mut LocalServiceBase,
 }
+
 impl<'a, 'b: 'a, 'c: 'a, 'd: 'a> Service<'a> for LocalService<'b> {
     type CharType = LocalCharactersitic<'a, 'b>;
     type Value = LocalCharBase;
@@ -125,11 +141,6 @@ impl<'a, 'b: 'a, 'c: 'a, 'd: 'a> Service<'a> for LocalService<'b> {
             None
         }
     }
-    /*
-    fn get_char<'a, V: ToUUID>(&'a mut self, uuid: &V) -> Option<LocalCharactersitic<'a, 'b, 'c, 'd>> {
-
-    }
-    */
     fn device(&self) -> &Path {
         unimplemented!()
     }
