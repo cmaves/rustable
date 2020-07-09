@@ -49,7 +49,7 @@ impl LocalServiceBase {
         self.chars.insert(character.uuid.clone(), character);
     }
 	/// Handle method calls on the local servic
-    fn service_call<'a, 'b>(&mut self,_call: MarshalledMessage) -> MarshalledMessage {
+    pub(crate) fn service_call<'a, 'b>(&mut self,_call: MarshalledMessage) -> MarshalledMessage {
         unimplemented!()
     }
 
