@@ -7,6 +7,7 @@ use nix::sys::uio::IoVec;
 use nix::unistd::close;
 use rustbus::params::message::Message;
 use rustbus::params::{Base, Container, Param};
+use rustbus::wire::marshal::traits::UnixFd;
 use std::convert::TryFrom;
 use std::os::unix::io::RawFd;
 
@@ -141,7 +142,7 @@ impl LocalCharBase {
                         socket::SockFlag::SOCK_CLOEXEC,
                     ) {
                         Ok((sock1, _sock2)) => {
-                            let mut ret = 255;
+                            let mut ret = 512;
                             if let Some(dict) = call.params.get(0) {
                                 if let Param::Container(Container::Dict(dict)) = dict {
                                     if let Some(mtu) =
@@ -165,12 +166,8 @@ impl LocalCharBase {
                                 }
                             }
                             let mut res = call.make_response();
-                            res.body
-                                .push_old_params(&[
-                                    Param::Base(Base::Uint32(sock1 as u32)),
-                                    Param::Base(Base::Uint16(ret)),
-                                ])
-                                .unwrap();
+							res.raw_fds.push(sock1);
+							res.body.push_param2(UnixFd(sock1 as u32), ret).unwrap();
                             unimplemented!();
                             return res;
                         }
