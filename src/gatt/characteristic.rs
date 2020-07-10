@@ -5,7 +5,6 @@ use nix::sys::socket;
 use nix::sys::time::{TimeVal, TimeValLike};
 use nix::sys::uio::IoVec;
 use nix::unistd::close;
-use rustbus::params::message::Message;
 use rustbus::params::{Base, Container, Param};
 use rustbus::wire::marshal::traits::UnixFd;
 use std::convert::TryFrom;
@@ -28,7 +27,6 @@ enum Notify {
     Signal,
     Fd(RawFd),
 }
-#[derive(Debug)]
 pub struct LocalCharBase {
     vf: ValOrFn,
     pub(crate) index: u16,
@@ -39,6 +37,18 @@ pub struct LocalCharBase {
     write: Option<RawFd>,
     pub(crate) descs: HashMap<String, LocalDescriptor>,
     flags: CharFlags,
+    allow_write: bool,
+    write_callback: Option<Box<dyn FnMut(&[u8]) -> Result<(), (String, Option<String>)>>>,
+}
+impl Debug for LocalCharBase {
+    fn fmt(&self, f: &mut Formatter<'_>) -> Result<(), std::fmt::Error> {
+        let wc_str = if let Some(_) = self.write_callback {
+            "Some(FnMut)"
+        } else {
+            "None"
+        };
+        write!(f, "LocalCharBase{{vf: {:?}, index: {:?}, handle: {:?}, uuid: {:?}, path: {:?}, notify: {:?}, write: {:?}, descs: {:?}, flags: {:?}, allow_write: {:?}, write_callback: {}}}", self.vf, self.index, self.handle, self.uuid, self.path, self.notify, self.write, self.descs, self.flags, self.allow_write, wc_str)
+    }
 }
 impl Drop for LocalCharBase {
     fn drop(&mut self) {
@@ -61,28 +71,23 @@ impl LocalCharBase {
         }
     }
     pub(crate) fn char_call<'a, 'b>(&mut self, call: MarshalledMessage) -> MarshalledMessage {
-        let call = call.unmarshall_all().unwrap();
-        if let Some(member) = &call.dynheader.member {
-            match &member[..] {
-                "ReadValue" => {
-                    if self.flags.read
-                        || self.flags.secure_read
-                        || self.flags.secure_read
-                        || self.flags.encrypt_read
-                    {
-                        let (v, l) = self.vf.to_value();
-                        let mut start = 0;
-                        if let Some(dict) = call.params.get(0) {
-                            if let Param::Container(Container::Dict(dict)) = dict {
-                                if let Some(offset) =
-                                    dict.map.get(&Base::String("offset".to_string()))
-                                {
-                                    if let Param::Container(Container::Variant(offset)) = offset {
-                                        if let Param::Base(Base::Uint16(offset)) = offset.value {
-                                            start = l.min(offset as usize);
-                                        } else {
-                                            return call.dynheader.make_error_response("UnexpectedType".to_string(), Some("Expected a dict of variants as first parameter".to_string()));
-                                        }
+        match &call.dynheader.member.as_ref().unwrap()[..] {
+            "ReadValue" => {
+                if self.flags.read
+                    || self.flags.secure_read
+                    || self.flags.secure_read
+                    || self.flags.encrypt_read
+                {
+                    let call = call.unmarshall_all().unwrap();
+                    let (v, l) = self.vf.to_value();
+                    let mut start = 0;
+                    if let Some(dict) = call.params.get(0) {
+                        if let Param::Container(Container::Dict(dict)) = dict {
+                            if let Some(offset) = dict.map.get(&Base::String("offset".to_string()))
+                            {
+                                if let Param::Container(Container::Variant(offset)) = offset {
+                                    if let Param::Base(Base::Uint16(offset)) = offset.value {
+                                        start = l.min(offset as usize);
                                     } else {
                                         return call.dynheader.make_error_response(
                                             "UnexpectedType".to_string(),
@@ -92,56 +97,153 @@ impl LocalCharBase {
                                             ),
                                         );
                                     }
+                                } else {
+                                    return call.dynheader.make_error_response(
+                                        "UnexpectedType".to_string(),
+                                        Some(
+                                            "Expected a dict of variants as first parameter"
+                                                .to_string(),
+                                        ),
+                                    );
                                 }
+                            }
+                        } else {
+                            return call.dynheader.make_error_response(
+                                "UnexpectedType".to_string(),
+                                Some("Expected a dict as first parameter".to_string()),
+                            );
+                        }
+                    }
+                    // eprintln!("vf: {:?}\nValue: {:?}", self.vf, &v[..l]);
+                    let vec: Vec<Param> = v[start..l]
+                        .into_iter()
+                        .map(|i| Base::Byte(*i).into())
+                        .collect();
+                    let val = Param::Container(Container::Array(params::Array {
+                        element_sig: signature::Type::Base(signature::Base::Byte),
+                        values: vec,
+                    }));
+                    let mut res = call.make_response();
+                    res.body.push_old_param(&val).unwrap();
+                    res
+                } else {
+                    call.dynheader.make_error_response(
+                        BLUEZ_NOT_PERM.to_string(),
+                        Some("This is not a readable characteristic.".to_string()),
+                    )
+                }
+            }
+            "WriteValue" => {
+                if self.flags.write
+                    || self.flags.write_wo_response
+                    || self.flags.secure_write
+                    || self.flags.encrypt_write
+                    || self.flags.encrypt_auth_write
+                {
+                    let call = call.unmarshall_all().unwrap();
+                    if let Some(Param::Container(Container::Array(array))) = call.params.get(0) {
+                        let offset = if let Some(dict) = call.params.get(1) {
+                            let mut offset = 0;
+                            if let Param::Container(Container::Dict(dict)) = dict {
+                                for (key, val) in &dict.map {
+                                    let var = if let Param::Container(Container::Variant(var)) = val
+                                    {
+                                        var
+                                    } else {
+                                        return call.dynheader.make_error_response("org.bluez.Error.Failed".to_string(), Some("Second parameter was wrong type, expected variant values".to_string()));
+                                    };
+                                    if let Base::String(key) = key {
+                                        match &key[..] {
+                                            "offset" => {
+                                                if let Param::Base(Base::Uint16(off)) = var.value {
+                                                    offset = off;
+                                                } else {
+                                                    return call.dynheader.make_error_response(
+                                                        "org.bluez.Error.Failed".to_string(),
+                                                        Some(
+                                                            "Expected offset key to be u16 value"
+                                                                .to_string(),
+                                                        ),
+                                                    );
+                                                }
+                                            }
+                                            _ => {}
+                                        }
+                                    } else {
+                                        return call.dynheader.make_error_response("org.bluez.Error.Failed".to_string(), Some("Second parameter was wrong type, expected string keys".to_string()));
+                                    }
+                                }
+                                offset as usize
                             } else {
                                 return call.dynheader.make_error_response(
-                                    "UnexpectedType".to_string(),
-                                    Some("Expected a dict as first parameter".to_string()),
+                                    "org.bluez.Error.Failed".to_string(),
+                                    Some("Second parameter was wrong type".to_string()),
+                                );
+                            }
+                        } else {
+                            0
+                        };
+                        let l = array.values.len() + offset;
+                        if l > 512 {
+                            return call.dynheader.make_error_response(
+                                "org.bluez.Error.InvalidValueLength".to_string(),
+                                None,
+                            );
+                        }
+                        let mut bytes = Vec::with_capacity(array.values.len());
+                        for val in &array.values {
+                            if let Param::Base(Base::Byte(b)) = val {
+                                bytes.push(*b);
+                            } else {
+                                return call.dynheader.make_error_response(
+                                    "org.bluez.Error.Failed".to_string(),
+                                    Some("First parameter was wrong type".to_string()),
                                 );
                             }
                         }
-                        // eprintln!("vf: {:?}\nValue: {:?}", self.vf, &v[..l]);
-                        let vec: Vec<Param> = v[start..l]
-                            .into_iter()
-                            .map(|i| Base::Byte(*i).into())
-                            .collect();
-                        let val = Param::Container(Container::Array(params::Array {
-                            element_sig: signature::Type::Base(signature::Base::Byte),
-                            values: vec,
-                        }));
-                        let mut res = call.make_response();
-                        res.body.push_old_param(&val).unwrap();
-                        res
+                        let mut v = [0; 512];
+                        let (cur_v, cur_l) = self.vf.to_value();
+                        v[..cur_l].copy_from_slice(&cur_v[..cur_l]);
+                        v[offset..l].copy_from_slice(&bytes[..]);
+                        if let Some(cb) = &mut self.write_callback {
+                            if let Err((s1, s2)) = cb(&v[..l]) {
+                                return call.dynheader.make_error_response(s1, s2);
+                            }
+                        }
+                        self.vf = ValOrFn::Value(v, bytes.len());
+                        call.dynheader.make_response()
                     } else {
                         call.dynheader.make_error_response(
-                            BLUEZ_NOT_PERM.to_string(),
-                            Some("This is not a readable characteristic.".to_string()),
+                            "org.bluez.Error.Failed".to_string(),
+                            Some("First parameter was wrong type".to_string()),
                         )
                     }
+                } else {
+                    call.dynheader.make_error_response(
+                        BLUEZ_NOT_PERM.to_string(),
+                        Some("This is not a writable characteristic.".to_string()),
+                    )
                 }
-                "WriteValue" => {
-                    if self.flags.write
-                        || self.flags.write_wo_response
-                        || self.flags.secure_write
-                        || self.flags.encrypt_write
-                        || self.flags.encrypt_auth_write
-                    {
-                        unimplemented!();
-                    } else {
-                        call.dynheader.make_error_response(
-                            BLUEZ_NOT_PERM.to_string(),
-                            Some("This is not a writable characteristic.".to_string()),
-                        )
+            }
+            "AcquireWrite" => {
+                if self.flags.write {
+                    if let Some(_) = self.write {
+                        return call.dynheader.make_error_response(
+                            "org.bluez.Error.InProgress".to_string(),
+                            Some(
+                                "This characteristic write fd has already been acquired."
+                                    .to_string(),
+                            ),
+                        );
                     }
-                }
-                "AcquireWrite" => {
                     match socket::socketpair(
                         socket::AddressFamily::Unix,
                         socket::SockType::SeqPacket,
                         None,
                         socket::SockFlag::SOCK_CLOEXEC,
                     ) {
-                        Ok((sock1, _sock2)) => {
+                        Ok((sock1, sock2)) => {
+                            let call = call.unmarshall_all().unwrap();
                             let mut ret = 512;
                             if let Some(dict) = call.params.get(0) {
                                 if let Param::Container(Container::Dict(dict)) = dict {
@@ -166,9 +268,9 @@ impl LocalCharBase {
                                 }
                             }
                             let mut res = call.make_response();
-							res.raw_fds.push(sock1);
-							res.body.push_param2(UnixFd(sock1 as u32), ret).unwrap();
-                            unimplemented!();
+                            res.raw_fds.push(sock1);
+                            res.body.push_param2(UnixFd(sock1 as u32), ret).unwrap();
+                            self.write = Some(sock2);
                             return res;
                         }
                         Err(_) => {
@@ -181,122 +283,120 @@ impl LocalCharBase {
                             )
                         }
                     }
+                } else {
+                    call.dynheader.make_error_response(
+                        BLUEZ_NOT_PERM.to_string(),
+                        Some("This is not a writable characteristic.".to_string()),
+                    )
                 }
-                "AcquireNotify" => {
-                    if !self.flags.notify {
-                        call.dynheader.make_error_response(
-                            BLUEZ_NOT_PERM.to_string(),
-                            Some("This characteristic doesn't not permit notifying.".to_string()),
-                        )
-                    } else if let Some(notify) = &self.notify {
-                        let err_str = match notify {
-                            Notify::Signal => {
-                                "This characteristic is already notifying via signals."
-                            }
-                            Notify::Fd(_) => {
-                                "This characteristic is already notifying via a socket."
-                            }
-                        };
-                        call.dynheader.make_error_response(
-                            "org.bluez.Error.InProgress".to_string(),
-                            Some(err_str.to_string()),
-                        )
-                    } else {
-                        match socket::socketpair(
-                            socket::AddressFamily::Unix,
-                            socket::SockType::SeqPacket,
-                            None,
-                            socket::SockFlag::SOCK_CLOEXEC,
-                        ) {
-                            Ok((sock1, sock2)) => {
-                                let mut ret = 255;
-                                if let Some(dict) = call.params.get(0) {
-                                    if let Param::Container(Container::Dict(dict)) = dict {
-                                        if let Some(mtu) =
-                                            dict.map.get(&Base::String("mtu".to_string()))
-                                        {
-                                            if let Param::Container(Container::Variant(mtu)) = mtu {
-                                                if let Param::Base(Base::Uint16(mtu)) = mtu.value {
-                                                    ret = ret.min(mtu);
-                                                } else {
-                                                    return call.dynheader.make_error_response("UnexpectedType".to_string(), Some("Expected a dict of UInt16 as first offset type".to_string()));
-                                                }
-                                            } else {
-                                                return call.dynheader.make_error_response("UnexpectedType".to_string(), Some("Expected a dict of variants as first parameter".to_string()));
-                                            }
-                                        }
-                                    } else {
-                                        return call.dynheader.make_error_response(
-                                            "UnexpectedType".to_string(),
-                                            Some("Expected a dict as first parameter".to_string()),
-                                        );
-                                    }
-                                }
-                                let mut res = call.make_response();
-                                res.body
-                                    .push_old_params(&[
-                                        Param::Base(Base::UnixFd(0)),
-                                        Param::Base(Base::Uint16(ret)),
-                                    ])
-                                    .unwrap();
-                                res.dynheader.num_fds = Some(1);
-                                res.raw_fds.push(sock1);
-                                self.notify = Some(Notify::Fd(sock2));
-                                res
-                            }
-                            Err(_) => call.dynheader.make_error_response(
-                                BLUEZ_FAILED.to_string(),
-                                Some(
-                                    "An IO Error occured when creating the unix datagram socket."
-                                        .to_string(),
-                                ),
-                            ),
-                        }
-                    }
-                }
-                "StartNotify" => {
-                    if !self.flags.notify {
-                        call.dynheader.make_error_response(
-                            BLUEZ_NOT_PERM.to_string(),
-                            Some("This characteristic doesn't not permit notifying.".to_string()),
-                        )
-                    } else if let Some(notify) = &self.notify {
-                        let err_str = match notify {
-                            Notify::Signal => {
-                                "This characteristic is already notifying via signals."
-                            }
-                            Notify::Fd(_) => {
-                                "This characteristic is already notifying via a socket."
-                            }
-                        };
-                        call.dynheader.make_error_response(
-                            "org.bluez.Error.InProgress".to_string(),
-                            Some(err_str.to_string()),
-                        )
-                    } else {
-                        self.notify = Some(Notify::Signal);
-                        call.make_response()
-                    }
-                }
-                "StopNotify" => {
-                    if let Some(_) = self.notify.as_ref() {
-                        self.notify = None;
-                        call.make_response()
-                    } else {
-                        call.dynheader.make_error_response(
-                            BLUEZ_FAILED.to_string(),
-                            Some("Notify has not been started".to_string()),
-                        )
-                    }
-                }
-                "Confirm" => call.make_response(),
-                _ => call
-                    .dynheader
-                    .make_error_response(UNKNOWN_METHOD.to_string(), None),
             }
-        } else {
-            // TODO: remove this statement if unneeded
-            unreachable!();
+            "AcquireNotify" => {
+                if !self.allow_write {
+                    call.dynheader
+                        .make_error_response("org.bluez.Error.NotSupported".to_string(), None)
+                } else if !self.flags.notify {
+                    call.dynheader.make_error_response(
+                        BLUEZ_NOT_PERM.to_string(),
+                        Some("This characteristic doesn't not permit notifying.".to_string()),
+                    )
+                } else if let Some(notify) = &self.notify {
+                    let err_str = match notify {
+                        Notify::Signal => "This characteristic is already notifying via signals.",
+                        Notify::Fd(_) => "This characteristic is already notifying via a socket.",
+                    };
+                    call.dynheader.make_error_response(
+                        "org.bluez.Error.InProgress".to_string(),
+                        Some(err_str.to_string()),
+                    )
+                } else {
+                    match socket::socketpair(
+                        socket::AddressFamily::Unix,
+                        socket::SockType::SeqPacket,
+                        None,
+                        socket::SockFlag::SOCK_CLOEXEC,
+                    ) {
+                        Ok((sock1, sock2)) => {
+                            let call = call.unmarshall_all().unwrap();
+                            let mut ret = 255;
+                            if let Some(dict) = call.params.get(0) {
+                                if let Param::Container(Container::Dict(dict)) = dict {
+                                    if let Some(mtu) =
+                                        dict.map.get(&Base::String("mtu".to_string()))
+                                    {
+                                        if let Param::Container(Container::Variant(mtu)) = mtu {
+                                            if let Param::Base(Base::Uint16(mtu)) = mtu.value {
+                                                ret = ret.min(mtu);
+                                            } else {
+                                                return call.dynheader.make_error_response("UnexpectedType".to_string(), Some("Expected a dict of UInt16 as first offset type".to_string()));
+                                            }
+                                        } else {
+                                            return call.dynheader.make_error_response("UnexpectedType".to_string(), Some("Expected a dict of variants as first parameter".to_string()));
+                                        }
+                                    }
+                                } else {
+                                    return call.dynheader.make_error_response(
+                                        "UnexpectedType".to_string(),
+                                        Some("Expected a dict as first parameter".to_string()),
+                                    );
+                                }
+                            }
+                            let mut res = call.make_response();
+                            res.body
+                                .push_old_params(&[
+                                    Param::Base(Base::UnixFd(0)),
+                                    Param::Base(Base::Uint16(ret)),
+                                ])
+                                .unwrap();
+                            res.dynheader.num_fds = Some(1);
+                            res.raw_fds.push(sock1);
+                            self.notify = Some(Notify::Fd(sock2));
+                            res
+                        }
+                        Err(_) => call.dynheader.make_error_response(
+                            BLUEZ_FAILED.to_string(),
+                            Some(
+                                "An IO Error occured when creating the unix datagram socket."
+                                    .to_string(),
+                            ),
+                        ),
+                    }
+                }
+            }
+            "StartNotify" => {
+                if !self.flags.notify {
+                    call.dynheader.make_error_response(
+                        BLUEZ_NOT_PERM.to_string(),
+                        Some("This characteristic doesn't not permit notifying.".to_string()),
+                    )
+                } else if let Some(notify) = &self.notify {
+                    let err_str = match notify {
+                        Notify::Signal => "This characteristic is already notifying via signals.",
+                        Notify::Fd(_) => "This characteristic is already notifying via a socket.",
+                    };
+                    call.dynheader.make_error_response(
+                        "org.bluez.Error.InProgress".to_string(),
+                        Some(err_str.to_string()),
+                    )
+                } else {
+                    self.notify = Some(Notify::Signal);
+                    call.dynheader.make_response()
+                }
+            }
+            "StopNotify" => {
+                if let Some(_) = self.notify.as_ref() {
+                    self.notify = None;
+                    call.dynheader.make_response()
+                } else {
+                    call.dynheader.make_error_response(
+                        BLUEZ_FAILED.to_string(),
+                        Some("Notify has not been started".to_string()),
+                    )
+                }
+            }
+            "Confirm" => call.dynheader.make_response(),
+            _ => call
+                .dynheader
+                .make_error_response(UNKNOWN_METHOD.to_string(), None),
         }
     }
 
@@ -319,6 +419,8 @@ impl LocalCharBase {
             flags,
             path: PathBuf::new(),
             descs: HashMap::new(),
+            allow_write: false,
+            write_callback: None,
         }
     }
 }
@@ -519,6 +621,7 @@ impl CharFlags {
 
 impl Characteristic for LocalCharactersitic<'_, '_> {
     fn read(&mut self) -> Result<([u8; 512], usize), Error> {
+        // TODO: handle write Fd
         let base = self.get_char_base_mut();
         Ok(base.vf.to_value())
         /*match &mut base.vf {
@@ -531,6 +634,7 @@ impl Characteristic for LocalCharactersitic<'_, '_> {
         self.read()
     }
     fn write(&mut self, val: &[u8]) -> Result<(), Error> {
+        // TODO: handle write Fd
         let mut buf = [0; 512];
         //eprintln!("writing to char: {:?}", val);
         buf[..val.len()].copy_from_slice(val);

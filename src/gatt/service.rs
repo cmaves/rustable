@@ -7,25 +7,24 @@ use std::collections::HashMap;
 use std::ffi::OsStr;
 use std::path::{Component, Path, PathBuf};
 
-
 /// Describes the methods avaliable on remote and local GATT services
 pub trait Service<'a> {
     type CharType: Characteristic;
-	/// The Value type for the Keys iterator on `Service::char_uuids()`
-	/// [`Service::char_uuids()`]: ./trait.Service.html#method.char_uuids
+    /// The Value type for the Keys iterator on `Service::char_uuids()`
+    /// [`Service::char_uuids()`]: ./trait.Service.html#method.char_uuids
     type Value;
-	/// Return the `UUID` of the service.
+    /// Return the `UUID` of the service.
     fn uuid(&self) -> &UUID;
-	/// Return in a service is primary service.
+    /// Return in a service is primary service.
     fn primary(&self) -> bool;
-	/// Get the path to the parent service.
+    /// Get the path to the parent service.
     fn device(&self) -> &Path;
     fn includes(&self) -> &[&Path];
-	/// Get the Bluetooth handle of service
+    /// Get the Bluetooth handle of service
     fn handle(&self) -> u16;
-	/// Get an iterator of all the keys on the valu
+    /// Get an iterator of all the keys on the valu
     fn char_uuids(&self) -> Keys<UUID, Self::Value>;
-	/// Get a characteristic of a GATT service by UUID.
+    /// Get a characteristic of a GATT service by UUID.
     fn get_char<T: ToUUID>(&'a mut self, uuid: T) -> Option<Self::CharType>;
 }
 
@@ -40,7 +39,7 @@ pub struct LocalServiceBase {
     primary: bool,
 }
 impl LocalServiceBase {
-	/// Add a characteristic to the service
+    /// Add a characteristic to the service
     pub fn add_char(&mut self, mut character: LocalCharBase) {
         // TODO: add check for duplicate UUIDs
         //assert!(self.chars.len() < 65535);
@@ -48,8 +47,8 @@ impl LocalServiceBase {
         self.char_index += 1;
         self.chars.insert(character.uuid.clone(), character);
     }
-	/// Handle method calls on the local servic
-    pub(crate) fn service_call<'a, 'b>(&mut self,_call: MarshalledMessage) -> MarshalledMessage {
+    /// Handle method calls on the local servic
+    pub(crate) fn service_call<'a, 'b>(&mut self, _call: MarshalledMessage) -> MarshalledMessage {
         unimplemented!()
     }
 
@@ -91,8 +90,8 @@ impl LocalServiceBase {
             None
         }
     }
-	/// Construct a new `LocalServiceBase` to construct as service with.
-	/// [`LocalServiceBase`]: ./struct.LocalServiceBase.html
+    /// Construct a new `LocalServiceBase` to construct as service with.
+    /// [`LocalServiceBase`]: ./struct.LocalServiceBase.html
     pub fn new<T: ToUUID>(uuid: T, primary: bool) -> Self {
         let uuid = uuid.to_uuid();
         LocalServiceBase {
