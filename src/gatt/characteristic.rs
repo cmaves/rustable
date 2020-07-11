@@ -1,6 +1,7 @@
 use crate::interfaces::*;
 use crate::introspect::*;
 use crate::*;
+use nix::errno::Errno;
 use nix::sys::socket;
 use nix::sys::time::{TimeVal, TimeValLike};
 use nix::sys::uio::IoVec;
@@ -78,6 +79,7 @@ impl LocalCharBase {
                     || self.flags.secure_read
                     || self.flags.encrypt_read
                 {
+                    self.check_write_fd();
                     let call = call.unmarshall_all().unwrap();
                     let (v, l) = self.vf.to_value();
                     let mut start = 0;
@@ -140,6 +142,7 @@ impl LocalCharBase {
                     || self.flags.encrypt_write
                     || self.flags.encrypt_auth_write
                 {
+                    self.check_write_fd();
                     let call = call.unmarshall_all().unwrap();
                     if let Some(Param::Container(Container::Array(array))) = call.params.get(0) {
                         let offset = if let Some(dict) = call.params.get(1) {
@@ -254,7 +257,7 @@ impl LocalCharBase {
                                             if let Param::Base(Base::Uint16(mtu)) = mtu.value {
                                                 ret = ret.min(mtu);
                                             } else {
-                                                return call.dynheader.make_error_response("UnexpectedType".to_string(), Some("Expected a dict of UInt16 as first offset type".to_string()));
+                                                return call.dynheader.make_error_response("UnexpectedType".to_string(), Some("Expected a UInt16 as variant type for offset key.".to_string()));
                                             }
                                         } else {
                                             return call.dynheader.make_error_response("UnexpectedType".to_string(), Some("Expected a dict of variants as first parameter".to_string()));
@@ -393,7 +396,10 @@ impl LocalCharBase {
                     )
                 }
             }
-            "Confirm" => call.dynheader.make_response(),
+            "Confirm" => {
+                self.check_write_fd();
+                call.dynheader.make_response()
+            }
             _ => call
                 .dynheader
                 .make_error_response(UNKNOWN_METHOD.to_string(), None),
@@ -421,6 +427,40 @@ impl LocalCharBase {
             descs: HashMap::new(),
             allow_write: false,
             write_callback: None,
+        }
+    }
+    fn check_write_fd(&mut self) {
+        if let Some(write_fd) = self.write {
+            let mut msg_buf = [0; 512];
+            loop {
+                match socket::recvmsg(
+                    write_fd,
+                    &[IoVec::from_mut_slice(&mut msg_buf)],
+                    None,
+                    socket::MsgFlags::MSG_DONTWAIT,
+                ) {
+                    Ok(recvmsg) => {
+                        let l = recvmsg.bytes;
+                        if let Some(cb) = &mut self.write_callback {
+                            if let Err(_) = cb(&msg_buf[..l]) {
+                                continue;
+                            }
+                        }
+                        self.vf = ValOrFn::Value(msg_buf, l);
+                    }
+                    Err(e) => match e {
+                        nix::Error::Sys(errno) => match errno {
+                            Errno::EAGAIN => break,
+                            _ => {
+                                close(write_fd).ok();
+                                self.write = None;
+                                break;
+                            }
+                        },
+                        _ => unreachable!(),
+                    },
+                }
+            }
         }
     }
 }
@@ -621,8 +661,8 @@ impl CharFlags {
 
 impl Characteristic for LocalCharactersitic<'_, '_> {
     fn read(&mut self) -> Result<([u8; 512], usize), Error> {
-        // TODO: handle write Fd
         let base = self.get_char_base_mut();
+        base.check_write_fd();
         Ok(base.vf.to_value())
         /*match &mut base.vf {
             ValOrFn::Value(buf, len) => Ok((*buf, *len)),
@@ -634,12 +674,13 @@ impl Characteristic for LocalCharactersitic<'_, '_> {
         self.read()
     }
     fn write(&mut self, val: &[u8]) -> Result<(), Error> {
-        // TODO: handle write Fd
+        let base = self.get_char_base_mut();
+        base.check_write_fd();
         let mut buf = [0; 512];
         //eprintln!("writing to char: {:?}", val);
         buf[..val.len()].copy_from_slice(val);
-        let mut val = ValOrFn::Value(buf, val.len());
-        self.write_val_or_fn(&mut val);
+        let val = ValOrFn::Value(buf, val.len());
+        base.vf = val;
         Ok(())
     }
     /*fn service(&self) -> &Path {
