@@ -32,14 +32,16 @@ pub struct LocalCharBase {
     vf: ValOrFn,
     pub(crate) index: u16,
     handle: u16,
-    pub(super) uuid: UUID,
+    pub(crate) uuid: UUID,
+    pub(crate) serv_uuid: UUID,
     pub(crate) path: PathBuf,
     notify: Option<Notify>,
     write: Option<RawFd>,
     pub(crate) descs: HashMap<String, LocalDescriptor>,
     flags: CharFlags,
     allow_write: bool,
-    pub write_callback: Option<Box<dyn FnMut(&[u8]) -> Result<ValOrFn, (String, Option<String>)>>>,
+    pub write_callback:
+        Option<Box<dyn FnMut(&[u8]) -> Result<(Option<ValOrFn>, bool), (String, Option<String>)>>>,
 }
 impl Debug for LocalCharBase {
     fn fmt(&self, f: &mut Formatter<'_>) -> Result<(), std::fmt::Error> {
@@ -62,15 +64,15 @@ impl Drop for LocalCharBase {
     }
 }
 impl LocalCharBase {
-	pub fn enable_write_fd(&mut self, on: bool) {
-		self.allow_write = on;
-		if !on {
-			if let Some(write_fd) = self.write {
-				close(write_fd).ok();
-				self.write = None;
-			}
-		} 
-	}
+    pub fn enable_write_fd(&mut self, on: bool) {
+        self.allow_write = on;
+        if !on {
+            if let Some(write_fd) = self.write {
+                close(write_fd).ok();
+                self.write = None;
+            }
+        }
+    }
     pub(super) fn update_path(&mut self, base: &Path) {
         self.path = base.to_owned();
         let mut name = String::with_capacity(8);
@@ -80,17 +82,99 @@ impl LocalCharBase {
             desc.update_path(&self.path);
         }
     }
+
+    pub(super) fn match_descs(
+        &mut self,
+        _msg_path: &Path,
+        _header: &DynamicHeader,
+    ) -> Option<DbusObject> {
+        unimplemented!()
+    }
+    pub fn new<T: ToUUID>(uuid: T, flags: CharFlags) -> Self {
+        let uuid: UUID = uuid.to_uuid();
+        LocalCharBase {
+            vf: ValOrFn::Value([0; 512], 0),
+            index: 0,
+            handle: 0,
+            write: None,
+            notify: None,
+            uuid,
+            flags,
+            path: PathBuf::new(),
+            descs: HashMap::new(),
+            allow_write: false,
+            write_callback: None,
+            serv_uuid: Rc::from(""),
+        }
+    }
+    /*
+    fn check_write_fd(&mut self) {
+        if let Some(write_fd) = self.write {
+            let mut msg_buf = [0; 512];
+            loop {
+                match socket::recvmsg(
+                    write_fd,
+                    &[IoVec::from_mut_slice(&mut msg_buf)],
+                    None,
+                    socket::MsgFlags::MSG_DONTWAIT,
+                ) {
+                    Ok(recvmsg) => {
+                        let l = recvmsg.bytes;
+                        if let Some(cb) = &mut self.write_callback {
+                            match cb(&msg_buf[..l]) {
+                                Ok((vf, notify)) => {
+                                    match vf {
+                                        Some(vf) => self.vf = vf,
+                                        None => self.vf = ValOrFn::Value(msg_buf, l)
+                                    }
+                                    // TODO: implement notify
+                                },
+                                Err(_) => continue
+                            }
+                        }
+                    }
+                    Err(e) => match e {
+                        nix::Error::Sys(errno) => match errno {
+                            Errno::EAGAIN => break,
+                            _ => {
+                                close(write_fd).ok();
+                                self.write = None;
+                                break;
+                            }
+                        },
+                        _ => unreachable!(),
+                    },
+                }
+            }
+        }
+    }
+    */
+}
+
+pub struct LocalCharactersitic<'a, 'b: 'a> {
+    pub(crate) uuid: UUID,
+    pub(super) service: &'a mut LocalService<'b>,
+    #[cfg(feature = "unsafe-opt")]
+    base: *mut LocalCharBase,
+}
+impl<'c, 'd> LocalCharactersitic<'c, 'd> {
+    pub(crate) fn new(service: &'c mut LocalService<'d>, uuid: UUID) -> Self {
+        // TODO: implement base for cfg unsafe-opt
+        LocalCharactersitic { uuid, service }
+    }
     pub(crate) fn char_call<'a, 'b>(&mut self, call: MarshalledMessage) -> MarshalledMessage {
+        let base = self.get_char_base_mut();
         match &call.dynheader.member.as_ref().unwrap()[..] {
             "ReadValue" => {
-                if self.flags.read
-                    || self.flags.secure_read
-                    || self.flags.secure_read
-                    || self.flags.encrypt_read
+                if base.flags.read
+                    || base.flags.secure_read
+                    || base.flags.secure_read
+                    || base.flags.encrypt_read
                 {
                     self.check_write_fd();
+					let base = self.get_char_base_mut();
                     let call = call.unmarshall_all().unwrap();
-                    let (v, l) = self.vf.to_value();
+                    let (v, l) = base.vf.to_value();
                     let mut start = 0;
                     if let Some(dict) = call.params.get(0) {
                         if let Param::Container(Container::Dict(dict)) = dict {
@@ -125,7 +209,7 @@ impl LocalCharBase {
                             );
                         }
                     }
-                    // eprintln!("vf: {:?}\nValue: {:?}", self.vf, &v[..l]);
+                    // eprintln!("vf: {:?}\nValue: {:?}", base.vf, &v[..l]);
                     let vec: Vec<Param> = v[start..l]
                         .into_iter()
                         .map(|i| Base::Byte(*i).into())
@@ -145,13 +229,14 @@ impl LocalCharBase {
                 }
             }
             "WriteValue" => {
-                if self.flags.write
-                    || self.flags.write_wo_response
-                    || self.flags.secure_write
-                    || self.flags.encrypt_write
-                    || self.flags.encrypt_auth_write
+                if base.flags.write
+                    || base.flags.write_wo_response
+                    || base.flags.secure_write
+                    || base.flags.encrypt_write
+                    || base.flags.encrypt_auth_write
                 {
                     self.check_write_fd();
+					let base = self.get_char_base_mut();
                     let call = call.unmarshall_all().unwrap();
                     if let Some(Param::Container(Container::Array(array))) = call.params.get(0) {
                         let offset = if let Some(dict) = call.params.get(1) {
@@ -214,18 +299,29 @@ impl LocalCharBase {
                             }
                         }
                         let mut v = [0; 512];
-                        let (cur_v, cur_l) = self.vf.to_value();
+                        let (cur_v, cur_l) = base.vf.to_value();
                         v[..cur_l].copy_from_slice(&cur_v[..cur_l]);
                         v[offset..l].copy_from_slice(&bytes[..]);
-                        if let Some(cb) = &mut self.write_callback {
-							match cb(&v[..l]) {
-								Ok(vf) => {
-									self.vf = vf;
-								},
-								Err((s1, s2)) => {
-                                	return call.dynheader.make_error_response(s1, s2);
-								}
-							}
+                        if let Some(cb) = &mut base.write_callback {
+                            match cb(&v[..l]) {
+                                Ok((vf, notify)) => {
+                                    if let Some(vf) = vf {
+                                        base.vf = vf;
+                                    }
+                                    if notify {
+                                        // TODO: is there a better way to handle this error?
+                                        if let Err(e) = self.notify() {
+                                            eprintln!(
+                                                "Failed to notify characteristic on change: {:?}",
+                                                e
+                                            );
+                                        }
+                                    }
+                                }
+                                Err((s1, s2)) => {
+                                    return call.dynheader.make_error_response(s1, s2);
+                                }
+                            }
                         }
                         call.dynheader.make_response()
                     } else {
@@ -242,8 +338,8 @@ impl LocalCharBase {
                 }
             }
             "AcquireWrite" => {
-                if self.flags.write {
-                    if let Some(_) = self.write {
+                if base.flags.write {
+                    if let Some(_) = base.write {
                         return call.dynheader.make_error_response(
                             "org.bluez.Error.InProgress".to_string(),
                             Some(
@@ -286,7 +382,7 @@ impl LocalCharBase {
                             let mut res = call.make_response();
                             res.raw_fds.push(sock1);
                             res.body.push_param2(UnixFd(sock1 as u32), ret).unwrap();
-                            self.write = Some(sock2);
+                            base.write = Some(sock2);
                             return res;
                         }
                         Err(_) => {
@@ -307,15 +403,15 @@ impl LocalCharBase {
                 }
             }
             "AcquireNotify" => {
-                if !self.allow_write {
+                if !base.allow_write {
                     call.dynheader
                         .make_error_response("org.bluez.Error.NotSupported".to_string(), None)
-                } else if !self.flags.notify {
+                } else if !base.flags.notify {
                     call.dynheader.make_error_response(
                         BLUEZ_NOT_PERM.to_string(),
                         Some("This characteristic doesn't not permit notifying.".to_string()),
                     )
-                } else if let Some(notify) = &self.notify {
+                } else if let Some(notify) = &base.notify {
                     let err_str = match notify {
                         Notify::Signal => "This characteristic is already notifying via signals.",
                         Notify::Fd(_) => "This characteristic is already notifying via a socket.",
@@ -365,7 +461,7 @@ impl LocalCharBase {
                                 .unwrap();
                             res.dynheader.num_fds = Some(1);
                             res.raw_fds.push(sock1);
-                            self.notify = Some(Notify::Fd(sock2));
+                            base.notify = Some(Notify::Fd(sock2));
                             res
                         }
                         Err(_) => call.dynheader.make_error_response(
@@ -379,12 +475,12 @@ impl LocalCharBase {
                 }
             }
             "StartNotify" => {
-                if !self.flags.notify {
+                if !base.flags.notify {
                     call.dynheader.make_error_response(
                         BLUEZ_NOT_PERM.to_string(),
                         Some("This characteristic doesn't not permit notifying.".to_string()),
                     )
-                } else if let Some(notify) = &self.notify {
+                } else if let Some(notify) = &base.notify {
                     let err_str = match notify {
                         Notify::Signal => "This characteristic is already notifying via signals.",
                         Notify::Fd(_) => "This characteristic is already notifying via a socket.",
@@ -394,13 +490,13 @@ impl LocalCharBase {
                         Some(err_str.to_string()),
                     )
                 } else {
-                    self.notify = Some(Notify::Signal);
+                    base.notify = Some(Notify::Signal);
                     call.dynheader.make_response()
                 }
             }
             "StopNotify" => {
-                if let Some(_) = self.notify.as_ref() {
-                    self.notify = None;
+                if let Some(_) = base.notify.as_ref() {
+                    base.notify = None;
                     call.dynheader.make_response()
                 } else {
                     call.dynheader.make_error_response(
@@ -418,32 +514,13 @@ impl LocalCharBase {
                 .make_error_response(UNKNOWN_METHOD.to_string(), None),
         }
     }
-
-    pub(super) fn match_descs(
-        &mut self,
-        _msg_path: &Path,
-        _header: &DynamicHeader,
-    ) -> Option<DbusObject> {
-        unimplemented!()
+    pub fn write_val_or_fn(&mut self, val: &mut ValOrFn) {
+        let base = self.get_char_base_mut();
+        std::mem::swap(&mut base.vf, val);
     }
-    pub fn new<T: ToUUID>(uuid: T, flags: CharFlags) -> Self {
-        let uuid: UUID = uuid.to_uuid();
-        LocalCharBase {
-            vf: ValOrFn::Value([0; 512], 0),
-            index: 0,
-            handle: 0,
-            write: None,
-            notify: None,
-            uuid,
-            flags,
-            path: PathBuf::new(),
-            descs: HashMap::new(),
-            allow_write: false,
-            write_callback: None,
-        }
-    }
-    fn check_write_fd(&mut self) {
-        if let Some(write_fd) = self.write {
+    pub fn check_write_fd(&mut self) {
+        let mut base = self.get_char_base_mut();
+        if let Some(write_fd) = base.write {
             let mut msg_buf = [0; 512];
             loop {
                 match socket::recvmsg(
@@ -454,19 +531,32 @@ impl LocalCharBase {
                 ) {
                     Ok(recvmsg) => {
                         let l = recvmsg.bytes;
-                        if let Some(cb) = &mut self.write_callback {
-                            if let Err(_) = cb(&msg_buf[..l]) {
-                                continue;
+                        if let Some(cb) = &mut base.write_callback {
+                            match cb(&msg_buf[..l]) {
+                                Ok((vf, notify)) => {
+                                    match vf {
+                                        Some(vf) => base.vf = vf,
+                                        None => base.vf = ValOrFn::Value(msg_buf, l),
+                                    }
+									if notify {
+										drop(base);
+										if let Err(e) = self.notify() {
+                                    		// TODO: better way to handle this?
+											eprintln!("Warning: notify failed: {:?}", e);	
+										}
+										base = self.get_char_base_mut();
+									}
+                                }
+                                Err(_) => continue,
                             }
                         }
-                        self.vf = ValOrFn::Value(msg_buf, l);
                     }
                     Err(e) => match e {
                         nix::Error::Sys(errno) => match errno {
                             Errno::EAGAIN => break,
                             _ => {
                                 close(write_fd).ok();
-                                self.write = None;
+                                base.write = None;
                                 break;
                             }
                         },
@@ -476,23 +566,6 @@ impl LocalCharBase {
             }
         }
     }
-}
-
-pub struct LocalCharactersitic<'a, 'b: 'a> {
-    pub(super) uuid: UUID,
-    pub(super) service: &'a mut LocalService<'b>,
-    #[cfg(feature = "unsafe-opt")]
-    base: *mut LocalCharBase,
-}
-impl LocalCharactersitic<'_, '_> {
-    pub fn write_val_or_fn(&mut self, val: &mut ValOrFn) {
-        let base = self.get_char_base_mut();
-        std::mem::swap(&mut base.vf, val);
-    }
-	pub fn check_write_fd(&mut self) {
-		let base = self.get_char_base_mut();
-		base.check_write_fd();
-	}
     fn signal_change(&mut self) -> Result<(), Error> {
         let base = self.get_char_base_mut();
         //let (v, l) = self.get_char_base_mut().vf.to_value();
@@ -559,13 +632,13 @@ impl LocalCharactersitic<'_, '_> {
     }
     fn get_char_base_mut(&mut self) -> &mut LocalCharBase {
         self.service
-            .get_service_mut()
+            .get_service_base_mut()
             .chars
             .get_mut(&self.uuid)
             .unwrap()
     }
     fn get_char_base(&self) -> &LocalCharBase {
-        &self.service.get_service().chars[&self.uuid]
+        &self.service.get_service_base().chars[&self.uuid]
     }
 }
 
@@ -678,8 +751,8 @@ impl CharFlags {
 
 impl Characteristic for LocalCharactersitic<'_, '_> {
     fn read(&mut self) -> Result<([u8; 512], usize), Error> {
+        self.check_write_fd();
         let base = self.get_char_base_mut();
-        base.check_write_fd();
         Ok(base.vf.to_value())
         /*match &mut base.vf {
             ValOrFn::Value(buf, len) => Ok((*buf, *len)),
@@ -691,8 +764,8 @@ impl Characteristic for LocalCharactersitic<'_, '_> {
         self.read()
     }
     fn write(&mut self, val: &[u8]) -> Result<(), Error> {
+        self.check_write_fd();
         let base = self.get_char_base_mut();
-        base.check_write_fd();
         let mut buf = [0; 512];
         //eprintln!("writing to char: {:?}", val);
         buf[..val.len()].copy_from_slice(val);

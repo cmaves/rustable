@@ -43,6 +43,7 @@ impl LocalServiceBase {
     pub fn add_char(&mut self, mut character: LocalCharBase) {
         // TODO: add check for duplicate UUIDs
         //assert!(self.chars.len() < 65535);
+        character.serv_uuid = self.uuid.clone();
         character.index = self.char_index;
         self.char_index += 1;
         self.chars.insert(character.uuid.clone(), character);
@@ -51,7 +52,7 @@ impl LocalServiceBase {
     pub(crate) fn service_call<'a, 'b>(&mut self, _call: MarshalledMessage) -> MarshalledMessage {
         unimplemented!()
     }
-
+    /// Update the path of this service as well as the child characteristics
     pub(crate) fn update_path(&mut self, mut base: PathBuf) {
         let mut name = String::with_capacity(11);
         write!(name, "service{:02x}", self.index).unwrap();
@@ -120,22 +121,19 @@ impl<'a, 'b: 'a, 'c: 'a, 'd: 'a> Service<'a> for LocalService<'b> {
         &self.uuid
     }
     fn char_uuids(&self) -> Keys<UUID, Self::Value> {
-        let service = self.get_service();
+        let service = self.get_service_base();
         service.chars.keys()
     }
     fn primary(&self) -> bool {
-        let service = self.get_service();
+        let service = self.get_service_base();
         service.primary
     }
     fn get_char<T: ToUUID>(&'a mut self, uuid: T) -> Option<Self::CharType> {
-        let service = self.get_service_mut();
+        let service = self.get_service_base_mut();
         let uuid = uuid.to_uuid();
         if service.chars.contains_key(&uuid) {
             drop(service);
-            Some(LocalCharactersitic {
-                service: self,
-                uuid: uuid.clone(),
-            })
+            Some(LocalCharactersitic::new(self, uuid))
         } else {
             None
         }
@@ -152,10 +150,10 @@ impl<'a, 'b: 'a, 'c: 'a, 'd: 'a> Service<'a> for LocalService<'b> {
 }
 
 impl LocalService<'_> {
-    pub(super) fn get_service(&self) -> &LocalServiceBase {
+    pub(super) fn get_service_base(&self) -> &LocalServiceBase {
         &self.bt.services[&self.uuid]
     }
-    pub(super) fn get_service_mut(&mut self) -> &mut LocalServiceBase {
+    pub(super) fn get_service_base_mut(&mut self) -> &mut LocalServiceBase {
         self.bt.services.get_mut(&self.uuid).unwrap()
     }
 }

@@ -41,6 +41,9 @@ mod tests;
 pub type UUID = Rc<str>;
 pub type MAC = Rc<str>;
 
+pub const MAX_APP_MTU: usize = 244;
+pub const MAX_CHAR_LEN: usize = 512;
+
 pub trait ToUUID {
     fn to_uuid(self) -> UUID;
 }
@@ -552,12 +555,26 @@ impl Bluetooth {
                         INTRO_IF_STR => v.introspectable(call),
                         _ => standard_messages::unknown_method(&call.dynheader),
                     },
-                    DbusObject::Char(v) => match interface.as_ref() {
-                        PROP_IF_STR => v.properties_call(call),
-                        CHAR_IF_STR => v.char_call(call),
-                        INTRO_IF_STR => v.introspectable(call),
-                        _ => standard_messages::unknown_method(&call.dynheader),
-                    },
+                    DbusObject::Char(v) => {
+                        match interface.as_ref() {
+                            PROP_IF_STR => v.properties_call(call),
+                            CHAR_IF_STR => {
+                                let serv_uuid = v.serv_uuid.clone();
+                                let char_uuid = v.uuid.clone();
+                                let mut serv = LocalService {
+                                    bt: self,
+                                    uuid: serv_uuid,
+                                };
+                                let mut local_char = {
+                                    // TODO: implement unsafe-opt changes
+                                    LocalCharactersitic::new(&mut serv, char_uuid)
+                                };
+                                local_char.char_call(call)
+                            }
+                            INTRO_IF_STR => v.introspectable(call),
+                            _ => standard_messages::unknown_method(&call.dynheader),
+                        }
+                    }
                     DbusObject::Desc(v) => match interface.as_ref() {
                         PROP_IF_STR => v.properties_call(call),
                         DESC_IF_STR => unimplemented!(),
@@ -1290,6 +1307,11 @@ impl ValOrFn {
             ValOrFn::Value(v, l) => (*v, *l),
             ValOrFn::Function(f) => f(),
         }
+    }
+    pub fn from_slice(slice: &[u8]) -> Self {
+        let mut v = [0; 512];
+        v[..slice.len()].copy_from_slice(slice);
+        ValOrFn::Value(v, slice.len())
     }
 }
 
