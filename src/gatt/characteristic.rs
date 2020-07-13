@@ -39,7 +39,7 @@ pub struct LocalCharBase {
     pub(crate) descs: HashMap<String, LocalDescriptor>,
     flags: CharFlags,
     allow_write: bool,
-    write_callback: Option<Box<dyn FnMut(&[u8]) -> Result<(), (String, Option<String>)>>>,
+    pub write_callback: Option<Box<dyn FnMut(&[u8]) -> Result<ValOrFn, (String, Option<String>)>>>,
 }
 impl Debug for LocalCharBase {
     fn fmt(&self, f: &mut Formatter<'_>) -> Result<(), std::fmt::Error> {
@@ -62,6 +62,15 @@ impl Drop for LocalCharBase {
     }
 }
 impl LocalCharBase {
+	pub fn enable_write_fd(&mut self, on: bool) {
+		self.allow_write = on;
+		if !on {
+			if let Some(write_fd) = self.write {
+				close(write_fd).ok();
+				self.write = None;
+			}
+		} 
+	}
     pub(super) fn update_path(&mut self, base: &Path) {
         self.path = base.to_owned();
         let mut name = String::with_capacity(8);
@@ -209,11 +218,15 @@ impl LocalCharBase {
                         v[..cur_l].copy_from_slice(&cur_v[..cur_l]);
                         v[offset..l].copy_from_slice(&bytes[..]);
                         if let Some(cb) = &mut self.write_callback {
-                            if let Err((s1, s2)) = cb(&v[..l]) {
-                                return call.dynheader.make_error_response(s1, s2);
-                            }
+							match cb(&v[..l]) {
+								Ok(vf) => {
+									self.vf = vf;
+								},
+								Err((s1, s2)) => {
+                                	return call.dynheader.make_error_response(s1, s2);
+								}
+							}
                         }
-                        self.vf = ValOrFn::Value(v, bytes.len());
                         call.dynheader.make_response()
                     } else {
                         call.dynheader.make_error_response(
@@ -476,6 +489,10 @@ impl LocalCharactersitic<'_, '_> {
         let base = self.get_char_base_mut();
         std::mem::swap(&mut base.vf, val);
     }
+	pub fn check_write_fd(&mut self) {
+		let base = self.get_char_base_mut();
+		base.check_write_fd();
+	}
     fn signal_change(&mut self) -> Result<(), Error> {
         let base = self.get_char_base_mut();
         //let (v, l) = self.get_char_base_mut().vf.to_value();
