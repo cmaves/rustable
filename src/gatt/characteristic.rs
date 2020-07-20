@@ -107,48 +107,6 @@ impl LocalCharBase {
             serv_uuid: Rc::from(""),
         }
     }
-    /*
-    fn check_write_fd(&mut self) {
-        if let Some(write_fd) = self.write {
-            let mut msg_buf = [0; 512];
-            loop {
-                match socket::recvmsg(
-                    write_fd,
-                    &[IoVec::from_mut_slice(&mut msg_buf)],
-                    None,
-                    socket::MsgFlags::MSG_DONTWAIT,
-                ) {
-                    Ok(recvmsg) => {
-                        let l = recvmsg.bytes;
-                        if let Some(cb) = &mut self.write_callback {
-                            match cb(&msg_buf[..l]) {
-                                Ok((vf, notify)) => {
-                                    match vf {
-                                        Some(vf) => self.vf = vf,
-                                        None => self.vf = ValOrFn::Value(msg_buf, l)
-                                    }
-                                    // TODO: implement notify
-                                },
-                                Err(_) => continue
-                            }
-                        }
-                    }
-                    Err(e) => match e {
-                        nix::Error::Sys(errno) => match errno {
-                            Errno::EAGAIN => break,
-                            _ => {
-                                close(write_fd).ok();
-                                self.write = None;
-                                break;
-                            }
-                        },
-                        _ => unreachable!(),
-                    },
-                }
-            }
-        }
-    }
-    */
 }
 
 pub struct LocalCharactersitic<'a, 'b: 'a> {
@@ -172,7 +130,7 @@ impl<'c, 'd> LocalCharactersitic<'c, 'd> {
                     || base.flags.encrypt_read
                 {
                     self.check_write_fd();
-					let base = self.get_char_base_mut();
+                    let base = self.get_char_base_mut();
                     let call = call.unmarshall_all().unwrap();
                     let (v, l) = base.vf.to_value();
                     let mut start = 0;
@@ -236,7 +194,7 @@ impl<'c, 'd> LocalCharactersitic<'c, 'd> {
                     || base.flags.encrypt_auth_write
                 {
                     self.check_write_fd();
-					let base = self.get_char_base_mut();
+                    let base = self.get_char_base_mut();
                     let call = call.unmarshall_all().unwrap();
                     if let Some(Param::Container(Container::Array(array))) = call.params.get(0) {
                         let offset = if let Some(dict) = call.params.get(1) {
@@ -338,6 +296,11 @@ impl<'c, 'd> LocalCharactersitic<'c, 'd> {
                 }
             }
             "AcquireWrite" => {
+                if !base.allow_write {
+                    return call
+                        .dynheader
+                        .make_error_response("org.bluez.Error.NotSupported".to_string(), None);
+                }
                 if base.flags.write {
                     if let Some(_) = base.write {
                         return call.dynheader.make_error_response(
@@ -381,7 +344,8 @@ impl<'c, 'd> LocalCharactersitic<'c, 'd> {
                             }
                             let mut res = call.make_response();
                             res.raw_fds.push(sock1);
-                            res.body.push_param2(UnixFd(sock1 as u32), ret).unwrap();
+                            res.dynheader.num_fds = Some(1);
+                            res.body.push_param2(UnixFd(0), ret).unwrap();
                             base.write = Some(sock2);
                             return res;
                         }
@@ -403,10 +367,7 @@ impl<'c, 'd> LocalCharactersitic<'c, 'd> {
                 }
             }
             "AcquireNotify" => {
-                if !base.allow_write {
-                    call.dynheader
-                        .make_error_response("org.bluez.Error.NotSupported".to_string(), None)
-                } else if !base.flags.notify {
+                if !(base.flags.notify || base.flags.indicate) {
                     call.dynheader.make_error_response(
                         BLUEZ_NOT_PERM.to_string(),
                         Some("This characteristic doesn't not permit notifying.".to_string()),
@@ -534,18 +495,17 @@ impl<'c, 'd> LocalCharactersitic<'c, 'd> {
                         if let Some(cb) = &mut base.write_callback {
                             match cb(&msg_buf[..l]) {
                                 Ok((vf, notify)) => {
-                                    match vf {
-                                        Some(vf) => base.vf = vf,
-                                        None => base.vf = ValOrFn::Value(msg_buf, l),
+                                    if let Some(vf) = vf {
+                                        base.vf = vf;
                                     }
-									if notify {
-										drop(base);
-										if let Err(e) = self.notify() {
-                                    		// TODO: better way to handle this?
-											eprintln!("Warning: notify failed: {:?}", e);	
-										}
-										base = self.get_char_base_mut();
-									}
+                                    if notify {
+                                        drop(base);
+                                        if let Err(e) = self.notify() {
+                                            // TODO: better way to handle this?
+                                            eprintln!("Warning: notify failed: {:?}", e);
+                                        }
+                                        base = self.get_char_base_mut();
+                                    }
                                 }
                                 Err(_) => continue,
                             }
@@ -617,8 +577,8 @@ impl<'c, 'd> LocalCharactersitic<'c, 'd> {
     }
     pub fn notify(&mut self) -> Result<(), Error> {
         let base = self.get_char_base_mut();
-        let (buf, len) = base.vf.to_value();
         if let Some(notify) = &mut base.notify {
+            let (buf, len) = base.vf.to_value();
             match notify {
                 Notify::Signal => self.signal_change()?,
                 Notify::Fd(sock) => {

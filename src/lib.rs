@@ -529,7 +529,7 @@ impl Bluetooth {
         }
 
         while let Some(call) = self.rpc_con.try_get_call() {
-            eprintln!("received call {:#?}", call);
+            eprintln!("received call {:?}", call);
             let interface = (&call.dynheader.interface).as_ref().unwrap();
             if let Some(dest) = &self.filter_dest {
                 if dest != call.dynheader.destination.as_ref().unwrap() {
@@ -599,11 +599,13 @@ impl Bluetooth {
                 },
                 None => standard_messages::unknown_method(&call.dynheader),
             };
+            /*
             eprintln!("replying: {:?}", reply);
             match reply.body.parser().get_param() {
                 Ok(param) => eprintln!("reply body: first param: {:#?}", param),
                 Err(_) => eprintln!("reply body: no params"),
             }
+            */
             self.rpc_con.send_message(&mut reply, Timeout::Infinite)?;
             for fd in reply.raw_fds {
                 close(fd).ok();
