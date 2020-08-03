@@ -20,36 +20,25 @@ pub struct Advertisement {
     pub(crate) path: PathBuf,
     pub appearance: u16,
     pub localname: String,
-    timeout_start: Instant,
-    duration_start: Instant,
+    pub(crate) active: bool,
 }
 impl Advertisement {
     pub fn new(typ: AdType, localname: String) -> Self {
-        let now = Instant::now();
         Advertisement {
             typ,
             service_uuids: Vec::new(),
             solicit_uuids: Vec::new(),
             includes: Vec::new(),
-            timeout: 180,
-            timeout_start: now,
+            timeout: 2,
             duration: 180,
-            duration_start: now,
             appearance: 0,
             localname,
             index: 0,
             path: PathBuf::new(),
             manu_data: HashMap::new(),
             serv_dict: HashMap::new(),
+            active: false,
         }
-    }
-    fn timeout(&self) -> u16 {
-        let secs = Instant::now().duration_since(self.timeout_start).as_secs();
-        (self.timeout as u64).saturating_sub(secs) as u16
-    }
-    fn duration(&self) -> u16 {
-        let secs = Instant::now().duration_since(self.timeout_start).as_secs();
-        (self.duration as u64).saturating_sub(secs) as u16
     }
     pub fn validate(&self) -> Result<(), Error> {
         for uuid in &self.service_uuids {
@@ -201,18 +190,10 @@ impl Properties for Advertisement {
                 LOCAL_NAME_PROP => Some(base_param_to_variant(self.localname.to_string().into())),
                 APPEARANCE_PROP => Some(base_param_to_variant(self.appearance.into())),
                 DURATION_PROP => {
-                    let duration = self.duration as u64;
-                    let time = duration.saturating_sub(
-                        Instant::now().duration_since(self.duration_start).as_secs(),
-                    );
-                    Some(base_param_to_variant((time as u16).into()))
+                    Some(base_param_to_variant(self.duration.into()))
                 }
                 TO_PROP => {
-                    let timeout = self.timeout as u64;
-                    let time = timeout.saturating_sub(
-                        Instant::now().duration_since(self.timeout_start).as_secs(),
-                    );
-                    Some(base_param_to_variant((time as u16).into()))
+                    Some(base_param_to_variant(self.timeout.into()))
                 }
                 //TODO:implement SND_CHANNEL_PROP => unimplemented!(),
                 _ => None,

@@ -13,7 +13,7 @@ use std::os::unix::io::RawFd;
 
 pub trait Characteristic {
     fn read(&mut self) -> Result<([u8; 512], usize), Error>;
-    fn read_value(&mut self) -> Result<([u8; 512], usize), Error>;
+    fn read_cached(&mut self) -> Result<([u8; 512], usize), Error>;
     fn write(&mut self, val: &[u8]) -> Result<(), Error>;
     fn uuid(&self) -> &str;
     //    fn service(&self) -> &Path;
@@ -710,6 +710,8 @@ impl CharFlags {
 }
 
 impl Characteristic for LocalCharactersitic<'_, '_> {
+    /// Reads the local value of the characteristic. If the value
+    /// of the characteristic is given by a function, it will be executed.
     fn read(&mut self) -> Result<([u8; 512], usize), Error> {
         self.check_write_fd();
         let base = self.get_char_base_mut();
@@ -719,8 +721,15 @@ impl Characteristic for LocalCharactersitic<'_, '_> {
             ValOrFn::Function(f) => Ok(f()),
         }*/
     }
+    /// For `LocalCharactersitic` this function is identical to `read()`
+    /// (This does not not hold true for other implementors of this trait).
+    ///
+    /// # Notes
+    // TODO: implement this note
+    /// In the future, if the LocalCharactersitic value is given by a function,
+    /// a function, then this function may read a cached version of it.
     #[inline]
-    fn read_value(&mut self) -> Result<([u8; 512], usize), Error> {
+    fn read_cached(&mut self) -> Result<([u8; 512], usize), Error> {
         self.read()
     }
     fn write(&mut self, val: &[u8]) -> Result<(), Error> {
@@ -1043,6 +1052,7 @@ impl<'a, 'b, 'c> RemoteChar<'a, 'b, 'c> {
 }
 
 impl Characteristic for RemoteChar<'_, '_, '_> {
+    /// Reads a value from the remote device's characteristic.
     fn read(&mut self) -> Result<([u8; 512], usize), Error> {
         let base = self.get_char_mut();
         let path = base.path.to_str().unwrap().to_string();
@@ -1080,9 +1090,8 @@ impl Characteristic for RemoteChar<'_, '_, '_> {
                 }
             }
         }
-        unimplemented!()
     }
-    fn read_value(&mut self) -> Result<([u8; 512], usize), Error> {
+    fn read_cached(&mut self) -> Result<([u8; 512], usize), Error> {
         unimplemented!()
     }
     fn write(&mut self, _val: &[u8]) -> Result<(), Error> {
