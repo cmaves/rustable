@@ -11,15 +11,41 @@ use rustbus::wire::marshal::traits::UnixFd;
 use std::convert::TryFrom;
 use std::os::unix::io::RawFd;
 
+/// Describes the methods avaliable on GATT characteristics.
 pub trait Characteristic {
+	/// Reads the value of a GATT characteristic.
     fn read(&mut self) -> Result<([u8; 512], usize), Error>;
+	/// Generally returns a previous value of the GATT characteristic. Check the individual implementors,
+	/// for a more precise definition.
     fn read_cached(&mut self) -> Result<([u8; 512], usize), Error>;
+	/// Write a value to a GATT characteristic.
     fn write(&mut self, val: &[u8]) -> Result<(), Error>;
+	/// Get the UUID of the service.
+	/// TODO: change to UUID (Rc<str>)
     fn uuid(&self) -> &str;
     //    fn service(&self) -> &Path;
+	/// Checks if the characteristic's write fd from [`AcquireWrite`] has already been acquired.
+	/// Corresponds to reading [`WriteAcquired`] property.
+	///
+	/// [`AcquireWrite`]: https://git.kernel.org/pub/scm/bluetooth/bluez.git/tree/doc/gatt-api.txt#n115
+	/// [`WriteAcquired`]: https://git.kernel.org/pub/scm/bluetooth/bluez.git/tree/doc/gatt-api.txt#n223
     fn write_acquired(&self) -> bool;
+	/// Checks if the characteristic's notify fd from [`AcquireNotify`] has already been acquired.
+	/// Corresponds to reading [`NotifyAcquired`] property.
+	///
+	/// [`AcquireNotify`]: https://git.kernel.org/pub/scm/bluetooth/bluez.git/tree/doc/gatt-api.txt#n145
+	/// [`NotifyAcquired`]: https://git.kernel.org/pub/scm/bluetooth/bluez.git/tree/doc/gatt-api.txt#n234
     fn notify_acquired(&self) -> bool;
+	/// Checks if the [`StartNotify`] command has been called on a characteristic.
+	/// Corresponds to reading [`Notifying`] property.
+	///
+	/// [`StartNotify`]: https://git.kernel.org/pub/scm/bluetooth/bluez.git/tree/doc/gatt-api.txt#n181
+	/// [`Notifying`]: https://git.kernel.org/pub/scm/bluetooth/bluez.git/tree/doc/gatt-api.txt#n245
     fn notifying(&self) -> bool;
+	/// Reads the flags present on a characteristic.
+	/// Corresponds to reading [`Flags`] property.
+	///
+	/// [`Flags`]: https://git.kernel.org/pub/scm/bluetooth/bluez.git/tree/doc/gatt-api.txt#n250 
     fn flags(&self) -> CharFlags;
 }
 
@@ -28,6 +54,8 @@ enum Notify {
     Signal,
     Fd(RawFd),
 }
+
+/// `LocalCharBase` is used to create GATT characteristics to be added to `LocalServiceBase`.
 pub struct LocalCharBase {
     vf: ValOrFn,
     pub(crate) index: u16,
@@ -40,6 +68,13 @@ pub struct LocalCharBase {
     pub(crate) descs: HashMap<String, LocalDescriptor>,
     flags: CharFlags,
     allow_write: bool,
+	/// Set a callback that can be when writes are issued by remote device.
+	/// The callback function can reject a write with an error, with first String being a general a DBus,
+	/// error name, and the Optional second string being an extended error message.=
+	/// On a successful write, giving a `Some` variant will overwrite the value of the characteristic,
+	/// while `None` leaves the value the same as it was before the write. The purpose of this allows,
+	/// the user to change the ValOrFn before it is set the characteristic, for others to use.
+	/// The `bool` is used to indicate whether an notification/indication should be issued after an update.
     pub write_callback:
         Option<Box<dyn FnMut(&[u8]) -> Result<(Option<ValOrFn>, bool), (String, Option<String>)>>>,
 }
@@ -64,6 +99,12 @@ impl Drop for LocalCharBase {
     }
 }
 impl LocalCharBase {
+	/// Enables `AcquireWrite` DBus call to be issued by Bluez to the local application. 
+	/// [`AcquireWrite`] will allow Bluez to issue writes to the local characteristic, using
+	/// packets over a Unix socket. This can have better performance and lower latency by allowing
+	/// writes to avoid using DBus. If this is used, then implementors of local characteristic need,
+	/// to periodically call [`LocalCharactersitic::check_write_fd()`] to process these messages, received
+	/// on the socket, onces added.
     pub fn enable_write_fd(&mut self, on: bool) {
         self.allow_write = on;
         if !on {
@@ -90,6 +131,11 @@ impl LocalCharBase {
     ) -> Option<DbusObject> {
         unimplemented!()
     }
+	/// Creates a new `LocalCharBase` with `uuid` and `flags`.
+	///
+	/// It can be added a local service with [`LocalServiceBase::add_char()`].
+	///
+	/// [`LocalServiceBase::add_char()`]: ./struct.LocalServiceBase.html#method.new
     pub fn new<T: ToUUID>(uuid: T, flags: CharFlags) -> Self {
         let uuid: UUID = uuid.to_uuid();
         LocalCharBase {
@@ -602,6 +648,10 @@ impl<'c, 'd> LocalCharactersitic<'c, 'd> {
     }
 }
 
+/// Flags for GATT characteristics. What each flags does it detailed on 
+/// page 1552 (Table 3.5) and page 1554 (Table 3.8) of the [Core Specification (5.2)]
+///
+/// [Core Specification (5.2)]: https://www.bluetooth.com/specifications/bluetooth-core-specification/
 #[derive(Clone, Copy, Default, Debug)]
 pub struct CharFlags {
     pub broadcast: bool,

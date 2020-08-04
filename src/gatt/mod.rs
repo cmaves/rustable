@@ -1,3 +1,5 @@
+//! Module containing structures and traits for interacting with remote 
+//! GATT services/characteristics/descriptors and creating local GATT services.
 use crate::{Error, UUID};
 use nix::poll::{poll, PollFd, PollFlags};
 use std::os::unix::io::RawFd;

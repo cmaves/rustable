@@ -1,3 +1,4 @@
+//! A series of constant strings used to communicate with DBus and Bluez.
 use rustbus::params;
 use rustbus::params::{Base, Container, Param};
 use std::collections::HashMap;

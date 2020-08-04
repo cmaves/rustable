@@ -7,6 +7,9 @@ use rustbus::params::{Base, Param};
 use rustbus::signature;
 use std::time::Instant;
 
+/// See the [Advertising API] for more details about what each field does.
+///
+/// [Advertising API]: https://git.kernel.org/pub/scm/bluetooth/bluez.git/tree/doc/advertising-api.txt
 pub struct Advertisement {
     pub typ: AdType,
     pub service_uuids: Vec<UUID>,
@@ -14,8 +17,15 @@ pub struct Advertisement {
     pub serv_dict: HashMap<UUID, ([u8; 27], usize)>,
     pub solicit_uuids: Vec<UUID>,
     pub includes: Vec<String>,
-    pub timeout: u16,
+	/// Defaults to `2`. Ignored if there is only one Advertisement active on the Bluez controller at once.
+	/// If there are multiple advertisements active on the Bluez controller at once 
+	/// (including from other application), then they share time in a round-robin. This setting determines,
+	/// how long this advertisement will be active at a time in seconds, before handing of to the next 
+	/// Advertisement.
     pub duration: u16,
+	/// Defaults to `180`. The timeout of the advertisement in seconds. The timeout only counts time while the advertisement is active,
+	/// if there are multiple advertisement.
+    pub timeout: u16,
     pub(crate) index: u16,
     pub(crate) path: PathBuf,
     pub appearance: u16,
@@ -23,6 +33,10 @@ pub struct Advertisement {
     pub(crate) active: bool,
 }
 impl Advertisement {
+	/// Creates a new advertisement that can be added the `Bluetooth` and registered with Bluez
+	/// using [`Bluetooth::start_adv()`].
+	///
+	/// [`Bluetooth::start_adv()`]: ./struct.Bluetooth.html#method.start_adv
     pub fn new(typ: AdType, localname: String) -> Self {
         Advertisement {
             typ,
@@ -40,6 +54,7 @@ impl Advertisement {
             active: false,
         }
     }
+	/// Validates the UUIDs in the advertisement.
     pub fn validate(&self) -> Result<(), Error> {
         for uuid in &self.service_uuids {
             if !validate_uuid(uuid) {

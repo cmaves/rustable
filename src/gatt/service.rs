@@ -39,6 +39,23 @@ pub struct LocalServiceBase {
     primary: bool,
 }
 impl LocalServiceBase {
+    /// Construct a new `LocalServiceBase` to construct as service with.
+	///
+	/// It can be added to `Bluetooth` with [`Bluetooth::add_service()`].
+	///
+	/// [`Bluetooth::add_service()`]: ../struct.Bluetooth.html#method.add_service
+    pub fn new<T: ToUUID>(uuid: T, primary: bool) -> Self {
+        let uuid = uuid.to_uuid();
+        LocalServiceBase {
+            index: 0,
+            char_index: 0,
+            handle: 0,
+            uuid,
+            path: PathBuf::new(),
+            chars: HashMap::new(),
+            primary,
+        }
+    }
     /// Add a characteristic to the service
     pub fn add_char(&mut self, mut character: LocalCharBase) {
         // TODO: add check for duplicate UUIDs
@@ -89,20 +106,6 @@ impl LocalServiceBase {
             None
         } else {
             None
-        }
-    }
-    /// Construct a new `LocalServiceBase` to construct as service with.
-    /// [`LocalServiceBase`]: ./struct.LocalServiceBase.html
-    pub fn new<T: ToUUID>(uuid: T, primary: bool) -> Self {
-        let uuid = uuid.to_uuid();
-        LocalServiceBase {
-            index: 0,
-            char_index: 0,
-            handle: 0,
-            uuid,
-            path: PathBuf::new(),
-            chars: HashMap::new(),
-            primary,
         }
     }
 }
@@ -216,7 +219,10 @@ impl Introspectable for LocalServiceBase {
         ret
     }
 }
-
+/// Internal data structure. Currently no use for users of this crate.
+///
+/// This structure is public because it is used as a type for `std::collections::hash_map::Keys`,
+/// for the [`Device::get_services()`] functions.
 pub struct RemoteServiceBase {
     pub(crate) uuid: UUID,
     primary: bool,
@@ -224,7 +230,7 @@ pub struct RemoteServiceBase {
     pub(crate) chars: HashMap<UUID, RemoteCharBase>,
 }
 impl RemoteServiceBase {
-    pub fn from_props(
+    pub(crate) fn from_props(
         value: &mut HashMap<String, params::Variant>,
         path: PathBuf,
     ) -> Result<Self, Error> {
@@ -274,7 +280,7 @@ impl TryFrom<&Message<'_, '_>> for RemoteServiceBase {
         unimplemented!()
     }
 }
-
+/// Return type for [`RemoteDevice::get_service()`]. It represents a service on another device.
 pub struct RemoteService<'a, 'b> {
     pub(crate) uuid: UUID,
     pub(crate) dev: &'a mut RemoteDevice<'b>,
@@ -317,9 +323,11 @@ impl<'a, 'b: 'a, 'c: 'a> Service<'a> for RemoteService<'b, 'c> {
     fn device(&self) -> &Path {
         self.get_service().path.parent().unwrap()
     }
+	/// **unimplemented**
     fn includes(&self) -> &[&Path] {
         unimplemented!()
     }
+	/// **unimplemented**
     fn handle(&self) -> u16 {
         unimplemented!()
     }

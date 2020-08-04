@@ -5,14 +5,21 @@
 //! ### GATT Server
 //! - Creating local services
 //! - Reading/Writing local characteristics
-//! - Notifying/Indicating local characteristics
+//! - Notifying/Indicating local characteristics with sockets.
+//! - Notifying/Indicating local characteristics with DBus signals.
+//!
+//!  **To Do:**
+//!
+//! - Descriptors as a server.
 //! ### GATT Client
-//! -
-//! ## To Do
-//! - Descriptors for both as a GATT server and client.
+//! - Receiving remote notification/indications with sockets.
+//!
+//!  **To Do:**
+//!
+//! - Descriptors as a client.
 //! ## Development status
 //! This library is unstable in *alpha*. There are planned functions
-//! in the API that have yet to be implemented.
+//! in the API that have yet to be implemented. Unimplemented function are noted.
 //! The API is also subject to breaking changes.
 //!
 use gatt::*;
@@ -199,7 +206,7 @@ pub struct Bluetooth {
     services: HashMap<UUID, LocalServiceBase>,
     registered: bool,
     pub filter_dest: Option<String>,
-    pub ads: VecDeque<Advertisement>,
+    ads: VecDeque<Advertisement>,
     service_index: u8,
     ad_index: u16,
     devices: HashMap<MAC, RemoteDeviceBase>,
@@ -259,8 +266,13 @@ impl Bluetooth {
     pub fn get_path(&self) -> &Path {
         &self.path
     }
-    /// Adds a service to the `Bluetooth` instance. Once registered with `register_application()`,
+    /// Adds a service to the `Bluetooth` instance. Once registered with [`register_application()`],
     /// this service will be a local service that can be interacted with by remote devices.
+	/// 
+	/// If `register_application()` has already called, the service will not be visible to
+	/// Bluez (or other devices) until the application in reregistered.
+	///
+	/// [`register_application()`]: ./struct.Bluetooth.html#method.register_application
     pub fn add_service(&mut self, mut service: LocalServiceBase) -> Result<(), Error> {
         if self.services.len() >= 255 {
             panic!("Cannot add more than 255 services");
@@ -361,7 +373,9 @@ impl Bluetooth {
     /// Registers an advertisement with Bluez.
     /// After a successful call, it will persist until the `remove_advertise()`/`remove_advertise_no_dbus()`
     /// is called or Bluez releases the advertisement (this is typically done on device connect).
-    pub fn start_advertise(&mut self, mut adv: Advertisement) -> Result<u16, (u16, Error)> {
+	///
+	/// **Calls process_requests()**
+    pub fn start_adv(&mut self, mut adv: Advertisement) -> Result<u16, (u16, Error)> {
         let idx = self.ads.len();
         adv.index = self.ad_index;
         let ret_idx = adv.index;
@@ -399,7 +413,9 @@ impl Bluetooth {
 		}
     }
     /// Unregisters an advertisement with Bluez. Returns the `Advertisement` if successful.
-    pub fn remove_advertise(&mut self, index: u16) -> Result<Advertisement, Error> {
+	///
+	/// **Calls process_requests()**
+    pub fn remove_adv(&mut self, index: u16) -> Result<Advertisement, Error> {
         let idx = match self.ads.iter().position(|ad| ad.index == index) {
             Some(idx) => idx,
             None => {
@@ -445,11 +461,13 @@ impl Bluetooth {
     }
     /// Removes the advertisement from the `Bluetooth` instance but does not unregister the
     /// advertisement with Bluez. It is recommended that this is not used.
-    pub fn remove_advertise_no_dbus(&mut self, index: u16) -> Option<Advertisement> {
+    pub fn remove_adv_no_dbus(&mut self, index: u16) -> Option<Advertisement> {
         let idx = self.ads.iter().position(|ad| ad.index == index)?;
         self.ads.remove(idx)
     }
     /// Set whether the Bluez controller should be discoverable (`true`) or not.
+	///
+	/// **Calls process_requests()**
     pub fn set_discoverable(&mut self, on: bool) -> Result<(), Error> {
         let mut msg = MessageBuilder::new()
             .call("Set".to_string())
@@ -483,6 +501,8 @@ impl Bluetooth {
         }
     }
     /// Set the Bluez controller power on (`true`) or off.
+	///
+	/// **Calls process_requests()**
     pub fn set_power(&mut self, on: bool) -> Result<(), Error> {
         let mut msg = MessageBuilder::new()
             .call("Set".to_string())
@@ -515,6 +535,8 @@ impl Bluetooth {
     }
     /// Registers the local application's GATT services/characteristics (TODO: descriptors)
     /// with the Bluez controller.
+	///
+	/// **Calls process_requests()**
     pub fn register_application(&mut self) -> Result<(), Error> {
         let path = self.get_path();
         let empty_dict = HashMap::new();
@@ -836,14 +858,45 @@ impl Bluetooth {
     }
     /// Used to get devices devices known to Bluez. This function does *not* trigger scan/discovery
     /// on the Bluez controller. Use `set_scan()` to initiate actual device discovery.
+	///
+	/// **Calls process_requests()**
     pub fn discover_devices(&mut self) -> Result<HashSet<MAC>, Error> {
         self.discover_devices_filter(self.blue_path.clone())
     }
 
+	/*
     /// **Unimplemented**
     pub fn set_scan(&mut self, on: bool) -> Result<(), Error> {
-        unimplemented!()
+        let mut msg = MessageBuilder::new()
+            .call("Set".to_string())
+            .on(self.blue_path.to_str().unwrap().to_string())
+            .with_interface(PROP_IF_STR.to_string())
+            .at(BLUEZ_DEST.to_string())
+            .build();
+        msg.body.push_param2(ADAPTER_IF_STR, "Scan").unwrap();
+        let variant = Param::Container(Container::Variant(Box::new(params::Variant {
+            sig: rustbus::signature::Type::Base(rustbus::signature::Base::Boolean),
+            value: Param::Base(Base::Boolean(on)),
+        })));
+        msg.body.push_old_param(&variant).unwrap();
+        let res_idx = self.rpc_con.send_message(&mut msg, Timeout::Infinite)?;
+        loop {
+            self.process_requests()?;
+            if let Some(res) = self.rpc_con.try_get_response(res_idx) {
+                match res.typ {
+                    MessageType::Reply => return Ok(()),
+                    MessageType::Error => {
+                        return Err(Error::DbusReqErr(format!(
+                            "Set power call failed: {:?}",
+                            res
+                        )))
+                    }
+                    _ => unreachable!(),
+                }
+            }
+        }
     }
+	*/
     fn get_managed_objects<'a, 'b>(
         &mut self,
         path: String,
@@ -996,6 +1049,9 @@ impl Bluetooth {
         self.devices.insert(devmac.clone(), device);
         self.comp_map.insert(comp, devmac);
     }
+	/// Get a device from the Bluez controller.
+	///
+	/// **Calls process_requests()**
     pub fn discover_device(&mut self, mac: &MAC) -> Result<(), Error> {
         let devmac: PathBuf = match mac_to_devmac(mac) {
             Some(devmac) => devmac,
