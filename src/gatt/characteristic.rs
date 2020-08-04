@@ -42,10 +42,7 @@ pub trait Characteristic {
 	/// [`StartNotify`]: https://git.kernel.org/pub/scm/bluetooth/bluez.git/tree/doc/gatt-api.txt#n181
 	/// [`Notifying`]: https://git.kernel.org/pub/scm/bluetooth/bluez.git/tree/doc/gatt-api.txt#n245
     fn notifying(&self) -> bool;
-	/// Reads the flags present on a characteristic.
-	/// Corresponds to reading [`Flags`] property.
-	///
-	/// [`Flags`]: https://git.kernel.org/pub/scm/bluetooth/bluez.git/tree/doc/gatt-api.txt#n250 
+	/// Get the flags present on a characteristic.
     fn flags(&self) -> CharFlags;
 }
 

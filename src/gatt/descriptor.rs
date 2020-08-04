@@ -4,10 +4,24 @@ use std::path::{Path, PathBuf};
 use crate::interfaces::*;
 use crate::*;
 
-pub trait Descriptor {}
+/// Describes the methods avaliable on local and remote GATT descriptors.
+pub trait Descriptor {
+	/// Reads the value of the descriptor.
+	fn read(&mut self) -> Result<([u8; 512], usize), Error>;
+	/// Returns a previous value of the GATT descriptor. Check the individual
+	/// implementors, for a more precise definition.
+	fn read_cached(&mut self) -> Result<([u8; 512], usize), Error>;
+	/// Writes a value to a GATT descriptors.
+	fn write(&mut self, val: &[u8]) -> Result<(), Error>;
+	/// Get the UUID of the descriptor.
+	fn uuid(&mut self) -> UUID;
+	/// Get the flags present on the descritptors
+	fn flags(&mut self) -> DescFlags;
+}
 
 #[derive(Debug)]
 pub struct LocalDescriptor {
+	pub(crate) vf: ValOrFn,
     pub(crate) path: PathBuf,
     pub(crate) index: u16,
     handle: u16,
