@@ -522,7 +522,7 @@ impl<'c, 'd> LocalCharactersitic<'c, 'd> {
         let base = self.get_char_base_mut();
         std::mem::swap(&mut base.vf, val);
     }
-    pub fn check_write_fd(&mut self) {
+    pub fn check_write_fd(&mut self) -> Result<(), Error> {
         let mut base = self.get_char_base_mut();
         if let Some(write_fd) = base.write {
             let mut msg_buf = [0; 512];
@@ -543,10 +543,7 @@ impl<'c, 'd> LocalCharactersitic<'c, 'd> {
                                     }
                                     if notify {
                                         drop(base);
-                                        if let Err(e) = self.notify() {
-                                            // TODO: better way to handle this?
-                                            eprintln!("Warning: notify failed: {:?}", e);
-                                        }
+                                        self.notify()?;
                                         base = self.get_char_base_mut();
                                     }
                                 }
@@ -568,6 +565,7 @@ impl<'c, 'd> LocalCharactersitic<'c, 'd> {
                 }
             }
         }
+		Ok(())
     }
     fn signal_change(&mut self) -> Result<(), Error> {
         let base = self.get_char_base_mut();
@@ -844,10 +842,11 @@ impl Introspectable for LocalCharBase {
 impl Properties for LocalCharBase {
     const INTERFACES: &'static [(&'static str, &'static [&'static str])] = &[CHAR_IF, PROP_IF];
     fn get_inner<'a, 'b>(&mut self, interface: &str, prop: &str) -> Option<Param<'a, 'b>> {
-        eprintln!(
+		/*
+        //eprintln!(
             "org.freedesktop.DBus.Charactersitic interface:\n{}, prop {}",
             interface, prop
-        );
+        );*/
         match interface {
             CHAR_IF_STR => match prop {
                 UUID_PROP => Some(base_param_to_variant(self.uuid.to_string().into())),
@@ -856,7 +855,7 @@ impl Properties for LocalCharBase {
                 ))),
                 VALUE_PROP => {
                     let (v, l) = self.vf.to_value();
-                    eprintln!("vf: {:?}\nValue: {:?}", self.vf, &v[..l]);
+                    // eprintln!("vf: {:?}\nValue: {:?}", self.vf, &v[..l]);
                     let vec: Vec<Param> =
                         v[..l].into_iter().map(|i| Base::Byte(*i).into()).collect();
                     let val = Param::Container(Container::Array(params::Array {
@@ -908,7 +907,7 @@ impl Properties for LocalCharBase {
             SERV_IF_STR => match prop {
                 HANDLE_PROP => {
                     if let Variant::Uint16(handle) = val {
-                        eprintln!("setting Handle prop: {:?}", handle); // TODO remove
+                        // eprintln!("setting Handle prop: {:?}", handle); // TODO remove
                         self.handle = handle;
                         None
                     } else {

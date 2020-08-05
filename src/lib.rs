@@ -355,7 +355,7 @@ impl Bluetooth {
                                 res.dynheader.error_name.unwrap()
                             )
                         };
-                        eprintln!("error: {}", err_str);
+                        // eprintln!("error: {}", err_str);
                         Err(Error::Bluez(err_str))
                     }
                     MessageType::Reply => {
@@ -567,7 +567,7 @@ impl Bluetooth {
             ])
             .unwrap();
 
-        eprintln!("registration msg: {:#?}", msg);
+        // eprintln!("registration msg: {:#?}", msg);
         let msg_idx = self.rpc_con.send_message(&mut msg, Timeout::Infinite)?;
         // we expect there to be no response
         loop {
@@ -593,7 +593,7 @@ impl Bluetooth {
                             res.dynheader.error_name.unwrap()
                         )
                     };
-                    eprintln!("error: {}", err_str);
+                    // eprintln!("error: {}", err_str);
                     Err(Error::Bluez(err_str))
                 } else {
                     if self.verbose >= 1 {
@@ -631,7 +631,7 @@ impl Bluetooth {
         }
 
         while let Some(call) = self.rpc_con.try_get_call() {
-            eprintln!("received call {:?}", call);
+            // eprintln!("received call {:?}", call);
             let interface = (&call.dynheader.interface).as_ref().unwrap();
             if let Some(dest) = &self.filter_dest {
                 if dest != call.dynheader.destination.as_ref().unwrap() {
@@ -702,10 +702,10 @@ impl Bluetooth {
                 None => standard_messages::unknown_method(&call.dynheader),
             };
             /*
-            eprintln!("replying: {:?}", reply);
+            // eprintln!("replying: {:?}", reply);
             match reply.body.parser().get_param() {
-                Ok(param) => eprintln!("reply body: first param: {:#?}", param),
-                Err(_) => eprintln!("reply body: no params"),
+                // Ok(param) => eprintln!("reply body: first param: {:#?}", param),
+                // Err(_) => eprintln!("reply body: no params"),
             }
             */
             self.rpc_con.send_message(&mut reply, Timeout::Infinite)?;
@@ -779,7 +779,7 @@ impl Bluetooth {
         if let None = &dynheader.member {
             return None;
         }
-        eprintln!("For path: {:?}, Checking msg for match", path);
+        // eprintln!("For path: {:?}, Checking msg for match", path);
         let object = &dynheader.object.as_ref()?;
         let obj_path: &Path = object.as_ref();
 
@@ -806,7 +806,7 @@ impl Bluetooth {
         }
     }
     fn match_advertisement(&mut self, msg_path: &Path, _msg: &DynamicHeader) -> Option<DbusObject> {
-        eprintln!("Checking for advertisement for match");
+        // eprintln!("Checking for advertisement for match");
         let mut components = msg_path.components();
         let comp = components.next()?.as_os_str().to_str().unwrap();
         if let Some(_) = components.next() {
@@ -829,7 +829,7 @@ impl Bluetooth {
         }
     }
     fn match_service(&mut self, msg_path: &Path, msg: &DynamicHeader) -> Option<DbusObject> {
-        eprintln!("Checking for service for match");
+        // eprintln!("Checking for service for match");
         let mut components = msg_path.components().take(2);
         if let Component::Normal(path) = components.next().unwrap() {
             let path = path.to_str()?;
@@ -1264,7 +1264,7 @@ trait Properties {
     fn get_all(&mut self, msg: MarshalledMessage) -> MarshalledMessage {
         let msg = msg.unmarshall_all().unwrap();
         let interface = if let Some(Param::Base(Base::String(interface))) = msg.params.get(0) {
-            eprintln!("get_all() interface: {}", interface);
+            // eprintln!("get_all() interface: {}", interface);
             interface
         } else {
             return msg

@@ -119,10 +119,10 @@ impl Introspectable for Bluetooth {
         let path = self.get_path();
         let stripped = path.strip_prefix(object).unwrap();
         let mut reply = call.dynheader.make_response();
-        eprintln!("{:?}", stripped);
+        // eprintln!("{:?}", stripped);
         if let Some(child) = stripped.components().nth(0) {
             // Handle if the introspection is for a parent of the Bluetooth dev
-            eprintln!("{:?}", child);
+            // eprintln!("{:?}", child);
             let mut xml = String::new();
             xml.push_str(&INTROSPECT_FMT_P1);
             xml.push_str(object.as_os_str().to_str().unwrap());
