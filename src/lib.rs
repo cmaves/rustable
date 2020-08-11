@@ -45,6 +45,31 @@ use std::num::ParseIntError;
 use std::path::{Component, Path, PathBuf};
 use std::rc::Rc;
 use std::time::Duration;
+use std::cell::RefCell;
+use std::borrow::Borrow;
+
+enum PendingType<T: 'static, U: 'static> {
+	MessageCb(&'static Fn(MarshalledMessage, Option<U>) -> T),
+	PreResolved(T)
+}
+struct PendingDropCheck { }
+impl Drop for PendingDropCheck {
+	fn drop(&mut self) {
+		eprintln!("Error Pending was droppped without being resolved, this can result a resource leak.");
+	}
+}
+pub struct Pending<T: 'static, U: 'static>
+{
+	dbus_res: u32,
+	typ: PendingType<T, U>,
+	data: Option<U>,
+	_drop: PendingDropCheck
+}
+pub enum ResolveError<T: 'static, U: 'static>
+{
+	StillPending(Pending<T, U>),
+	Error(Pending<T, U>, Error)
+}
 
 pub mod interfaces;
 
@@ -897,6 +922,43 @@ impl Bluetooth {
         }
     }
 	*/
+	pub fn try_resolve<T, V, U>(&mut self, pend: Pending<T, U>) -> Result<T, ResolveError<T, U>> 
+	{
+		match pend.typ {
+			PendingType::PreResolved(t) => Ok(t),
+			PendingType::MessageCb(cb) => {
+				if let Err(e) = self.process_requests() {
+					return Err(ResolveError::Error(pend, e));
+				}
+				match self.rpc_con.try_get_response(pend.dbus_res) {
+					Some(res) =>  { 
+						let ret = (cb)(res, pend.data);
+						std::mem::forget(pend._drop);
+						Ok(ret)
+					},
+					None => Err(ResolveError::StillPending(pend))
+				}
+			}
+		}
+	}
+	pub fn resolve<T, U>(&mut self, pend: Pending<T, U>) -> Result<T, (Pending<T, U>, Error)>
+	{
+		match pend.typ {
+			PendingType::PreResolved(t) => Ok(t),
+			PendingType::MessageCb(cb) => loop {
+				if let Err(e) = self.process_requests() {
+					break Err((pend, e));
+				}
+				if let Some(res) = self.rpc_con.try_get_response(pend.dbus_res) {
+					let ret = (cb)(res, pend.data);
+					std::mem::forget(pend._drop);
+					break Ok(ret);
+				}
+			}
+		}
+	}
+	/*
+	*/
     fn get_managed_objects<'a, 'b>(
         &mut self,
         path: String,
@@ -1431,14 +1493,29 @@ pub fn validate_uuid(uuid: &str) -> bool {
 }
 
 pub enum ValOrFn {
-    Value([u8; 512], usize),
-    Function(Box<dyn FnMut() -> ([u8; 512], usize)>),
+    Value(CharValue),
+    Function(Box<dyn FnMut() -> CharValue>),
+}
+impl Default for ValOrFn {
+	fn default() -> Self {
+		ValOrFn::Value(CharValue::default())
+	}
+}
+impl AsRef<CharValue> for CharValue {
+	fn as_ref(&self) -> &CharValue {
+		self	
+	}
+}
+impl<T: AsRef<CharValue>> From<T> for ValOrFn {
+	fn from(cv: T) -> Self {
+		ValOrFn::Value(*cv.as_ref())
+	}
 }
 
 impl Debug for ValOrFn {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        if let ValOrFn::Value(v, l) = self {
-            write!(f, "ValOrFn {{ Value: {:?} }}", &v[..*l])
+        if let ValOrFn::Value(cv) = self {
+            write!(f, "ValOrFn {{ Value: {:?} }}", cv)
         } else {
             write!(f, "ValOrFn {{ Fn  }}")
         }
@@ -1447,16 +1524,14 @@ impl Debug for ValOrFn {
 
 impl ValOrFn {
     #[inline]
-    pub fn to_value(&mut self) -> ([u8; 512], usize) {
+    pub fn to_value(&mut self) -> CharValue {
         match self {
-            ValOrFn::Value(v, l) => (*v, *l),
+            ValOrFn::Value(cv) => (*cv),
             ValOrFn::Function(f) => f(),
         }
     }
     pub fn from_slice(slice: &[u8]) -> Self {
-        let mut v = [0; 512];
-        v[..slice.len()].copy_from_slice(slice);
-        ValOrFn::Value(v, slice.len())
+        ValOrFn::Value(slice.into())
     }
 }
 

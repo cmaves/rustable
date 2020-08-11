@@ -10,16 +10,78 @@ use rustbus::params::{Base, Container, Param};
 use rustbus::wire::marshal::traits::UnixFd;
 use std::convert::TryFrom;
 use std::os::unix::io::RawFd;
+use std::borrow::Borrow;
+use std::fmt::Debug;
+use std::cell::Cell;
+
+#[derive(Clone,Copy)]
+pub struct CharValue {
+	buf: [u8; 512],
+	len: usize
+}
+impl Debug for CharValue {
+	fn fmt(&self, f: &mut Formatter<'_>) -> Result<(), std::fmt::Error> {
+		let slice = &self.buf[..self.len];
+		write!(f, "CharValue {{")?;
+		slice.fmt(f)?;
+		write!(f, "}}")
+	}
+}
+impl CharValue {
+	pub fn len(&self) -> usize {
+		self.len()
+	}
+	pub fn as_slice(&self) -> &[u8] {
+		&self.buf[..self.len]
+	}
+	pub fn update(&mut self, slice: &[u8], offset: usize) {
+		assert!(offset <= self.len);
+		let end = offset + slice.len();
+		self.buf[offset..end].copy_from_slice(slice);
+		self.len = end;
+	}
+	pub fn extend_from_slice(&mut self, slice: &[u8]) {
+		let end = self.len + slice.len();
+		self.buf[self.len..end].copy_from_slice(slice);
+		self.len = end;
+	}
+}
+impl Default for CharValue {
+	fn default() -> Self {
+		CharValue { buf: [0; 512], len: 0 }
+	}
+}
+impl Borrow<[u8]> for CharValue {
+	fn borrow(&self) -> &[u8] {
+		&self.buf[..self.len]
+	}
+}
+impl From<&[u8]> for CharValue {
+	fn from(slice: &[u8]) -> Self {
+		let mut buf = [0; 512];
+		let len = slice.len();
+		buf[..len].copy_from_slice(slice);
+		CharValue {
+			buf,
+			len
+		}
+	}
+}
 
 /// Describes the methods avaliable on GATT characteristics.
 pub trait Characteristic {
-	/// Reads the value of a GATT characteristic.
-    fn read(&mut self) -> Result<([u8; 512], usize), Error>;
+    fn read(&mut self) -> Result<Pending<Result<CharValue, Error>, Rc<Cell<CharValue>>>, Error>;
 	/// Generally returns a previous value of the GATT characteristic. Check the individual implementors,
 	/// for a more precise definition.
-    fn read_cached(&mut self) -> Result<([u8; 512], usize), Error>;
-	/// Write a value to a GATT characteristic.
-    fn write(&mut self, val: &[u8]) -> Result<(), Error>;
+    fn read_cached(&mut self) -> Result<CharValue, Error>;
+
+	/// Reads the value of a GATT characteristic, and waits for a response.
+	fn read_wait(&mut self) -> Result<CharValue, Error>;
+
+	/// Begin a write operation to a GATT characteristic.
+    fn write(&mut self, val: &[u8]) -> Result<Pending<(), ()>, Error>;
+	/// Write a value to a GATT characteristic and wait for completion.
+    fn write_wait(&mut self, val: &[u8]) -> Result<(), Error>;
 	/// Get the UUID of the service.
 	/// TODO: change to UUID (Rc<str>)
     fn uuid(&self) -> &str;
@@ -136,7 +198,7 @@ impl LocalCharBase {
     pub fn new<T: ToUUID>(uuid: T, flags: CharFlags) -> Self {
         let uuid: UUID = uuid.to_uuid();
         LocalCharBase {
-            vf: ValOrFn::Value([0; 512], 0),
+            vf: ValOrFn::default(),
             index: 0,
             handle: 0,
             write: None,
@@ -158,6 +220,7 @@ pub struct LocalCharactersitic<'a, 'b: 'a> {
     #[cfg(feature = "unsafe-opt")]
     base: *mut LocalCharBase,
 }
+// ends around line 647
 impl<'c, 'd> LocalCharactersitic<'c, 'd> {
     pub(crate) fn new(service: &'c mut LocalService<'d>, uuid: UUID) -> Self {
         // TODO: implement base for cfg unsafe-opt
@@ -175,7 +238,7 @@ impl<'c, 'd> LocalCharactersitic<'c, 'd> {
                     self.check_write_fd();
                     let base = self.get_char_base_mut();
                     let call = call.unmarshall_all().unwrap();
-                    let (v, l) = base.vf.to_value();
+                    let cv = base.vf.to_value();
                     let mut start = 0;
                     if let Some(dict) = call.params.get(0) {
                         if let Param::Container(Container::Dict(dict)) = dict {
@@ -183,7 +246,7 @@ impl<'c, 'd> LocalCharactersitic<'c, 'd> {
                             {
                                 if let Param::Container(Container::Variant(offset)) = offset {
                                     if let Param::Base(Base::Uint16(offset)) = offset.value {
-                                        start = l.min(offset as usize);
+                                        start = cv.len().min(offset as usize);
                                     } else {
                                         return call.dynheader.make_error_response(
                                             "UnexpectedType".to_string(),
@@ -211,7 +274,7 @@ impl<'c, 'd> LocalCharactersitic<'c, 'd> {
                         }
                     }
                     // eprintln!("vf: {:?}\nValue: {:?}", base.vf, &v[..l]);
-                    let vec: Vec<Param> = v[start..l]
+                    let vec: Vec<Param> = cv.as_slice() 
                         .into_iter()
                         .map(|i| Base::Byte(*i).into())
                         .collect();
@@ -299,12 +362,10 @@ impl<'c, 'd> LocalCharactersitic<'c, 'd> {
                                 );
                             }
                         }
-                        let mut v = [0; 512];
-                        let (cur_v, cur_l) = base.vf.to_value();
-                        v[..cur_l].copy_from_slice(&cur_v[..cur_l]);
-                        v[offset..l].copy_from_slice(&bytes[..]);
+                        let mut cur_cv = base.vf.to_value();
+						cur_cv.update(&bytes, offset);
                         if let Some(cb) = &mut base.write_callback {
-                            match cb(&v[..l]) {
+                            match cb(&cur_cv.as_slice()) {
                                 Ok((vf, notify)) => {
                                     if let Some(vf) = vf {
                                         base.vf = vf;
@@ -323,7 +384,9 @@ impl<'c, 'd> LocalCharactersitic<'c, 'd> {
                                     return call.dynheader.make_error_response(s1, s2);
                                 }
                             }
-                        }
+                        } else {
+							base.vf = ValOrFn::Value(cur_cv);
+						}
                         call.dynheader.make_response()
                     } else {
                         call.dynheader.make_error_response(
@@ -570,11 +633,10 @@ impl<'c, 'd> LocalCharactersitic<'c, 'd> {
     fn signal_change(&mut self) -> Result<(), Error> {
         let base = self.get_char_base_mut();
         //let (v, l) = self.get_char_base_mut().vf.to_value();
-        let (v, l) = base.vf.to_value();
-        let value = &v[..l];
+        let cv = base.vf.to_value();
         let mut params = Vec::with_capacity(3); // TODO: eliminate this allocations
         params.push(Param::Base(Base::String(CHAR_IF_STR.to_string())));
-        let changed_vec: Vec<Param> = value
+        let changed_vec: Vec<Param> = cv.as_slice()
             .into_iter()
             .map(|&b| Param::Base(Base::Byte(b)))
             .collect();
@@ -619,11 +681,11 @@ impl<'c, 'd> LocalCharactersitic<'c, 'd> {
     pub fn notify(&mut self) -> Result<(), Error> {
         let base = self.get_char_base_mut();
         if let Some(notify) = &mut base.notify {
-            let (buf, len) = base.vf.to_value();
+            let cv = base.vf.to_value();
             match notify {
                 Notify::Signal => self.signal_change()?,
                 Notify::Fd(sock) => {
-                    if let Err(_) = socket::send(*sock, &buf[..len], socket::MsgFlags::MSG_EOR) {
+                    if let Err(_) = socket::send(*sock, cv.as_slice(), socket::MsgFlags::MSG_EOR) {
                         base.notify = None;
                     }
                 }
@@ -755,10 +817,20 @@ impl CharFlags {
 }
 
 impl Characteristic for LocalCharactersitic<'_, '_> {
+	fn read(&mut self) -> Result<Pending<Result<CharValue, Error>, Rc<Cell<CharValue>>>, Error> {
+		self.check_write_fd()?;
+		let base = self.get_char_base_mut();
+		Ok(Pending {
+			dbus_res: 0,
+			typ: PendingType::PreResolved(Ok(base.vf.to_value())),
+			data: None,
+			_drop: PendingDropCheck{}
+		})
+	}
     /// Reads the local value of the characteristic. If the value
     /// of the characteristic is given by a function, it will be executed.
-    fn read(&mut self) -> Result<([u8; 512], usize), Error> {
-        self.check_write_fd();
+    fn read_wait(&mut self) -> Result<CharValue, Error> {
+        self.check_write_fd()?;
         let base = self.get_char_base_mut();
         Ok(base.vf.to_value())
         /*match &mut base.vf {
@@ -766,7 +838,7 @@ impl Characteristic for LocalCharactersitic<'_, '_> {
             ValOrFn::Function(f) => Ok(f()),
         }*/
     }
-    /// For `LocalCharactersitic` this function is identical to `read()`
+    /// For `LocalCharactersitic` this function is identical to `read_wait()`
     /// (This does not not hold true for other implementors of this trait).
     ///
     /// # Notes
@@ -774,19 +846,26 @@ impl Characteristic for LocalCharactersitic<'_, '_> {
     /// In the future, if the LocalCharactersitic value is given by a function,
     /// a function, then this function may read a cached version of it.
     #[inline]
-    fn read_cached(&mut self) -> Result<([u8; 512], usize), Error> {
-        self.read()
+    fn read_cached(&mut self) -> Result<CharValue, Error> {
+        self.read_wait()
     }
-    fn write(&mut self, val: &[u8]) -> Result<(), Error> {
-        self.check_write_fd();
+    fn write(&mut self, val: &[u8]) -> Result<Pending<(), ()>, Error> {
+        self.check_write_fd()?;
         let base = self.get_char_base_mut();
-        let mut buf = [0; 512];
-        //eprintln!("writing to char: {:?}", val);
-        buf[..val.len()].copy_from_slice(val);
-        let val = ValOrFn::Value(buf, val.len());
+        let val = ValOrFn::Value(val.into());
         base.vf = val;
-        Ok(())
+        Ok(Pending {
+			dbus_res: 0,
+			typ: PendingType::PreResolved(()),
+			data: None,
+			_drop: PendingDropCheck{}	
+		})
     }
+    fn write_wait(&mut self, val: &[u8]) -> Result<(), Error> {
+		let pend = self.write(val)?;
+		std::mem::forget(pend._drop);
+		Ok(())
+	}
     /*fn service(&self) -> &Path {
         let base = self.get_char_base();
         base.path.parent().unwrap()
@@ -854,10 +933,10 @@ impl Properties for LocalCharBase {
                     self.path.parent().unwrap().to_str().unwrap().to_string(),
                 ))),
                 VALUE_PROP => {
-                    let (v, l) = self.vf.to_value();
+                    let cv = self.vf.to_value();
                     // eprintln!("vf: {:?}\nValue: {:?}", self.vf, &v[..l]);
                     let vec: Vec<Param> =
-                        v[..l].into_iter().map(|i| Base::Byte(*i).into()).collect();
+                        cv.as_slice().into_iter().map(|i| Base::Byte(*i).into()).collect();
                     let val = Param::Container(Container::Array(params::Array {
                         element_sig: signature::Type::Base(signature::Base::Byte),
                         values: vec,
@@ -1099,7 +1178,7 @@ impl<'a, 'b, 'c> RemoteChar<'a, 'b, 'c> {
 
 impl Characteristic for RemoteChar<'_, '_, '_> {
     /// Reads a value from the remote device's characteristic.
-    fn read(&mut self) -> Result<([u8; 512], usize), Error> {
+    fn read(&mut self) -> Result<Pending<Result<CharValue, Error>, Rc<Cell<CharValue>>>, Error> {
         let base = self.get_char_mut();
         let path = base.path.to_str().unwrap().to_string();
         let mut msg = MessageBuilder::new()
@@ -1118,31 +1197,34 @@ impl Characteristic for RemoteChar<'_, '_, '_> {
         msg.body.push_old_param(&mut cont.into()).unwrap();
         let blue = &mut self.service.dev.blue;
         let res_idx = blue.rpc_con.send_message(&mut msg, Timeout::Infinite)?;
-        loop {
+		Ok(Pending {
+			data: None, // TODO: update 
+			dbus_res: res_idx,
+			typ: PendingType::MessageCb(&mm_to_charvalue),
+			_drop: PendingDropCheck {}
+
+		})
+        /*loop {
             blue.process_requests()?;
             if let Some(res) = blue.rpc_con.try_get_response(res_idx) {
-                match res.typ {
-                    MessageType::Reply => {
-                        let mut v = [0; 512];
-                        let buf: &[u8] = res.body.parser().get()?;
-                        let l = buf.len();
-                        v[..l].copy_from_slice(buf);
-                        return Ok((v, l));
-                    }
-                    MessageType::Error => {
-                        return Err(Error::DbusReqErr(format!("Read call failed: {:?}", res)))
-                    }
-                    _ => unreachable!(),
-                }
             }
-        }
+        }*/
     }
-    fn read_cached(&mut self) -> Result<([u8; 512], usize), Error> {
+	fn read_wait(&mut self) -> Result<CharValue, Error> {
+		unimplemented!()
+	}
+    fn read_cached(&mut self) -> Result<CharValue, Error> {
         unimplemented!()
     }
-    fn write(&mut self, _val: &[u8]) -> Result<(), Error> {
+
+    fn write(&mut self, val: &[u8]) -> Result<Pending<(), ()>, Error> {
         unimplemented!()
     }
+    fn write_wait(&mut self, val: &[u8]) -> Result<(), Error> {
+		let pend = self.write(val)?;
+		self.get_blue_mut().resolve(pend).map_err(|e| e.1)?;
+		Ok(())
+	}
     fn uuid(&self) -> &str {
         &self.uuid
     }
@@ -1161,4 +1243,17 @@ impl Characteristic for RemoteChar<'_, '_, '_> {
     fn flags(&self) -> CharFlags {
         unimplemented!()
     }
+}
+
+fn mm_to_charvalue(res: MarshalledMessage, _data: Option<Rc<Cell<CharValue>>>) -> Result<CharValue, Error> {
+                match res.typ {
+                    MessageType::Reply => {
+                        let buf: &[u8] = res.body.parser().get()?;
+                        return Ok(buf.into());
+                    }
+                    MessageType::Error => {
+                        return Err(Error::DbusReqErr(format!("Read call failed: {:?}", res)))
+                    }
+                    _ => unreachable!(),
+                }
 }
