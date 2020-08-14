@@ -4,7 +4,6 @@ use rustbus::params;
 use rustbus::params::{Base, Param};
 use std::collections::hash_map;
 use std::collections::HashMap;
-use std::ffi::OsString;
 use std::path::PathBuf;
 use std::rc::Rc;
 

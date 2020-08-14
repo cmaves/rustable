@@ -35,6 +35,7 @@ use rustbus::standard_messages;
 use rustbus::wire::marshal::traits::Signature;
 use rustbus::wire::unmarshal;
 use rustbus::wire::unmarshal::traits::Unmarshal;
+use rustbus::wire::unmarshal::Error as UnmarshalError;
 use rustbus::{get_system_bus_path, ByteOrder};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::convert::{TryFrom, TryInto};
@@ -45,8 +46,6 @@ use std::num::ParseIntError;
 use std::path::{Component, Path, PathBuf};
 use std::rc::Rc;
 use std::time::Duration;
-use std::cell::RefCell;
-use std::borrow::Borrow;
 
 enum PendingType<T: 'static, U: 'static> {
 	MessageCb(&'static Fn(MarshalledMessage, Option<U>) -> T),
@@ -163,7 +162,7 @@ impl ToMAC for &str {
 enum DbusObject<'a> {
     Char(&'a mut LocalCharBase),
     Serv(&'a mut LocalServiceBase),
-    Desc(&'a mut LocalDescriptor),
+    Desc(&'a mut LocalDescBase),
     Ad(&'a mut Advertisement),
     Appl,
 }
@@ -1221,13 +1220,13 @@ impl ObjectManager for Bluetooth {
             for characteristic in service.chars.values_mut() {
                 for desc in characteristic.descs.values_mut() {
                     let mut middle_map = HashMap::new();
-                    for interface in LocalDescriptor::INTERFACES {
+                    for interface in LocalDescBase::INTERFACES {
                         let props = desc.get_all_inner(interface.0).unwrap();
                         middle_map.insert(interface.0.to_string().into(), props);
                     }
                     let middle_cont: Container = (
                         signature::Base::String,
-                        LocalDescriptor::get_all_type(),
+                        LocalDescBase::get_all_type(),
                         middle_map,
                     )
                         .try_into()
@@ -1534,8 +1533,59 @@ impl ValOrFn {
         ValOrFn::Value(slice.into())
     }
 }
-
-pub enum Variant<'a> {
+pub struct Variant<'buf> {
+	sig: signature::Type,
+	byteorder: ByteOrder,
+	offset: usize,
+	buf: &'buf [u8]
+}
+impl<'r, 'buf: 'r> Variant<'buf> {
+	pub fn get_value_sig(&self) -> &signature::Type {
+		&self.sig
+	}
+	pub fn get<T: Unmarshal<'r, 'buf>>(&self) -> Result<T, UnmarshalError> {
+		if (self.sig != T::signature()) {
+			return Err(UnmarshalError::WrongSignature);
+		}
+		T::unmarshal(self.byteorder, self.buf, self.offset).map(|r| r.1)
+	}
+}
+impl Signature for Variant<'_> {
+	fn signature() -> signature::Type {
+		signature::Type::Container(signature::Container::Variant)	
+	}
+	fn alignment() -> usize {
+		Variant::signature().get_alignment()
+	}
+}
+impl<'r, 'buf: 'r> Unmarshal<'r, 'buf> for Variant<'buf> {
+	fn unmarshal(
+			byteorder: ByteOrder,
+			buf: &'buf [u8],
+			offset: usize,
+		) -> unmarshal::UnmarshalResult<Self> {
+		// let padding = rustbus::wire::util::align_offset(Self::get_alignment());
+		let (offset, desc) = rustbus::wire::util::unmarshal_signature(&buf[offset..])?;
+		let mut sigs = match signature::Type::parse_description(desc) {
+			Ok(sigs) => sigs,
+			Err(_) => return Err(UnmarshalError::WrongSignature)
+		};
+		if sigs.len() != 1 {
+			return Err(UnmarshalError::WrongSignature);
+		}
+		let sig = sigs.remove(0);
+		let end = rustbus::wire::validate_raw::validate_marshalled(byteorder, offset, buf, &sig)
+			.map_err(|e| e.1)?;
+		Ok((end, Variant {
+			sig,
+			buf: &buf[..end],
+			offset,
+			byteorder,
+		}))
+	}
+}
+/*
+pub enum Variant {
     Double(u64),
     Byte(u8),
     Int16(i16),
@@ -1546,50 +1596,19 @@ pub enum Variant<'a> {
     Int64(i64),
     Uint64(u64),
     String(String),
-    StringRef(&'a str),
     Signature(String),
-    SigRef(&'a str),
     ObjectPath(PathBuf),
-    ObjectPathRef(&'a Path),
     Boolean(bool),
+    /*
     Variant(usize, Vec<u8>),
     VariantRef(usize, &'a [u8]),
-    /*
+    DictRef(&'a HashMap<&K, &T>),
+    ArrayRef(&'a [T]),
     Dict(HashMap<K, K>),
-    DictRef(&'a HashMap<K, K>),
     Array(Vec<T>),
-    ArrayRef(&'a [T])
     */
 }
-impl ToOwned for Variant<'_> {
-    type Owned = Self;
-    fn to_owned(&self) -> Self::Owned {
-        let test = [0_u8, 1, 2, 3, 4, 5];
-        let owned: Vec<u8> = test[1..].to_owned();
-        match self {
-            Variant::Double(v) => Variant::Double(*v),
-            Variant::Byte(v) => Variant::Byte(*v),
-            Variant::Int16(v) => Variant::Int16(*v),
-            Variant::Uint16(v) => Variant::Uint16(*v),
-            Variant::Int32(v) => Variant::Int32(*v),
-            Variant::Uint32(v) => Variant::Uint32(*v),
-            Variant::UnixFd(v) => Variant::UnixFd(*v),
-            Variant::Int64(v) => Variant::Int64(*v),
-            Variant::Uint64(v) => Variant::Uint64(*v),
-            Variant::String(v) => Variant::String(v.to_string()),
-            Variant::StringRef(v) => Variant::String(v.to_string()),
-            Variant::Signature(v) => Variant::Signature(v.to_string()),
-            Variant::SigRef(v) => Variant::Signature(v.to_string()),
-            Variant::ObjectPath(v) => Variant::ObjectPath(v.to_path_buf()),
-            Variant::ObjectPathRef(v) => Variant::ObjectPath(v.to_path_buf()),
-            Variant::Boolean(v) => Variant::Boolean(*v),
-            Variant::Variant(u, v) => Variant::Variant(*u, v.to_owned()),
-            Variant::VariantRef(u, v) => Variant::Variant(*u, (*v).to_owned()),
-            _ => unimplemented!(),
-        }
-    }
-}
-impl Signature for Variant<'_> {
+impl Signature for Variant {
     fn signature() -> signature::Type {
         signature::Type::Container(signature::Container::Variant)
     }
@@ -1598,7 +1617,7 @@ impl Signature for Variant<'_> {
     }
 }
 
-impl<'r, 'buf: 'r> Unmarshal<'r, 'buf> for Variant<'buf> {
+impl<'r, 'buf: 'r> Unmarshal<'r, 'buf> for Variant {
     fn unmarshal(
         byteorder: ByteOrder,
         buf: &'buf [u8],
@@ -1653,12 +1672,12 @@ impl<'r, 'buf: 'r> Unmarshal<'r, 'buf> for Variant<'buf> {
                 }
                 signature::Base::String => {
                     let (offset, value) = Unmarshal::unmarshal(byteorder, buf, child_offset)?;
-                    Ok((offset, Variant::StringRef(value)))
+                    Ok((offset, Variant::String(value)))
                 }
                 signature::Base::Signature => {
                     let (offset, value) = Unmarshal::unmarshal(byteorder, buf, child_offset)?;
                     match params::validate_signature(value) {
-                        Ok(_) => Ok((offset, Variant::SigRef(value))),
+                        Ok(_) => Ok((offset, Variant::Sig(value))),
                         Err(_) => Err(unmarshal::Error::NoSignature),
                     }
                 }
@@ -1683,3 +1702,4 @@ impl<'r, 'buf: 'r> Unmarshal<'r, 'buf> for Variant<'buf> {
         }
     }
 }
+*/

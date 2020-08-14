@@ -1,13 +1,16 @@
 use std::fmt::Write;
 use std::path::{Path, PathBuf};
-
+use std::cell::Cell;
+use rustbus::wire::unmarshal::Error as UnmarshalError;
 use crate::interfaces::*;
 use crate::*;
 
 /// Describes the methods avaliable on local and remote GATT descriptors.
 pub trait Descriptor {
-	/// Reads the value of the descriptor.
-	fn read(&mut self) -> Result<([u8; 512], usize), Error>;
+	/// Starts a read operation on the descriptor.
+	fn read(&mut self) -> Result<Pending<Result<CharValue, Error>, Rc<Cell<CharValue>>>, Error>;
+	/// Starts a read operations on the descriptor and waits for the result.
+	fn read_wait(&mut self) -> Result<CharValue, Error>;
 	/// Returns a previous value of the GATT descriptor. Check the individual
 	/// implementors, for a more precise definition.
 	fn read_cached(&mut self) -> Result<([u8; 512], usize), Error>;
@@ -19,27 +22,149 @@ pub trait Descriptor {
 	fn flags(&mut self) -> DescFlags;
 }
 
-#[derive(Debug)]
-pub struct LocalDescriptor {
+
+pub struct LocalDescBase {
 	pub(crate) vf: ValOrFn,
     pub(crate) path: PathBuf,
     pub(crate) index: u16,
     handle: u16,
-    uuid: Rc<String>,
+    pub(crate) uuid: UUID,
+	flags: DescFlags,
+	pub write_callback: Option<Box<FnMut(&[u8]) -> Result<Option<ValOrFn>, (String, Option<String>)>>>
 }
-impl LocalDescriptor {
-    pub fn new(_uuid: String) -> Self {
-        unimplemented!()
+impl LocalDescBase {
+    pub fn new<T: ToUUID>(uuid: T, flags: DescFlags) -> Self {
+		let uuid = uuid.to_uuid();
+		LocalDescBase {
+			uuid,
+			flags,
+			vf: ValOrFn::default(),
+			path: PathBuf::new(),
+			write_callback: None,
+			index: 0,
+			handle: 0
+		}
     }
     pub(super) fn update_path(&mut self, base: &Path) {
         self.path = base.to_owned();
-        let mut name = String::with_capacity(7);
-        write!(&mut name, "desc{:03x}", self.index).unwrap();
+        let mut name = String::with_capacity(8);
+        write!(&mut name, "desc{:04x}", self.index).unwrap();
         self.path.push(name);
     }
 }
+impl Debug for LocalDescBase {
+    fn fmt(&self, f: &mut Formatter<'_>) -> Result<(), std::fmt::Error> {
+        let wc_str = if let Some(_) = self.write_callback {
+            "Some(FnMut)"
+        } else {
+            "None"
+        };
+		// TODO: change to use the formatter helper functions
+        write!(f, "LocalDescBase{{vf: {:?}, index: {:?}, handle: {:?}, uuid: {:?}, path: {:?}, flags: {:?}, write_callback: {}}}", self.vf, self.index, self.handle, self.uuid, self.path, self.flags, wc_str)
+    }
+}
 
-#[derive(Clone, Copy, Default)]
+pub struct LocalDescriptor<'a, 'b, 'c> {
+	uuid: UUID,
+	character: &'a mut LocalCharactersitic<'b, 'c>,
+}
+impl LocalDescriptor<'_, '_, '_> {
+	fn get_desc_base(&self) -> &LocalDescBase {
+		self.character.get_char_base().descs.get(&self.uuid).unwrap()
+	}
+	fn get_desc_base_mut(&mut self) -> &mut LocalDescBase {
+		self.character.get_char_base_mut().descs.get_mut(&self.uuid).unwrap()
+
+	}
+	pub(crate) fn desc_call(&mut self, call: MarshalledMessage) -> MarshalledMessage {
+		let base = self.get_desc_base_mut();
+		match &call.dynheader.member.as_ref().unwrap()[..] {
+			"ReadValue" => {
+				if base.flags.read || base.flags.encrypt_read || base.flags.encrypt_auth_read || 
+					base.flags.secure_read
+				{
+				let dict: HashMap<String, Variant> = match call.body.parser().get() {
+					Ok(d) => d,
+					Err(e) => match e {
+						UnmarshalError::EndOfMessage => HashMap::new(),
+						_ => return call.dynheader.make_error_response(BLUEZ_FAILED.to_string(), Some("Unexpected type for uint 16.".to_string()))
+					}
+				};
+				let offset = match dict.get("offset") {
+					Some(v) => match v.get::<u16>() {
+						Ok(offset) => offset,
+						Err(_) => return call.dynheader.make_error_response(BLUEZ_FAILED.to_string(), Some("Expected type for 'offset' to be  uint16.".to_string()))
+					}, 
+					None => 0
+				} as usize;
+				let mut reply = call.dynheader.make_response();
+				let val = base.vf.to_value();
+				if offset >= val.len() {
+					// TODO: should this return an error instead of an empty array
+					reply.body.push_param::<&[u8]>(&[]);
+				} else {
+					reply.body.push_param(&val[offset..]);
+				}
+				reply
+				} else {
+					call.dynheader.make_error_response(BLUEZ_NOT_PERM.to_string(), Some("This is not a readable descriptor.".to_string()))
+				}
+			},
+			"WriteValue" => {
+				if base.flags.write || base.flags.encrypt_write || base.flags.encrypt_auth_write ||
+					base.flags.secure_write 
+				{
+					let mut parser = call.body.parser();
+					let bytes = match parser.get() {
+						Ok(bytes) => bytes,
+						Err(_) => return call.dynheader.make_error_response(BLUEZ_FAILED.to_string(), Some("Expected byte array as first parameter.".to_string()))
+					};
+					let dict: HashMap<String, Variant> = match parser.get() {
+						Ok(d) => d,
+						Err(e) => match e {
+							UnmarshalError::EndOfMessage => HashMap::new(),
+							_ => return call.dynheader.make_error_response(BLUEZ_FAILED.to_string(), Some("Expected dict as second parameter.".to_string()))
+						}
+					};
+					let offset = match dict.get("offset") {
+						Some(var) => match var.get::<u16>() {
+							Ok(val) => val,	
+						Err(_) => return call.dynheader.make_error_response(BLUEZ_FAILED.to_string(), Some("Expected type for 'offset' to be  uint16.".to_string()))
+						},
+						None => 0
+					} as usize;
+					let mut cur_val = base.vf.to_value();
+					let l = cur_val.len() + offset;
+					if l > 512 {
+						return call.dynheader.make_error_response(BLUEZ_INVALID_LEN.to_string(), None);
+					}
+					cur_val.update(bytes, offset);
+					match &mut base.write_callback {
+						Some(cb) => {
+							match cb(&cur_val[..]) {
+								Ok(vf) => {
+									if let Some(vf) = vf {
+										base.vf = vf;
+									}
+								},
+								Err((s1, s2)) => return call.dynheader.make_error_response(s1, s2)
+							}
+						},
+						None => base.vf = ValOrFn::Value(cur_val)
+					}
+					call.dynheader.make_response()
+				} else {
+					call.dynheader.make_error_response(BLUEZ_NOT_PERM.to_string(), Some("This is not a writable descriptor.".to_string()))
+
+				}
+			},
+			_ => call.dynheader.make_error_response(UNKNOWN_METHOD.to_string(), None)
+
+		}
+	}
+}
+
+#[derive(Clone, Copy, Default, Debug)]
 pub struct DescFlags {
     pub read: bool,
     pub write: bool,
@@ -52,7 +177,7 @@ pub struct DescFlags {
     pub authorize: bool,
 }
 impl DescFlags {
-    fn to_strings(&self) -> Vec<String> {
+    pub fn to_strings(&self) -> Vec<String> {
         let mut ret = Vec::new();
         if self.read {
             ret.push("read".to_string());
@@ -86,7 +211,7 @@ impl DescFlags {
     }
 }
 
-impl Properties for LocalDescriptor {
+impl Properties for LocalDescBase {
     const INTERFACES: &'static [(&'static str, &'static [&'static str])] = &[DESC_IF, PROP_IF];
     fn get_inner<'a, 'b>(&mut self, interface: &str, prop: &str) -> Option<Param<'a, 'b>> {
         match interface {
@@ -109,7 +234,7 @@ impl Properties for LocalDescriptor {
     }
 }
 
-impl Introspectable for LocalDescriptor {
+impl Introspectable for LocalDescBase {
     fn introspectable_str(&self) -> String {
         unimplemented!()
     }

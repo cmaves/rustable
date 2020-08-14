@@ -5,7 +5,6 @@ use crate::*;
 use rustbus::params;
 use rustbus::params::{Base, Param};
 use rustbus::signature;
-use std::time::Instant;
 
 /// See the [Advertising API] for more details about what each field does.
 ///

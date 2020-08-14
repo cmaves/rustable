@@ -85,10 +85,10 @@ impl LocalServiceBase {
         header: &DynamicHeader,
     ) -> Option<DbusObject> {
         // eprintln!("Checking for characteristic for match: {:?}", msg_path);
-        let mut components = msg_path.components().take(2);
+        let mut components = msg_path.components();
         if let Component::Normal(path) = components.next().unwrap() {
-            let path = path.to_str()?;
-            if !path.starts_with("char") {
+            let path = path.to_str().unwrap();
+            if !path.starts_with("char") || path.len() != 8 {
                 return None;
             }
             for character in self.chars.values_mut() {
@@ -184,13 +184,13 @@ impl Properties for LocalServiceBase {
         match interface {
             SERV_IF_STR => match prop {
                 HANDLE_PROP => {
-                    if let Variant::Uint16(handle) = val {
-                        // eprintln!("setting Handle prop: {:?}", handle); // TODO remove
-                        self.handle = handle;
-                        None
-                    } else {
-                        Some("UnexpectedType".to_string())
-                    }
+					match val.get() {
+						Ok(handle) => { 
+							self.handle = handle;
+							None
+						},
+						Err(_) => Some("UnexpectedType".to_string())
+					}
                 }
                 _ => unimplemented!(),
             },

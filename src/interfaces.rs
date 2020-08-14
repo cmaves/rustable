@@ -89,6 +89,7 @@ pub const GET_ALL_CALL: &'static str = "GetAll";
 // Bluez Errors
 pub const BLUEZ_NOT_PERM: &'static str = "org.bluez.Error.NotPermitted";
 pub const BLUEZ_FAILED: &'static str = "org.bluez.Error.Failed";
+pub const BLUEZ_INVALID_LEN: &'static str = "org.bluez.Error.InvalidValueLength";
 
 // Standard DBus Errors
 pub const UNKNOWN_METHOD: &'static str = "org.dbus.freedesktop.UnknownMethod";

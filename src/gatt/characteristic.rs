@@ -13,6 +13,7 @@ use std::os::unix::io::RawFd;
 use std::borrow::Borrow;
 use std::fmt::Debug;
 use std::cell::Cell;
+use std::ops::Deref;
 
 #[derive(Clone,Copy)]
 pub struct CharValue {
@@ -21,6 +22,7 @@ pub struct CharValue {
 }
 impl Debug for CharValue {
 	fn fmt(&self, f: &mut Formatter<'_>) -> Result<(), std::fmt::Error> {
+		// TODO: use formmater helper functions
 		let slice = &self.buf[..self.len];
 		write!(f, "CharValue {{")?;
 		slice.fmt(f)?;
@@ -28,9 +30,11 @@ impl Debug for CharValue {
 	}
 }
 impl CharValue {
+	/*
 	pub fn len(&self) -> usize {
 		self.len()
 	}
+	*/
 	pub fn as_slice(&self) -> &[u8] {
 		&self.buf[..self.len]
 	}
@@ -65,6 +69,13 @@ impl From<&[u8]> for CharValue {
 			buf,
 			len
 		}
+	}
+}
+impl Deref for CharValue {
+	type Target = [u8];
+	fn deref(&self) -> &Self::Target {
+		&self.buf[..self.len]
+		
 	}
 }
 
@@ -124,9 +135,10 @@ pub struct LocalCharBase {
     pub(crate) path: PathBuf,
     notify: Option<Notify>,
     write: Option<RawFd>,
-    pub(crate) descs: HashMap<String, LocalDescriptor>,
+    pub(crate) descs: HashMap<UUID, LocalDescBase>,
     flags: CharFlags,
     allow_write: bool,
+	desc_index: u16,
 	/// Set a callback that can be when writes are issued by remote device.
 	/// The callback function can reject a write with an error, with first String being a general a DBus,
 	/// error name, and the Optional second string being an extended error message.=
@@ -144,6 +156,7 @@ impl Debug for LocalCharBase {
         } else {
             "None"
         };
+		// TODO: change to use the formatter helper functions
         write!(f, "LocalCharBase{{vf: {:?}, index: {:?}, handle: {:?}, uuid: {:?}, path: {:?}, notify: {:?}, write: {:?}, descs: {:?}, flags: {:?}, allow_write: {:?}, write_callback: {}}}", self.vf, self.index, self.handle, self.uuid, self.path, self.notify, self.write, self.descs, self.flags, self.allow_write, wc_str)
     }
 }
@@ -185,10 +198,20 @@ impl LocalCharBase {
 
     pub(super) fn match_descs(
         &mut self,
-        _msg_path: &Path,
-        _header: &DynamicHeader,
+        msg_path: &Path,
+        header: &DynamicHeader,
     ) -> Option<DbusObject> {
-        unimplemented!()
+		let path = msg_path.to_str().unwrap();
+		if !path.starts_with("desc") || path.len() != 8 {
+			return None;
+		}
+		for desc in self.descs.values_mut() {
+			let desc_name = desc.path.file_name().unwrap().to_str().unwrap();
+			if desc_name == path {
+				return Some(DbusObject::Desc(desc));			
+			}
+		}
+		None
     }
 	/// Creates a new `LocalCharBase` with `uuid` and `flags`.
 	///
@@ -207,11 +230,18 @@ impl LocalCharBase {
             flags,
             path: PathBuf::new(),
             descs: HashMap::new(),
+			desc_index: 0,
             allow_write: false,
             write_callback: None,
             serv_uuid: Rc::from(""),
         }
     }
+	/// Adds a local descritpor to the characteristic.
+	pub fn add_desc(&mut self, mut desc: LocalDescBase) {
+		desc.index = self.desc_index;
+		self.desc_index += 1;
+		self.descs.insert(desc.uuid.clone(), desc);
+	}
 }
 
 pub struct LocalCharactersitic<'a, 'b: 'a> {
@@ -347,7 +377,7 @@ impl<'c, 'd> LocalCharactersitic<'c, 'd> {
                         let l = array.values.len() + offset;
                         if l > 512 {
                             return call.dynheader.make_error_response(
-                                "org.bluez.Error.InvalidValueLength".to_string(),
+                                BLUEZ_INVALID_LEN.to_string(),
                                 None,
                             );
                         }
@@ -693,14 +723,14 @@ impl<'c, 'd> LocalCharactersitic<'c, 'd> {
         }
         Ok(())
     }
-    fn get_char_base_mut(&mut self) -> &mut LocalCharBase {
+    pub(super) fn get_char_base_mut(&mut self) -> &mut LocalCharBase {
         self.service
             .get_service_base_mut()
             .chars
             .get_mut(&self.uuid)
             .unwrap()
     }
-    fn get_char_base(&self) -> &LocalCharBase {
+    pub(super) fn get_char_base(&self) -> &LocalCharBase {
         &self.service.get_service_base().chars[&self.uuid]
     }
 }
@@ -985,13 +1015,13 @@ impl Properties for LocalCharBase {
         match interface {
             SERV_IF_STR => match prop {
                 HANDLE_PROP => {
-                    if let Variant::Uint16(handle) = val {
-                        // eprintln!("setting Handle prop: {:?}", handle); // TODO remove
-                        self.handle = handle;
-                        None
-                    } else {
-                        Some("UnexpectedType".to_string())
-                    }
+					match val.get() {
+						Ok(handle) => { 
+							self.handle = handle;
+							None
+						},
+						Err(_) => Some("UnexpectedType".to_string())
+					}
                 }
                 _ => unimplemented!(),
             },
