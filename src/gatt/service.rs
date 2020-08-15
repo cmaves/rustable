@@ -40,13 +40,13 @@ pub struct LocalServiceBase {
 }
 impl LocalServiceBase {
     /// Construct a new `LocalServiceBase` to construct as service with.
-	///
-	/// It can be added to `Bluetooth` with [`Bluetooth::add_service()`].
-	///
-	/// [`Bluetooth::add_service()`]: ../struct.Bluetooth.html#method.add_service
+    ///
+    /// It can be added to `Bluetooth` with [`Bluetooth::add_service()`].
+    ///
+    /// [`Bluetooth::add_service()`]: ../struct.Bluetooth.html#method.add_service
     pub fn new<T: ToUUID>(uuid: T, primary: bool) -> Self {
         let uuid = uuid.to_uuid();
-		assert!(validate_uuid(&uuid));
+        assert!(validate_uuid(&uuid));
         LocalServiceBase {
             index: 0,
             char_index: 0,
@@ -62,12 +62,12 @@ impl LocalServiceBase {
         // TODO: add check for duplicate UUIDs
         //assert!(self.chars.len() < 65535);
         character.serv_uuid = self.uuid.clone();
-		for desc in character.descs.values_mut() {
-			desc.serv_uuid = self.uuid.clone();
-		}
+        for desc in character.descs.values_mut() {
+            desc.serv_uuid = self.uuid.clone();
+        }
         character.index = self.char_index;
         self.char_index += 1;
-		eprintln!("Adding char: {:?}\nto\n{:?}", character, self.uuid);
+        eprintln!("Adding char: {:?}\nto\n{:?}", character, self.uuid);
         self.chars.insert(character.uuid.clone(), character);
     }
     /// Handle method calls on the local servic
@@ -157,21 +157,18 @@ impl<'a, 'b: 'a, 'c: 'a, 'd: 'a> Service<'a> for LocalService<'b> {
 }
 
 impl<'a> LocalService<'a> {
-	pub(crate) fn new<T: ToUUID>(bt: &'a mut Bluetooth, uuid: T) -> Self {
-		let uuid = uuid.to_uuid();
-		LocalService {
-			bt,
-			uuid
-		}
-	}
+    pub(crate) fn new<T: ToUUID>(bt: &'a mut Bluetooth, uuid: T) -> Self {
+        let uuid = uuid.to_uuid();
+        LocalService { bt, uuid }
+    }
     pub(super) fn get_service_base(&self) -> &LocalServiceBase {
         &self.bt.services[&self.uuid]
     }
     pub(super) fn get_service_base_mut(&mut self) -> &mut LocalServiceBase {
         match self.bt.services.get_mut(&self.uuid) {
-			Some(ret) => ret,
-			None => panic!("Failed to find: {}", self.uuid)
-		}
+            Some(ret) => ret,
+            None => panic!("Failed to find: {}", self.uuid),
+        }
     }
 }
 
@@ -198,15 +195,13 @@ impl Properties for LocalServiceBase {
     fn set_inner(&mut self, interface: &str, prop: &str, val: Variant) -> Option<String> {
         match interface {
             SERV_IF_STR => match prop {
-                HANDLE_PROP => {
-					match val.get() {
-						Ok(handle) => { 
-							self.handle = handle;
-							None
-						},
-						Err(_) => Some("UnexpectedType".to_string())
-					}
-                }
+                HANDLE_PROP => match val.get() {
+                    Ok(handle) => {
+                        self.handle = handle;
+                        None
+                    }
+                    Err(_) => Some("UnexpectedType".to_string()),
+                },
                 _ => unimplemented!(),
             },
             PROP_IF_STR => Some("UnknownProperty".to_string()),
@@ -337,11 +332,11 @@ impl<'a, 'b: 'a, 'c: 'a> Service<'a> for RemoteService<'b, 'c> {
     fn device(&self) -> &Path {
         self.get_service().path.parent().unwrap()
     }
-	/// **unimplemented**
+    /// **unimplemented**
     fn includes(&self) -> &[&Path] {
         unimplemented!()
     }
-	/// **unimplemented**
+    /// **unimplemented**
     fn handle(&self) -> u16 {
         unimplemented!()
     }

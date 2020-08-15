@@ -48,26 +48,26 @@ use std::rc::Rc;
 use std::time::Duration;
 
 enum PendingType<T: 'static, U: 'static> {
-	MessageCb(&'static Fn(MarshalledMessage, Option<U>) -> T),
-	PreResolved(T)
+    MessageCb(&'static Fn(MarshalledMessage, Option<U>) -> T),
+    PreResolved(T),
 }
-struct PendingDropCheck { }
+struct PendingDropCheck {}
 impl Drop for PendingDropCheck {
-	fn drop(&mut self) {
-		eprintln!("Error Pending was droppped without being resolved, this can result a resource leak.");
-	}
+    fn drop(&mut self) {
+        eprintln!(
+            "Error Pending was droppped without being resolved, this can result a resource leak."
+        );
+    }
 }
-pub struct Pending<T: 'static, U: 'static>
-{
-	dbus_res: u32,
-	typ: PendingType<T, U>,
-	data: Option<U>,
-	_drop: PendingDropCheck
+pub struct Pending<T: 'static, U: 'static> {
+    dbus_res: u32,
+    typ: PendingType<T, U>,
+    data: Option<U>,
+    _drop: PendingDropCheck,
 }
-pub enum ResolveError<T: 'static, U: 'static>
-{
-	StillPending(Pending<T, U>),
-	Error(Pending<T, U>, Error)
+pub enum ResolveError<T: 'static, U: 'static> {
+    StillPending(Pending<T, U>),
+    Error(Pending<T, U>, Error),
 }
 
 pub mod interfaces;
@@ -290,11 +290,11 @@ impl Bluetooth {
     }
     /// Adds a service to the `Bluetooth` instance. Once registered with [`register_application()`],
     /// this service will be a local service that can be interacted with by remote devices.
-	/// 
-	/// If `register_application()` has already called, the service will not be visible to
-	/// Bluez (or other devices) until the application in reregistered.
-	///
-	/// [`register_application()`]: ./struct.Bluetooth.html#method.register_application
+    ///
+    /// If `register_application()` has already called, the service will not be visible to
+    /// Bluez (or other devices) until the application in reregistered.
+    ///
+    /// [`register_application()`]: ./struct.Bluetooth.html#method.register_application
     pub fn add_service(&mut self, mut service: LocalServiceBase) -> Result<(), Error> {
         if self.services.len() >= 255 {
             panic!("Cannot add more than 255 services");
@@ -395,8 +395,8 @@ impl Bluetooth {
     /// Registers an advertisement with Bluez.
     /// After a successful call, it will persist until the `remove_advertise()`/`remove_advertise_no_dbus()`
     /// is called or Bluez releases the advertisement (this is typically done on device connect).
-	///
-	/// **Calls process_requests()**
+    ///
+    /// **Calls process_requests()**
     pub fn start_adv(&mut self, mut adv: Advertisement) -> Result<u16, (u16, Error)> {
         let idx = self.ads.len();
         adv.index = self.ad_index;
@@ -405,7 +405,9 @@ impl Bluetooth {
         let adv_path = self.path.join(format!("adv{:04x}", adv.index));
         adv.path = adv_path;
         self.ads.push_back(adv);
-        self.register_adv(idx).map(|_| idx as u16).map_err(|err| (idx as u16, err))
+        self.register_adv(idx)
+            .map(|_| idx as u16)
+            .map_err(|err| (idx as u16, err))
     }
     /// Checks if an advertisement is still active, or if Bluez has signaled it has ended.
     pub fn is_adv_active(&self, index: u16) -> Option<bool> {
@@ -430,12 +432,12 @@ impl Bluetooth {
         if (self.ads[idx].active) {
             Ok(false)
         } else {
-			self.register_adv(idx).map(|_| true)
-		}
+            self.register_adv(idx).map(|_| true)
+        }
     }
     /// Unregisters an advertisement with Bluez. Returns the `Advertisement` if successful.
-	///
-	/// **Calls process_requests()**
+    ///
+    /// **Calls process_requests()**
     pub fn remove_adv(&mut self, index: u16) -> Result<Advertisement, Error> {
         let idx = match self.ads.iter().position(|ad| ad.index == index) {
             Some(idx) => idx,
@@ -487,8 +489,8 @@ impl Bluetooth {
         self.ads.remove(idx)
     }
     /// Set whether the Bluez controller should be discoverable (`true`) or not.
-	///
-	/// **Calls process_requests()**
+    ///
+    /// **Calls process_requests()**
     pub fn set_discoverable(&mut self, on: bool) -> Result<(), Error> {
         let mut msg = MessageBuilder::new()
             .call("Set".to_string())
@@ -522,8 +524,8 @@ impl Bluetooth {
         }
     }
     /// Set the Bluez controller power on (`true`) or off.
-	///
-	/// **Calls process_requests()**
+    ///
+    /// **Calls process_requests()**
     pub fn set_power(&mut self, on: bool) -> Result<(), Error> {
         let mut msg = MessageBuilder::new()
             .call("Set".to_string())
@@ -556,8 +558,8 @@ impl Bluetooth {
     }
     /// Registers the local application's GATT services/characteristics (TODO: descriptors)
     /// with the Bluez controller.
-	///
-	/// **Calls process_requests()**
+    ///
+    /// **Calls process_requests()**
     pub fn register_application(&mut self) -> Result<(), Error> {
         let path = self.get_path();
         let empty_dict = HashMap::new();
@@ -700,17 +702,17 @@ impl Bluetooth {
                     }
                     DbusObject::Desc(v) => match interface.as_ref() {
                         PROP_IF_STR => v.properties_call(call),
-                        DESC_IF_STR => { 
+                        DESC_IF_STR => {
                             // TODO: implement unsafe-opt changes
-							let serv_uuid = v.serv_uuid.clone();
-							let char_uuid = v.char_uuid.clone();
-							let desc_uuid = v.uuid.clone();
-							eprintln!("Desc_call(): {}. {}, {}", serv_uuid, char_uuid, desc_uuid);
-							let mut serv = LocalService::new(self, serv_uuid);
-							let mut character = LocalCharactersitic::new(&mut serv, char_uuid);
-							let mut desc = LocalDescriptor::new(&mut character, desc_uuid);
-							desc.desc_call(call)
-						}
+                            let serv_uuid = v.serv_uuid.clone();
+                            let char_uuid = v.char_uuid.clone();
+                            let desc_uuid = v.uuid.clone();
+                            eprintln!("Desc_call(): {}. {}, {}", serv_uuid, char_uuid, desc_uuid);
+                            let mut serv = LocalService::new(self, serv_uuid);
+                            let mut character = LocalCharactersitic::new(&mut serv, char_uuid);
+                            let mut desc = LocalDescriptor::new(&mut character, desc_uuid);
+                            desc.desc_call(call)
+                        }
                         INTRO_IF_STR => v.introspectable(call),
                         _ => standard_messages::unknown_method(&call.dynheader),
                     },
@@ -889,13 +891,13 @@ impl Bluetooth {
     }
     /// Used to get devices devices known to Bluez. This function does *not* trigger scan/discovery
     /// on the Bluez controller. Use `set_scan()` to initiate actual device discovery.
-	///
-	/// **Calls process_requests()**
+    ///
+    /// **Calls process_requests()**
     pub fn discover_devices(&mut self) -> Result<HashSet<MAC>, Error> {
         self.discover_devices_filter(self.blue_path.clone())
     }
 
-	/*
+    /*
     /// **Unimplemented**
     pub fn set_scan(&mut self, on: bool) -> Result<(), Error> {
         let mut msg = MessageBuilder::new()
@@ -927,44 +929,42 @@ impl Bluetooth {
             }
         }
     }
-	*/
-	pub fn try_resolve<T, V, U>(&mut self, pend: Pending<T, U>) -> Result<T, ResolveError<T, U>> 
-	{
-		match pend.typ {
-			PendingType::PreResolved(t) => Ok(t),
-			PendingType::MessageCb(cb) => {
-				if let Err(e) = self.process_requests() {
-					return Err(ResolveError::Error(pend, e));
-				}
-				match self.rpc_con.try_get_response(pend.dbus_res) {
-					Some(res) =>  { 
-						let ret = (cb)(res, pend.data);
-						std::mem::forget(pend._drop);
-						Ok(ret)
-					},
-					None => Err(ResolveError::StillPending(pend))
-				}
-			}
-		}
-	}
-	pub fn resolve<T, U>(&mut self, pend: Pending<T, U>) -> Result<T, (Pending<T, U>, Error)>
-	{
-		match pend.typ {
-			PendingType::PreResolved(t) => Ok(t),
-			PendingType::MessageCb(cb) => loop {
-				if let Err(e) = self.process_requests() {
-					break Err((pend, e));
-				}
-				if let Some(res) = self.rpc_con.try_get_response(pend.dbus_res) {
-					let ret = (cb)(res, pend.data);
-					std::mem::forget(pend._drop);
-					break Ok(ret);
-				}
-			}
-		}
-	}
-	/*
-	*/
+    */
+    pub fn try_resolve<T, V, U>(&mut self, pend: Pending<T, U>) -> Result<T, ResolveError<T, U>> {
+        match pend.typ {
+            PendingType::PreResolved(t) => Ok(t),
+            PendingType::MessageCb(cb) => {
+                if let Err(e) = self.process_requests() {
+                    return Err(ResolveError::Error(pend, e));
+                }
+                match self.rpc_con.try_get_response(pend.dbus_res) {
+                    Some(res) => {
+                        let ret = (cb)(res, pend.data);
+                        std::mem::forget(pend._drop);
+                        Ok(ret)
+                    }
+                    None => Err(ResolveError::StillPending(pend)),
+                }
+            }
+        }
+    }
+    pub fn resolve<T, U>(&mut self, pend: Pending<T, U>) -> Result<T, (Pending<T, U>, Error)> {
+        match pend.typ {
+            PendingType::PreResolved(t) => Ok(t),
+            PendingType::MessageCb(cb) => loop {
+                if let Err(e) = self.process_requests() {
+                    break Err((pend, e));
+                }
+                if let Some(res) = self.rpc_con.try_get_response(pend.dbus_res) {
+                    let ret = (cb)(res, pend.data);
+                    std::mem::forget(pend._drop);
+                    break Ok(ret);
+                }
+            },
+        }
+    }
+    /*
+    	*/
     fn get_managed_objects<'a, 'b>(
         &mut self,
         path: String,
@@ -1117,9 +1117,9 @@ impl Bluetooth {
         self.devices.insert(devmac.clone(), device);
         self.comp_map.insert(comp, devmac);
     }
-	/// Get a device from the Bluez controller.
-	///
-	/// **Calls process_requests()**
+    /// Get a device from the Bluez controller.
+    ///
+    /// **Calls process_requests()**
     pub fn discover_device(&mut self, mac: &MAC) -> Result<(), Error> {
         let devmac: PathBuf = match mac_to_devmac(mac) {
             Some(devmac) => devmac,
@@ -1503,19 +1503,19 @@ pub enum ValOrFn {
     Function(Box<dyn FnMut() -> CharValue>),
 }
 impl Default for ValOrFn {
-	fn default() -> Self {
-		ValOrFn::Value(CharValue::default())
-	}
+    fn default() -> Self {
+        ValOrFn::Value(CharValue::default())
+    }
 }
 impl AsRef<CharValue> for CharValue {
-	fn as_ref(&self) -> &CharValue {
-		self	
-	}
+    fn as_ref(&self) -> &CharValue {
+        self
+    }
 }
 impl<T: AsRef<CharValue>> From<T> for ValOrFn {
-	fn from(cv: T) -> Self {
-		ValOrFn::Value(*cv.as_ref())
-	}
+    fn from(cv: T) -> Self {
+        ValOrFn::Value(*cv.as_ref())
+    }
 }
 
 impl Debug for ValOrFn {
@@ -1541,55 +1541,58 @@ impl ValOrFn {
     }
 }
 pub struct Variant<'buf> {
-	sig: signature::Type,
-	byteorder: ByteOrder,
-	offset: usize,
-	buf: &'buf [u8]
+    sig: signature::Type,
+    byteorder: ByteOrder,
+    offset: usize,
+    buf: &'buf [u8],
 }
 impl<'r, 'buf: 'r> Variant<'buf> {
-	pub fn get_value_sig(&self) -> &signature::Type {
-		&self.sig
-	}
-	pub fn get<T: Unmarshal<'r, 'buf>>(&self) -> Result<T, UnmarshalError> {
-		if (self.sig != T::signature()) {
-			return Err(UnmarshalError::WrongSignature);
-		}
-		T::unmarshal(self.byteorder, self.buf, self.offset).map(|r| r.1)
-	}
+    pub fn get_value_sig(&self) -> &signature::Type {
+        &self.sig
+    }
+    pub fn get<T: Unmarshal<'r, 'buf>>(&self) -> Result<T, UnmarshalError> {
+        if (self.sig != T::signature()) {
+            return Err(UnmarshalError::WrongSignature);
+        }
+        T::unmarshal(self.byteorder, self.buf, self.offset).map(|r| r.1)
+    }
 }
 impl Signature for Variant<'_> {
-	fn signature() -> signature::Type {
-		signature::Type::Container(signature::Container::Variant)	
-	}
-	fn alignment() -> usize {
-		Variant::signature().get_alignment()
-	}
+    fn signature() -> signature::Type {
+        signature::Type::Container(signature::Container::Variant)
+    }
+    fn alignment() -> usize {
+        Variant::signature().get_alignment()
+    }
 }
 impl<'r, 'buf: 'r> Unmarshal<'r, 'buf> for Variant<'buf> {
-	fn unmarshal(
-			byteorder: ByteOrder,
-			buf: &'buf [u8],
-			offset: usize,
-		) -> unmarshal::UnmarshalResult<Self> {
-		// let padding = rustbus::wire::util::align_offset(Self::get_alignment());
-		let (offset, desc) = rustbus::wire::util::unmarshal_signature(&buf[offset..])?;
-		let mut sigs = match signature::Type::parse_description(desc) {
-			Ok(sigs) => sigs,
-			Err(_) => return Err(UnmarshalError::WrongSignature)
-		};
-		if sigs.len() != 1 {
-			return Err(UnmarshalError::WrongSignature);
-		}
-		let sig = sigs.remove(0);
-		let end = rustbus::wire::validate_raw::validate_marshalled(byteorder, offset, buf, &sig)
-			.map_err(|e| e.1)?;
-		Ok((end, Variant {
-			sig,
-			buf: &buf[..end],
-			offset,
-			byteorder,
-		}))
-	}
+    fn unmarshal(
+        byteorder: ByteOrder,
+        buf: &'buf [u8],
+        offset: usize,
+    ) -> unmarshal::UnmarshalResult<Self> {
+        // let padding = rustbus::wire::util::align_offset(Self::get_alignment());
+        let (offset, desc) = rustbus::wire::util::unmarshal_signature(&buf[offset..])?;
+        let mut sigs = match signature::Type::parse_description(desc) {
+            Ok(sigs) => sigs,
+            Err(_) => return Err(UnmarshalError::WrongSignature),
+        };
+        if sigs.len() != 1 {
+            return Err(UnmarshalError::WrongSignature);
+        }
+        let sig = sigs.remove(0);
+        let end = rustbus::wire::validate_raw::validate_marshalled(byteorder, offset, buf, &sig)
+            .map_err(|e| e.1)?;
+        Ok((
+            end,
+            Variant {
+                sig,
+                buf: &buf[..end],
+                offset,
+                byteorder,
+            },
+        ))
+    }
 }
 /*
 pub enum Variant {

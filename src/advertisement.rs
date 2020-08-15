@@ -16,14 +16,14 @@ pub struct Advertisement {
     pub serv_dict: HashMap<UUID, ([u8; 27], usize)>,
     pub solicit_uuids: Vec<UUID>,
     pub includes: Vec<String>,
-	/// Defaults to `2`. Ignored if there is only one Advertisement active on the Bluez controller at once.
-	/// If there are multiple advertisements active on the Bluez controller at once 
-	/// (including from other application), then they share time in a round-robin. This setting determines,
-	/// how long this advertisement will be active at a time in seconds, before handing of to the next 
-	/// Advertisement.
+    /// Defaults to `2`. Ignored if there is only one Advertisement active on the Bluez controller at once.
+    /// If there are multiple advertisements active on the Bluez controller at once
+    /// (including from other application), then they share time in a round-robin. This setting determines,
+    /// how long this advertisement will be active at a time in seconds, before handing of to the next
+    /// Advertisement.
     pub duration: u16,
-	/// Defaults to `180`. The timeout of the advertisement in seconds. The timeout only counts time while the advertisement is active,
-	/// if there are multiple advertisement.
+    /// Defaults to `180`. The timeout of the advertisement in seconds. The timeout only counts time while the advertisement is active,
+    /// if there are multiple advertisement.
     pub timeout: u16,
     pub(crate) index: u16,
     pub(crate) path: PathBuf,
@@ -32,10 +32,10 @@ pub struct Advertisement {
     pub(crate) active: bool,
 }
 impl Advertisement {
-	/// Creates a new advertisement that can be added the `Bluetooth` and registered with Bluez
-	/// using [`Bluetooth::start_adv()`].
-	///
-	/// [`Bluetooth::start_adv()`]: ./struct.Bluetooth.html#method.start_adv
+    /// Creates a new advertisement that can be added the `Bluetooth` and registered with Bluez
+    /// using [`Bluetooth::start_adv()`].
+    ///
+    /// [`Bluetooth::start_adv()`]: ./struct.Bluetooth.html#method.start_adv
     pub fn new(typ: AdType, localname: String) -> Self {
         Advertisement {
             typ,
@@ -53,7 +53,7 @@ impl Advertisement {
             active: false,
         }
     }
-	/// Validates the UUIDs in the advertisement.
+    /// Validates the UUIDs in the advertisement.
     pub fn validate(&self) -> Result<(), Error> {
         for uuid in &self.service_uuids {
             if !validate_uuid(uuid) {
@@ -203,12 +203,8 @@ impl Properties for Advertisement {
                 }
                 LOCAL_NAME_PROP => Some(base_param_to_variant(self.localname.to_string().into())),
                 APPEARANCE_PROP => Some(base_param_to_variant(self.appearance.into())),
-                DURATION_PROP => {
-                    Some(base_param_to_variant(self.duration.into()))
-                }
-                TO_PROP => {
-                    Some(base_param_to_variant(self.timeout.into()))
-                }
+                DURATION_PROP => Some(base_param_to_variant(self.duration.into())),
+                TO_PROP => Some(base_param_to_variant(self.timeout.into())),
                 //TODO:implement SND_CHANNEL_PROP => unimplemented!(),
                 _ => None,
             },
