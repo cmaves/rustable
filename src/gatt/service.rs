@@ -46,6 +46,7 @@ impl LocalServiceBase {
 	/// [`Bluetooth::add_service()`]: ../struct.Bluetooth.html#method.add_service
     pub fn new<T: ToUUID>(uuid: T, primary: bool) -> Self {
         let uuid = uuid.to_uuid();
+		assert!(validate_uuid(&uuid));
         LocalServiceBase {
             index: 0,
             char_index: 0,
@@ -61,8 +62,12 @@ impl LocalServiceBase {
         // TODO: add check for duplicate UUIDs
         //assert!(self.chars.len() < 65535);
         character.serv_uuid = self.uuid.clone();
+		for desc in character.descs.values_mut() {
+			desc.serv_uuid = self.uuid.clone();
+		}
         character.index = self.char_index;
         self.char_index += 1;
+		eprintln!("Adding char: {:?}\nto\n{:?}", character, self.uuid);
         self.chars.insert(character.uuid.clone(), character);
     }
     /// Handle method calls on the local servic
@@ -151,12 +156,22 @@ impl<'a, 'b: 'a, 'c: 'a, 'd: 'a> Service<'a> for LocalService<'b> {
     }
 }
 
-impl LocalService<'_> {
+impl<'a> LocalService<'a> {
+	pub(crate) fn new<T: ToUUID>(bt: &'a mut Bluetooth, uuid: T) -> Self {
+		let uuid = uuid.to_uuid();
+		LocalService {
+			bt,
+			uuid
+		}
+	}
     pub(super) fn get_service_base(&self) -> &LocalServiceBase {
         &self.bt.services[&self.uuid]
     }
     pub(super) fn get_service_base_mut(&mut self) -> &mut LocalServiceBase {
-        self.bt.services.get_mut(&self.uuid).unwrap()
+        match self.bt.services.get_mut(&self.uuid) {
+			Some(ret) => ret,
+			None => panic!("Failed to find: {}", self.uuid)
+		}
     }
 }
 

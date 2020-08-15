@@ -157,7 +157,7 @@ impl Debug for LocalCharBase {
             "None"
         };
 		// TODO: change to use the formatter helper functions
-        write!(f, "LocalCharBase{{vf: {:?}, index: {:?}, handle: {:?}, uuid: {:?}, path: {:?}, notify: {:?}, write: {:?}, descs: {:?}, flags: {:?}, allow_write: {:?}, write_callback: {}}}", self.vf, self.index, self.handle, self.uuid, self.path, self.notify, self.write, self.descs, self.flags, self.allow_write, wc_str)
+        write!(f, "LocalCharBase{{vf: {:?}, index: {:?}, handle: {:?}, uuid: {:?}, serv_uuid: {:?}, path: {:?}, notify: {:?}, write: {:?}, descs: {:?}, flags: {:?}, allow_write: {:?}, write_callback: {}}}", self.vf, self.index, self.handle, self.uuid, self.serv_uuid, self.path, self.notify, self.write, self.descs, self.flags, self.allow_write, wc_str)
     }
 }
 impl Drop for LocalCharBase {
@@ -239,7 +239,9 @@ impl LocalCharBase {
 	/// Adds a local descritpor to the characteristic.
 	pub fn add_desc(&mut self, mut desc: LocalDescBase) {
 		desc.index = self.desc_index;
+		desc.char_uuid = self.uuid.clone();
 		self.desc_index += 1;
+		eprintln!("Adding desc: {:?}\nto\n{:?}", desc, self);
 		self.descs.insert(desc.uuid.clone(), desc);
 	}
 }

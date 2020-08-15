@@ -3,6 +3,7 @@ use std::path::{Path, PathBuf};
 use std::cell::Cell;
 use rustbus::wire::unmarshal::Error as UnmarshalError;
 use crate::interfaces::*;
+use crate::introspect::*;
 use crate::*;
 
 /// Describes the methods avaliable on local and remote GATT descriptors.
@@ -24,12 +25,14 @@ pub trait Descriptor {
 
 
 pub struct LocalDescBase {
-	pub(crate) vf: ValOrFn,
     pub(crate) path: PathBuf,
     pub(crate) index: u16,
-    handle: u16,
     pub(crate) uuid: UUID,
-	flags: DescFlags,
+	pub(crate) serv_uuid: UUID,
+	pub(crate) char_uuid: UUID,
+    handle: u16,
+	pub vf: ValOrFn,
+	pub flags: DescFlags,
 	pub write_callback: Option<Box<FnMut(&[u8]) -> Result<Option<ValOrFn>, (String, Option<String>)>>>
 }
 impl LocalDescBase {
@@ -40,6 +43,8 @@ impl LocalDescBase {
 			flags,
 			vf: ValOrFn::default(),
 			path: PathBuf::new(),
+			serv_uuid: Rc::from(""),
+			char_uuid: Rc::from(""),
 			write_callback: None,
 			index: 0,
 			handle: 0
@@ -60,7 +65,7 @@ impl Debug for LocalDescBase {
             "None"
         };
 		// TODO: change to use the formatter helper functions
-        write!(f, "LocalDescBase{{vf: {:?}, index: {:?}, handle: {:?}, uuid: {:?}, path: {:?}, flags: {:?}, write_callback: {}}}", self.vf, self.index, self.handle, self.uuid, self.path, self.flags, wc_str)
+        write!(f, "LocalDescBase{{vf: {:?}, index: {:?}, handle: {:?}, uuid: {:?}, char_uuid: {:?}, serv_uuid: {:?}, path: {:?}, flags: {:?}, write_callback: {}}}", self.vf, self.index, self.handle, self.uuid, self.char_uuid, self.serv_uuid, self.path, self.flags, wc_str)
     }
 }
 
@@ -68,7 +73,14 @@ pub struct LocalDescriptor<'a, 'b, 'c> {
 	uuid: UUID,
 	character: &'a mut LocalCharactersitic<'b, 'c>,
 }
-impl LocalDescriptor<'_, '_, '_> {
+impl<'a, 'b, 'c> LocalDescriptor<'a, 'b, 'c> {
+	pub(crate) fn new<T: ToUUID>(character: &'a mut LocalCharactersitic<'b, 'c>, uuid: T) -> Self {
+		let uuid = uuid.to_uuid();
+		LocalDescriptor {
+			character,
+			uuid
+		}
+	}
 	fn get_desc_base(&self) -> &LocalDescBase {
 		self.character.get_char_base().descs.get(&self.uuid).unwrap()
 	}
@@ -101,9 +113,9 @@ impl LocalDescriptor<'_, '_, '_> {
 				let val = base.vf.to_value();
 				if offset >= val.len() {
 					// TODO: should this return an error instead of an empty array
-					reply.body.push_param::<&[u8]>(&[]);
+					reply.body.push_param::<&[u8]>(&[]).unwrap();
 				} else {
-					reply.body.push_param(&val[offset..]);
+					reply.body.push_param(&val[offset..]).unwrap();
 				}
 				reply
 				} else {
@@ -220,8 +232,14 @@ impl Properties for LocalDescBase {
                 CHAR_PROP => Some(base_param_to_variant(Base::ObjectPath(
                     self.path.parent().unwrap().to_str().unwrap().to_string(),
                 ))),
-                VALUE_PROP => unimplemented!(),
-                FLAGS_PROP => unimplemented!(),
+                VALUE_PROP => {
+					let bytes: Vec<Param<'a, 'b>> = self.vf.to_value().into_iter().map(|b| Param::Base(Base::Byte(*b))).collect();
+					Some(container_param_to_variant(Container::Array(params::Array { element_sig: signature::Type::Base(signature::Base::Byte), values: bytes }))) 
+				},
+                FLAGS_PROP => {
+					let flags: Vec<Param<'a, 'b>> = self.flags.to_strings().into_iter().map(|s| Param::Base(Base::String(s))).collect();
+					Some(container_param_to_variant(Container::Array(params::Array { element_sig: signature::Type::Base(signature::Base::String), values: flags })))
+				},
                 HANDLE_PROP => Some(base_param_to_variant(self.index.into())),
                 _ => None,
             },
@@ -229,14 +247,34 @@ impl Properties for LocalDescBase {
             _ => None,
         }
     }
-    fn set_inner(&mut self, _interface: &str, _prop: &str, _val: Variant) -> Option<String> {
-        unimplemented!()
+    fn set_inner(&mut self, interface: &str, prop: &str, val: Variant) -> Option<String> {
+		match interface {
+			DESC_IF_STR => match prop {
+				HANDLE_PROP => match val.get() {
+					Ok(handle) => {
+						self.handle = handle;
+						None
+					},
+					Err(_) => Some("UnexpectedType".to_string())
+				},
+				_ => unimplemented!()
+			},
+			PROP_IF_STR => Some("UnknownProperty".to_string()),
+			_ => Some("UnknownInterface".to_string())
+		}
     }
 }
 
 impl Introspectable for LocalDescBase {
     fn introspectable_str(&self) -> String {
-        unimplemented!()
+		let mut ret = String::new();
+		ret.push_str(INTROSPECT_FMT_P1);
+		ret.push_str(self.path.to_str().unwrap());
+		ret.push_str(INTROSPECT_FMT_P2);
+		ret.push_str(PROP_STR);
+		ret.push_str(DESC_STR);
+		ret.push_str(INTROSPECT_FMT_P3);
+		ret
     }
 }
 

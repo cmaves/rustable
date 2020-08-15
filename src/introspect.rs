@@ -85,6 +85,21 @@ pub(crate) const CHAR_STR: &'static str = "\t<interface name=\"org.bluez.GattCha
 \t\t<property name=\"Flags\" type=\"as\" access=\"read\"/>
 \t\t<property name=\"Handle\" type=\"q\" access=\"readwrite\"/>
 \t</interface>\n";
+pub(crate) const DESC_STR: &'static str = "\t<interface name=\"org.bluez.GattDescriptor1\">
+\t\t<method name=\"ReadValue\">
+\t\t\t<arg name=\"options\" type=\"a{sv}\" direction=\"in\"/>
+\t\t\t<arg name=\"value\" type=\"ay\" direction=\"out\"/>
+\t\t</method>
+\t\t<method name=\"WriteValue\">
+\t\t\t<arg name=\"value\" type=\"ay\" direction=\"in\"/>
+\t\t\t<arg name=\"options\" type=\"a{sv}\" direction=\"in\"/>
+\t\t</method>
+\t\t<property name=\"UUID\" type=\"s\" access=\"read\"/>
+\t\t<property name=\"Characteristic\" type=\"s\" access=\"read\"/>
+\t\t<property name=\"Value\" type=\"ay\" access=\"read\"/>
+\t\t<property name=\"Flags\" type=\"as\" access=\"read\"/>
+\t\t<property name=\"Handle\" type=\"q\" access=\"readwrite\"/>
+\t</interface>\n";
 pub(crate) const MANGAGER_STR: &'static str = "\t<interface name=\"org.freedesktop.DBus.ObjectManager\">
 \t\t<method name=\"GetManagedObjects\">
 \t\t\t<arg type=\"a{oa{sa{sv}}}\" name=\"object_paths_interfaces_and_properties\" direction=\"out\"/>

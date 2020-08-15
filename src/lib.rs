@@ -238,15 +238,13 @@ pub struct Bluetooth {
 }
 impl Bluetooth {
     /// Creates a new `Bluetooth` and setup a DBus client to interact with Bluez.
-    pub fn new(dbus_name: &str, blue_path: String) -> Result<Self, Error> {
+    pub fn new(dbus_name: String, blue_path: String) -> Result<Self, Error> {
         let session_path = get_system_bus_path()?;
         let conn = Conn::connect_to_bus(session_path, true)?;
         let mut rpc_con = RpcConn::new(conn);
-        let mut name = "io.rustable.".to_string();
-        name.push_str(dbus_name);
         rpc_con.send_message(&mut standard_messages::hello(), Timeout::Infinite)?;
         let namereq = rpc_con.send_message(
-            &mut standard_messages::request_name(name.clone(), 0),
+            &mut standard_messages::request_name(dbus_name.clone(), 0),
             Timeout::Infinite,
         )?;
         let res = rpc_con.wait_response(namereq, Timeout::Infinite)?;
@@ -259,12 +257,12 @@ impl Bluetooth {
         let services = HashMap::new();
         let mut path = String::new();
         path.push('/');
-        path.push_str(&name.replace(".", "/"));
+        path.push_str(&dbus_name.replace(".", "/"));
         let path = PathBuf::from(path);
         let blue_path: &Path = blue_path.as_ref();
         let mut ret = Bluetooth {
             rpc_con,
-            name,
+            name: dbus_name,
             verbose: 0,
             services,
             registered: false,
@@ -407,7 +405,6 @@ impl Bluetooth {
         let adv_path = self.path.join(format!("adv{:04x}", adv.index));
         adv.path = adv_path;
         self.ads.push_back(adv);
-		let idx = self.ads.len() - 1;
         self.register_adv(idx).map(|_| idx as u16).map_err(|err| (idx as u16, err))
     }
     /// Checks if an advertisement is still active, or if Bluez has signaled it has ended.
@@ -703,7 +700,17 @@ impl Bluetooth {
                     }
                     DbusObject::Desc(v) => match interface.as_ref() {
                         PROP_IF_STR => v.properties_call(call),
-                        DESC_IF_STR => unimplemented!(),
+                        DESC_IF_STR => { 
+                            // TODO: implement unsafe-opt changes
+							let serv_uuid = v.serv_uuid.clone();
+							let char_uuid = v.char_uuid.clone();
+							let desc_uuid = v.uuid.clone();
+							eprintln!("Desc_call(): {}. {}, {}", serv_uuid, char_uuid, desc_uuid);
+							let mut serv = LocalService::new(self, serv_uuid);
+							let mut character = LocalCharactersitic::new(&mut serv, char_uuid);
+							let mut desc = LocalDescriptor::new(&mut character, desc_uuid);
+							desc.desc_call(call)
+						}
                         INTRO_IF_STR => v.introspectable(call),
                         _ => standard_messages::unknown_method(&call.dynheader),
                     },
