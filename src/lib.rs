@@ -32,7 +32,7 @@ use rustbus::params::message::Message;
 use rustbus::params::{Base, Container, Param};
 use rustbus::signature;
 use rustbus::standard_messages;
-use rustbus::wire::marshal::traits::{Signature, ObjectPath};
+use rustbus::wire::marshal::traits::{ObjectPath, Signature};
 use rustbus::wire::unmarshal;
 use rustbus::wire::unmarshal::traits::Unmarshal;
 use rustbus::wire::unmarshal::Error as UnmarshalError;
@@ -45,7 +45,6 @@ use std::fmt::{Debug, Display, Formatter};
 use std::num::ParseIntError;
 use std::path::{Component, Path, PathBuf};
 use std::rc::Rc;
-use std::time::Duration;
 
 enum PendingType<T: 'static, U: 'static> {
     MessageCb(&'static dyn Fn(MarshalledMessage, Option<U>) -> T),
@@ -69,7 +68,6 @@ pub enum ResolveError<T: 'static, U: 'static> {
     StillPending(Pending<T, U>),
     Error(Pending<T, U>, Error),
 }
-
 
 pub mod interfaces;
 
@@ -161,10 +159,10 @@ impl ToMAC for &str {
 }
 
 enum DbusObject {
-	Gatt(UUID, Option<(UUID, Option<UUID>)>),
+    Gatt(UUID, Option<(UUID, Option<UUID>)>),
     Ad(usize),
     Appl,
-	None
+    None,
 }
 
 #[derive(Debug)]
@@ -282,37 +280,40 @@ impl Bluetooth {
             MessageType::Invalid => false,
             MessageType::Signal => false,
         }));
-		ret.set_filter_dest(Some(BLUEZ_DEST.to_string()))?;
+        ret.set_filter_dest(Some(BLUEZ_DEST.to_string()))?;
         Ok(ret)
     }
-	pub fn set_filter_dest(&mut self, filter: Option<String>) -> Result<(), Error> {
-		match filter {
-			Some(name) => {
-				let mut nameowner = MessageBuilder::new().call("GetNameOwner".to_string())
-					.with_interface("org.freedesktop.DBus".to_string())
-					.at("org.freedesktop.DBus".to_string())
-					.on("/org/freedesktop/DBus".to_string()).build();
-				nameowner.body.push_param(name.clone()).unwrap();
-				let res_idx = self.rpc_con.send_message(&mut nameowner, Timeout::Infinite)?;
-				let res = self.rpc_con.wait_response(res_idx, Timeout::Infinite)?;
-				match res.typ {
-					MessageType::Reply => {
-						let owner = res.body.parser().get()?;
-						if owner == name {
-							self.filter_dest = Some((name, None));
-						} else {
-							self.filter_dest = Some((name, Some(owner)));
-						}
-					},
-					MessageType::Error => self.filter_dest = Some((name, None)),
-					_ => unreachable!()
-
-				}
-			},
-			None => self.filter_dest = None
-		}
-		Ok(())
-	}
+    pub fn set_filter_dest(&mut self, filter: Option<String>) -> Result<(), Error> {
+        match filter {
+            Some(name) => {
+                let mut nameowner = MessageBuilder::new()
+                    .call("GetNameOwner".to_string())
+                    .with_interface("org.freedesktop.DBus".to_string())
+                    .at("org.freedesktop.DBus".to_string())
+                    .on("/org/freedesktop/DBus".to_string())
+                    .build();
+                nameowner.body.push_param(name.clone()).unwrap();
+                let res_idx = self
+                    .rpc_con
+                    .send_message(&mut nameowner, Timeout::Infinite)?;
+                let res = self.rpc_con.wait_response(res_idx, Timeout::Infinite)?;
+                match res.typ {
+                    MessageType::Reply => {
+                        let owner = res.body.parser().get()?;
+                        if owner == name {
+                            self.filter_dest = Some((name, None));
+                        } else {
+                            self.filter_dest = Some((name, Some(owner)));
+                        }
+                    }
+                    MessageType::Error => self.filter_dest = Some((name, None)),
+                    _ => unreachable!(),
+                }
+            }
+            None => self.filter_dest = None,
+        }
+        Ok(())
+    }
     /// Gets the path of the DBus client
     pub fn get_path(&self) -> &Path {
         &self.path
@@ -685,7 +686,7 @@ impl Bluetooth {
             // eprintln!("received call {:?}", call);
             let interface = (&call.dynheader.interface).as_ref().unwrap();
             if let Some(dest) = &self.filter_dest {
-				let msg_dest = call.dynheader.sender.as_ref().unwrap();
+                let msg_dest = call.dynheader.sender.as_ref().unwrap();
                 if &dest.0 != msg_dest && (dest.1 == None || dest.1.as_ref().unwrap() != msg_dest) {
                     let mut msg = call.dynheader.make_error_response(
                         BLUEZ_NOT_PERM.to_string(),
@@ -696,75 +697,78 @@ impl Bluetooth {
                 }
             }
             let mut reply = match self.match_root(&call.dynheader) {
-                   DbusObject::Appl => match interface.as_ref() {
-                        PROP_IF_STR => self.properties_call(call),
-                        OBJ_MANAGER_IF_STR => self.objectmanager_call(call),
-                        INTRO_IF_STR => self.introspectable(call),
-                        _ => standard_messages::unknown_method(&call.dynheader),
-                    },
-					DbusObject::Gatt(serv_uuid, child_uuid) => {
-						let serv_base = self.services.get_mut(&serv_uuid).unwrap();
-						match child_uuid {
-							Some((char_uuid, child_uuid)) => {
-								let char_base = serv_base.chars.get_mut(&char_uuid).unwrap();
-								match child_uuid {
-									Some(desc_uuid) => {
-										// Descriptor
-										let desc_base = char_base.descs.get_mut(&desc_uuid).unwrap();
-										match interface.as_ref() {
-											PROP_IF_STR => desc_base.properties_call(call),
-											DESC_IF_STR => {
-												let mut serv = LocalService::new(self, serv_uuid);
-												let mut character=LocalCharactersitic::new(&mut serv, char_uuid);
-												let mut desc = LocalDescriptor::new(&mut character, desc_uuid);
-												desc.desc_call(call)
-											},
-											INTRO_IF_STR => desc_base.introspectable(call),
-											_ => standard_messages::unknown_method(&call.dynheader)
-										}
-									},
-									None => {
-										// Charactersitic
-										match interface.as_ref() {
-											PROP_IF_STR =>  char_base.properties_call(call),
-											CHAR_IF_STR => {
-												let mut serv = LocalService::new(self, serv_uuid);
-												let mut character=LocalCharactersitic::new(&mut serv, char_uuid);
-												character.char_call(call)
-											},
-											INTRO_IF_STR => char_base.introspectable(call),
-											_ => standard_messages::unknown_method(&call.dynheader)
-										}
-									}
-								}
-							},
-							None => {
-								// Service 
-								match interface.as_ref() {
-									PROP_IF_STR => serv_base.properties_call(call),
-									SERV_IF_STR => serv_base.service_call(call),
-									INTRO_IF_STR => serv_base.introspectable(call),
-									_ => standard_messages::unknown_method(&call.dynheader)
-								}
-							}
-						}
-					},
-                    DbusObject::Ad(ad_idx) => {
-						let adv = &mut self.ads[ad_idx];
-						match interface.as_ref() {
-                        	PROP_IF_STR => adv.properties_call(call),
-                        	LEAD_IF_STR => match call.dynheader.member.as_ref().unwrap().as_str() {
-								"Release" => {
-									adv.active = false;
-                               		call.dynheader.make_response()
-								},
-								_ => standard_messages::unknown_method(&call.dynheader)
-							},
-							INTRO_IF_STR => adv.introspectable(call),
-							_ => standard_messages::unknown_method(&call.dynheader)
+                DbusObject::Appl => match interface.as_ref() {
+                    PROP_IF_STR => self.properties_call(call),
+                    OBJ_MANAGER_IF_STR => self.objectmanager_call(call),
+                    INTRO_IF_STR => self.introspectable(call),
+                    _ => standard_messages::unknown_method(&call.dynheader),
+                },
+                DbusObject::Gatt(serv_uuid, child_uuid) => {
+                    let serv_base = self.services.get_mut(&serv_uuid).unwrap();
+                    match child_uuid {
+                        Some((char_uuid, child_uuid)) => {
+                            let char_base = serv_base.chars.get_mut(&char_uuid).unwrap();
+                            match child_uuid {
+                                Some(desc_uuid) => {
+                                    // Descriptor
+                                    let desc_base = char_base.descs.get_mut(&desc_uuid).unwrap();
+                                    match interface.as_ref() {
+                                        PROP_IF_STR => desc_base.properties_call(call),
+                                        DESC_IF_STR => {
+                                            let mut serv = LocalService::new(self, serv_uuid);
+                                            let mut character =
+                                                LocalCharactersitic::new(&mut serv, char_uuid);
+                                            let mut desc =
+                                                LocalDescriptor::new(&mut character, desc_uuid);
+                                            desc.desc_call(call)
+                                        }
+                                        INTRO_IF_STR => desc_base.introspectable(call),
+                                        _ => standard_messages::unknown_method(&call.dynheader),
+                                    }
+                                }
+                                None => {
+                                    // Charactersitic
+                                    match interface.as_ref() {
+                                        PROP_IF_STR => char_base.properties_call(call),
+                                        CHAR_IF_STR => {
+                                            let mut serv = LocalService::new(self, serv_uuid);
+                                            let mut character =
+                                                LocalCharactersitic::new(&mut serv, char_uuid);
+                                            character.char_call(call)
+                                        }
+                                        INTRO_IF_STR => char_base.introspectable(call),
+                                        _ => standard_messages::unknown_method(&call.dynheader),
+                                    }
+                                }
+                            }
                         }
-					},
-                	DbusObject::None => standard_messages::unknown_method(&call.dynheader),
+                        None => {
+                            // Service
+                            match interface.as_ref() {
+                                PROP_IF_STR => serv_base.properties_call(call),
+                                SERV_IF_STR => serv_base.service_call(call),
+                                INTRO_IF_STR => serv_base.introspectable(call),
+                                _ => standard_messages::unknown_method(&call.dynheader),
+                            }
+                        }
+                    }
+                }
+                DbusObject::Ad(ad_idx) => {
+                    let adv = &mut self.ads[ad_idx];
+                    match interface.as_ref() {
+                        PROP_IF_STR => adv.properties_call(call),
+                        LEAD_IF_STR => match call.dynheader.member.as_ref().unwrap().as_str() {
+                            "Release" => {
+                                adv.active = false;
+                                call.dynheader.make_response()
+                            }
+                            _ => standard_messages::unknown_method(&call.dynheader),
+                        },
+                        INTRO_IF_STR => adv.introspectable(call),
+                        _ => standard_messages::unknown_method(&call.dynheader),
+                    }
+                }
+                DbusObject::None => standard_messages::unknown_method(&call.dynheader),
             };
             /*
             // eprintln!("replying: {:?}", reply);
@@ -790,14 +794,17 @@ impl Bluetooth {
                         if let Some(filter) = &mut self.filter_dest {
                             let lost_name: &str = sig.body.parser().get()?;
                             if filter.0 == lost_name {
-								filter.1 = None;
-								if self.verbose > 0 {
-									eprintln!("{} has disconnected for DBus?", self.filter_dest.as_ref().unwrap().0);
-								}
+                                filter.1 = None;
+                                if self.verbose > 0 {
+                                    eprintln!(
+                                        "{} has disconnected for DBus?",
+                                        self.filter_dest.as_ref().unwrap().0
+                                    );
+                                }
                                 self.clear_devices();
-                        	}
-						}
-                    },
+                            }
+                        }
+                    }
                     _ => (),
                 },
                 _ => (),
@@ -806,8 +813,9 @@ impl Bluetooth {
         Ok(())
     }
     fn interface_added(&mut self, sig: MarshalledMessage) -> Result<(), Error> {
-        let (path, interface_dict): (ObjectPath, HashMap<String, HashMap<String, Variant>>) = sig.body.parser().get2()?;
-		let path: &Path = path.as_ref().as_ref();
+        let (path, interface_dict): (ObjectPath, HashMap<String, HashMap<String, Variant>>) =
+            sig.body.parser().get2()?;
+        let path: &Path = path.as_ref().as_ref();
         let path = if let Ok(path) = path.strip_prefix(&self.blue_path) {
             path
         } else {
@@ -843,47 +851,44 @@ impl Bluetooth {
         if path.starts_with(obj_path) {
             DbusObject::Appl
         } else {
-			let serv_path = match obj_path.strip_prefix(path) {
-				Ok(path) => path,
-				Err(_) => return DbusObject::None
-			};
-			if let Some(matc) = self.match_services(serv_path) {
-				return DbusObject::Gatt(matc.0, matc.1);
-			}
-			match self.match_advertisement(serv_path) {
-				Some(idx) => DbusObject::Ad(idx),
-				None => DbusObject::None
-			}
-		}
+            let serv_path = match obj_path.strip_prefix(path) {
+                Ok(path) => path,
+                Err(_) => return DbusObject::None,
+            };
+            if let Some(matc) = self.match_services(serv_path) {
+                return DbusObject::Gatt(matc.0, matc.1);
+            }
+            match self.match_advertisement(serv_path) {
+                Some(idx) => DbusObject::Ad(idx),
+                None => DbusObject::None,
+            }
+        }
     }
-	fn match_services(&mut self, path: &Path) 
-		-> Option<(UUID, Option<(UUID, Option<UUID>)>)> 
-	{
-		let r_str = path.to_str().unwrap();
-		if (r_str.len() != 8 && r_str.len() != 17 && r_str.len() != 26) || &r_str[..4] != "serv" {
-			return None;
-		}
-		for uuid in self.get_children() {
-			if let Some(matc) = match_serv(&mut self.get_child(&uuid).unwrap(), path) {
-				return Some((uuid, matc));
-				//return Some(Some((uuid, matc)));
-			}
-		}
-		None
-
-	}
-	fn match_advertisement(&self, path: &Path) -> Option<usize> {
-		let r_str = path.to_str().unwrap();
-		if r_str.len() != 7 || &r_str[..4] != "adv" {
-			return None;
-		}
-		for (i, adv) in self.ads.iter().enumerate() {
-			if adv.path.file_name().unwrap() == path {
-				return Some(i);
-			}
-		}
-		None
-	}
+    fn match_services(&mut self, path: &Path) -> Option<(UUID, Option<(UUID, Option<UUID>)>)> {
+        let r_str = path.to_str().unwrap();
+        if (r_str.len() != 8 && r_str.len() != 17 && r_str.len() != 26) || &r_str[..4] != "serv" {
+            return None;
+        }
+        for uuid in self.get_children() {
+            if let Some(matc) = match_serv(&mut self.get_child(&uuid).unwrap(), path) {
+                return Some((uuid, matc));
+                //return Some(Some((uuid, matc)));
+            }
+        }
+        None
+    }
+    fn match_advertisement(&self, path: &Path) -> Option<usize> {
+        let r_str = path.to_str().unwrap();
+        if r_str.len() != 7 || &r_str[..4] != "adv" {
+            return None;
+        }
+        for (i, adv) in self.ads.iter().enumerate() {
+            if adv.path.file_name().unwrap() == path {
+                return Some(i);
+            }
+        }
+        None
+    }
     pub fn clear_devices(&mut self) {
         self.devices.clear()
     }

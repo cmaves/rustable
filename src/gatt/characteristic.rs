@@ -1,6 +1,6 @@
+use crate::gatt::*;
 use crate::interfaces::*;
 use crate::introspect::*;
-use crate::gatt::*;
 use crate::*;
 use nix::errno::Errno;
 use nix::sys::socket;
@@ -15,7 +15,6 @@ use std::convert::TryFrom;
 use std::fmt::Debug;
 use std::ops::Deref;
 use std::os::unix::io::RawFd;
-use std::ffi::OsStr;
 
 #[derive(Clone, Copy)]
 pub struct CharValue {
@@ -226,25 +225,26 @@ impl LocalCharBase {
     }
 }
 impl GattDbusObject for LocalCharBase {
-	fn path(&self) -> &Path {
-		&self.path
-	}
-	fn uuid(&self) -> &UUID {
-		&self.uuid
-	}
+    fn path(&self) -> &Path {
+        &self.path
+    }
+    fn uuid(&self) -> &UUID {
+        &self.uuid
+    }
 }
 impl<'a> HasChildren<'a> for LocalCharBase {
-	type Child = &'a mut LocalDescBase;
-	fn get_children(&self) -> Vec<UUID> {
-		self.descs.keys().map(|x| x.clone()).collect()
-	}
-	fn get_child<T: ToUUID>(&'a mut self, uuid: T) -> Option<Self::Child> {
-		let uuid = uuid.to_uuid();
-		self.descs.get_mut(&uuid)
-	}
+    type Child = &'a mut LocalDescBase;
+    fn get_children(&self) -> Vec<UUID> {
+        self.descs.keys().map(|x| x.clone()).collect()
+    }
+    fn get_child<T: ToUUID>(&'a mut self, uuid: T) -> Option<Self::Child> {
+        let uuid = uuid.to_uuid();
+        self.descs.get_mut(&uuid)
+    }
 }
 
-pub struct LocalCharactersitic<'a, 'b: 'a> {// 'b: 'a means 'b outlive 'a
+pub struct LocalCharactersitic<'a, 'b: 'a> {
+    // 'b: 'a means 'b outlive 'a
     pub(crate) uuid: UUID,
     pub(super) service: &'a mut LocalService<'b>,
     #[cfg(feature = "unsafe-opt")]
@@ -304,8 +304,7 @@ impl<'c, 'd> LocalCharactersitic<'c, 'd> {
                         }
                     }
                     // eprintln!("vf: {:?}\nValue: {:?}", base.vf, &v[..l]);
-                    let vec: Vec<Param> = cv
-                        .as_slice()
+                    let vec: Vec<Param> = cv.as_slice()[start..]
                         .into_iter()
                         .map(|i| Base::Byte(*i).into())
                         .collect();
@@ -846,24 +845,27 @@ impl CharFlags {
         ret
     }
 }
-impl<'a,'b: 'a,'c: 'b> HasChildren<'a> for LocalCharactersitic<'b, 'c> {
-	type Child = LocalDescriptor<'a, 'b, 'c>;
-	fn get_children(&self) -> Vec<UUID> {
-		self.get_char_base().get_children()
-	}
-	fn get_child<T: ToUUID>(&'a mut self, uuid: T) -> Option<Self::Child> {
-		let uuid = uuid.to_uuid();
-		let base = self.get_char_base_mut().descs.get_mut(&uuid);
-		Some(LocalDescriptor::new(self, uuid))
-	}
+impl<'a, 'b: 'a, 'c: 'b> HasChildren<'a> for LocalCharactersitic<'b, 'c> {
+    type Child = LocalDescriptor<'a, 'b, 'c>;
+    fn get_children(&self) -> Vec<UUID> {
+        self.get_char_base().get_children()
+    }
+    fn get_child<T: ToUUID>(&'a mut self, uuid: T) -> Option<Self::Child> {
+        let uuid = uuid.to_uuid();
+        if self.get_char_base_mut().descs.contains_key(&uuid) {
+            Some(LocalDescriptor::new(self, uuid))
+        } else {
+            None
+        }
+    }
 }
 impl GattDbusObject for LocalCharactersitic<'_, '_> {
-	fn path(&self) -> &Path {
-		self.get_char_base().path()
-	}
-	fn uuid(&self) -> &UUID {
-		self.get_char_base().uuid()
-	}
+    fn path(&self) -> &Path {
+        self.get_char_base().path()
+    }
+    fn uuid(&self) -> &UUID {
+        self.get_char_base().uuid()
+    }
 }
 
 impl<'a, 'b: 'a, 'c: 'b> Characteristic<'a> for LocalCharactersitic<'b, 'c> {
@@ -1083,22 +1085,22 @@ impl RemoteCharBase {
     }
 }
 impl GattDbusObject for RemoteCharBase {
-	fn path(&self) -> &Path {
-		&self.path
-	}
-	fn uuid(&self) -> &UUID {
-		&self.uuid
-	}
+    fn path(&self) -> &Path {
+        &self.path
+    }
+    fn uuid(&self) -> &UUID {
+        &self.uuid
+    }
 }
 impl<'a> HasChildren<'a> for RemoteCharBase {
-	type Child = &'a mut RemoteDescBase;
-	fn get_children(&self) -> Vec<UUID> {
-		self.descs.keys().map(|x| x.clone()).collect()
-	}
-	fn get_child<T: ToUUID>(&'a mut self, uuid: T) -> Option<Self::Child> {
-		let uuid = uuid.to_uuid();
-		self.descs.get_mut(&uuid)
-	}
+    type Child = &'a mut RemoteDescBase;
+    fn get_children(&self) -> Vec<UUID> {
+        self.descs.keys().map(|x| x.clone()).collect()
+    }
+    fn get_child<T: ToUUID>(&'a mut self, uuid: T) -> Option<Self::Child> {
+        let uuid = uuid.to_uuid();
+        self.descs.get_mut(&uuid)
+    }
 }
 impl Drop for RemoteCharBase {
     fn drop(&mut self) {
@@ -1241,21 +1243,21 @@ impl<'a, 'b, 'c> RemoteChar<'a, 'b, 'c> {
     /*pub fn start_notify(&self) -> ();*/
 }
 impl GattDbusObject for RemoteChar<'_, '_, '_> {
-	fn path(&self) -> &Path {
-		self.get_char().path()
-	}
-	fn uuid(&self) -> &UUID {
-		self.get_char().uuid()
-	}
+    fn path(&self) -> &Path {
+        self.get_char().path()
+    }
+    fn uuid(&self) -> &UUID {
+        self.get_char().uuid()
+    }
 }
 impl HasChildren<'_> for RemoteChar<'_, '_, '_> {
-	type Child = RemoteDescriptor;
-	fn get_children(&self) -> Vec<UUID> {
-		self.get_char().get_children()
-	}
-	fn get_child<T: ToUUID>(&'_ mut self, uuid: T) -> Option<Self::Child> {
-		unimplemented!()
-	}
+    type Child = RemoteDescriptor;
+    fn get_children(&self) -> Vec<UUID> {
+        self.get_char().get_children()
+    }
+    fn get_child<T: ToUUID>(&'_ mut self, uuid: T) -> Option<Self::Child> {
+        unimplemented!()
+    }
 }
 impl<'a> Characteristic<'a> for RemoteChar<'_, '_, '_> {
     /// Reads a value from the remote device's characteristic.
@@ -1326,11 +1328,11 @@ pub(crate) fn match_chars<'a, T, U, V >(
         serv: &'a mut V,
         msg_path: &Path,
         header: &DynamicHeader,
-    ) -> Option<DbusObject<'a>> 
-		where T: GattDbusObject, //desc
-		      U: GattDbusObject + HasChildren<'a, Child=T> + 'a, //characteristic
-			  V: GattDbusObject + for<'b>HasChildren<'b, Child=U> //service
-	{
+    ) -> Option<DbusObject<'a>>
+        where T: GattDbusObject, //desc
+              U: GattDbusObject + HasChildren<'a, Child=T> + 'a, //characteristic
+              V: GattDbusObject + for<'b>HasChildren<'b, Child=U> //service
+    {
         // eprintln!("Checking for characteristic for match: {:?}", msg_path);
         let mut components = msg_path.components();
         if let Component::Normal(path) = components.next().unwrap() {
@@ -1338,16 +1340,16 @@ pub(crate) fn match_chars<'a, T, U, V >(
             if !path.starts_with("char") || path.len() != 8 {
                 return None;
             }
-			let serv_uuid = serv.uuid().clone();
+            let serv_uuid = serv.uuid().clone();
             for uuid in serv.get_children() {
-				let mut character = serv.get_child(uuid).unwrap();
+                let mut character = serv.get_child(uuid).unwrap();
                 let char_name = character.path().file_name().unwrap();
                 if let Ok(path) = msg_path.strip_prefix(char_name) {
                     // eprintln!("match_chars() path: {:?}", path);
                     if path == OsStr::new("") {
                         return Some(DbusObject::Char(serv_uuid, character.uuid().clone()));
                     } else {
-						return match_descs(&mut character, path, header, serv_uuid);
+                        return match_descs(&mut character, path, header, serv_uuid);
                     }
                 }
             }
@@ -1372,4 +1374,3 @@ fn mm_to_charvalue(
         _ => unreachable!(),
     }
 }
-
