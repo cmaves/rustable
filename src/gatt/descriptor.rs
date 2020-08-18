@@ -7,7 +7,7 @@ use std::fmt::Write;
 use std::path::{Path, PathBuf};
 
 /// Describes the methods avaliable on local and remote GATT descriptors.
-pub trait Descriptor {
+pub trait Descriptor: GattDbusObject {
     /// Starts a read operation on the descriptor.
     fn read(&mut self) -> Result<Pending<Result<CharValue, Error>, Rc<Cell<CharValue>>>, Error>;
     /// Starts a read operations on the descriptor and waits for the result.
@@ -17,10 +17,8 @@ pub trait Descriptor {
     fn read_cached(&mut self) -> Result<([u8; 512], usize), Error>;
     /// Writes a value to a GATT descriptors.
     fn write(&mut self, val: &[u8]) -> Result<(), Error>;
-    /// Get the UUID of the descriptor.
-    fn uuid(&mut self) -> UUID;
     /// Get the flags present on the descritptors
-    fn flags(&mut self) -> DescFlags;
+    fn flags(&self) -> DescFlags;
 }
 
 pub struct LocalDescBase {
@@ -33,7 +31,7 @@ pub struct LocalDescBase {
     pub vf: ValOrFn,
     pub flags: DescFlags,
     pub write_callback:
-        Option<Box<FnMut(&[u8]) -> Result<Option<ValOrFn>, (String, Option<String>)>>>,
+        Option<Box<dyn FnMut(&[u8]) -> Result<Option<ValOrFn>, (String, Option<String>)>>>,
 }
 impl LocalDescBase {
     pub fn new<T: ToUUID>(uuid: T, flags: DescFlags) -> Self {
@@ -67,6 +65,14 @@ impl Debug for LocalDescBase {
         // TODO: change to use the formatter helper functions
         write!(f, "LocalDescBase{{vf: {:?}, index: {:?}, handle: {:?}, uuid: {:?}, char_uuid: {:?}, serv_uuid: {:?}, path: {:?}, flags: {:?}, write_callback: {}}}", self.vf, self.index, self.handle, self.uuid, self.char_uuid, self.serv_uuid, self.path, self.flags, wc_str)
     }
+}
+impl GattDbusObject for LocalDescBase {
+	fn path(&self) -> &Path {
+		&self.path
+	}
+	fn uuid(&self) -> &UUID {
+		&self.uuid
+	}
 }
 
 pub struct LocalDescriptor<'a, 'b, 'c> {
@@ -337,4 +343,100 @@ impl Introspectable for LocalDescBase {
     }
 }
 
+impl GattDbusObject for LocalDescriptor<'_, '_, '_> {
+	fn path(&self) -> &Path {
+		self.get_desc_base().path()
+	}
+	fn uuid(&self) -> &UUID {
+		self.get_desc_base().uuid()
+	}
+}
+
+impl Descriptor for LocalDescriptor<'_, '_, '_> {
+	fn read(&mut self) -> Result<Pending<Result<CharValue, Error>, Rc<Cell<CharValue>>>, Error> {
+		unimplemented!()
+	}
+	fn read_wait(&mut self) -> Result<CharValue, Error> {
+		unimplemented!()
+	}
+	fn read_cached(&mut self) -> Result<([u8; 512], usize), Error> {
+		unimplemented!()
+	}
+	fn write(&mut self, val: &[u8]) -> Result<(), Error> {
+		unimplemented!()
+	}
+	fn flags(&self) -> DescFlags {
+		unimplemented!()
+	}
+}
+
 pub struct RemoteDescBase {}
+
+impl GattDbusObject for RemoteDescBase {
+	fn path(&self) -> &Path {
+		unimplemented!()
+	}
+	fn uuid(&self) -> &UUID {
+		unimplemented!()
+	}
+}
+/*
+pub(super) fn match_descs<'a, T,  V,  U: ToUUID> (
+        character: &'a mut V,
+        msg_path: &Path,
+        header: &DynamicHeader,
+		serv_uuid: U
+    ) -> Option<DbusObject<'a>> 
+	where T: GattDbusObject,
+		  for<'b> V: GattDbusObject + HasChildren<'b, Child=T>
+{
+        let path = msg_path.to_str().unwrap();
+        if !path.starts_with("desc") || path.len() != 8 {
+            return None;
+        }
+		let uuid = "";
+		let desc = character.get_child(uuid).unwrap();
+		let desc2 = character.get_child(uuid).unwrap();
+		let char_uuid = character.uuid().clone();
+        for uuid in character.get_children() {
+			let desc = character.get_child(uuid).unwrap();
+            let desc_name = desc.path().file_name().unwrap().to_str().unwrap();
+            if desc_name == path {
+                //return Some(DbusObject::Desc(serv_uuid.to_uuid(), char_uuid, desc.uuid().clone()));
+				return None;
+            }
+        }
+        None
+}
+*/
+
+
+pub struct RemoteDescriptor {
+
+}
+impl GattDbusObject for RemoteDescriptor {
+	fn path(&self) -> &Path {
+		unimplemented!()
+	}
+	fn uuid(&self) -> &UUID {
+		unimplemented!()
+	}
+}
+impl Descriptor for RemoteDescriptor {
+	fn read(&mut self) -> Result<Pending<Result<CharValue, Error>, Rc<Cell<CharValue>>>, Error> {
+		unimplemented!()
+	}
+	fn read_wait(&mut self) -> Result<CharValue, Error> {
+		unimplemented!()
+	}
+	fn read_cached(&mut self) -> Result<([u8; 512], usize), Error> {
+		unimplemented!()
+	}
+	fn write(&mut self, val: &[u8]) -> Result<(), Error> {
+		unimplemented!()
+	}
+	fn flags(&self) -> DescFlags {
+		unimplemented!()
+	}
+
+}

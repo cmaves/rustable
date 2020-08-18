@@ -1,20 +1,18 @@
 use crate::gatt::*;
-use crate::{Bluetooth, Error, MAC, UUID};
+use crate::{Bluetooth, Error, MAC, UUID, ToUUID};
 use rustbus::params;
 use rustbus::params::{Base, Param};
 use std::collections::hash_map;
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::rc::Rc;
 
 pub enum AddrType {
     Public,
     Random,
 }
-pub trait Device<'a>: Sized {
-    type ServiceBase;
+pub trait Device<'a>: HasChildren<'a> {
     type ServiceType: Service<'a>;
-    fn services(&mut self) -> hash_map::Keys<UUID, Self::ServiceBase>;
+    fn services(&mut self) -> Vec<UUID>;
     fn get_service(&'a mut self, uuid: &UUID) -> Option<Self::ServiceType>;
     fn has_service(&self, uuid: &UUID) -> bool;
     fn address(&self) -> &MAC;
@@ -91,6 +89,17 @@ impl RemoteDeviceBase {
         })
     }
 }
+impl<'a> HasChildren<'a> for RemoteDeviceBase {
+	type Child = &'a mut RemoteServiceBase;
+	fn get_children(&self) -> Vec<UUID> {
+		self.services.keys().map(|x| x.clone()).collect()
+	}
+	fn get_child<T: ToUUID>(&'a mut self, uuid: T) -> Option<Self::Child> {
+		let uuid = uuid.to_uuid();
+		self.services.get_mut(&uuid)
+	}
+	
+}
 enum State {
     WaitRes(u32),
     Yes,
@@ -153,12 +162,20 @@ impl RemoteDevice<'_> {
         self.get_base_mut().services.remove(uuid).is_some()
     }
 }
+
+impl<'a, 'b: 'a> HasChildren<'a> for RemoteDevice<'b> {
+	type Child = RemoteService<'a, 'b>;
+	fn get_children(&self) -> Vec<UUID> {
+		self.get_base().get_children()
+	}
+	fn get_child<T: ToUUID>(&'a mut self, uuid: T) -> Option<Self::Child> {
+		unimplemented!()
+	}
+}
 impl<'a, 'c: 'a> Device<'a> for RemoteDevice<'c> {
-    type ServiceBase = RemoteServiceBase;
     type ServiceType = RemoteService<'a, 'c>;
-    fn services(&mut self) -> hash_map::Keys<UUID, Self::ServiceBase> {
-        let base = self.get_base_mut();
-        base.services.keys()
+    fn services(&mut self) -> Vec<UUID> {
+        self.get_base_mut().services.keys().map(|x| x.clone()).collect()
     }
     fn get_service(&'a mut self, uuid: &UUID) -> Option<Self::ServiceType> {
         let base = self.get_base_mut();
@@ -183,12 +200,20 @@ impl<'a, 'c: 'a> Device<'a> for RemoteDevice<'c> {
         unimplemented!()
     }
 }
-
+impl<'a> HasChildren<'a> for Bluetooth {
+	type Child = &'a mut LocalServiceBase;
+	fn get_children(&self) -> Vec<UUID> {
+		self.services.keys().map(|x| x.clone()).collect()
+	}
+	fn get_child<T: ToUUID>(&'a mut self, uuid: T) -> Option<Self::Child> {
+		let uuid = uuid.to_uuid();
+		self.services.get_mut(&uuid)
+	}
+}
 impl<'a, 'b: 'a, 'c: 'a> Device<'a> for Bluetooth {
-    type ServiceBase = LocalServiceBase;
     type ServiceType = LocalService<'a>;
-    fn services(&mut self) -> hash_map::Keys<UUID, Self::ServiceBase> {
-        self.services.keys()
+    fn services(&mut self) -> Vec<UUID> {
+        self.services.keys().map(|x| x.clone()).collect()
     }
     fn get_service(&'a mut self, uuid: &UUID) -> Option<Self::ServiceType> {
         let _base = self.services.get_mut(uuid)?;
@@ -212,3 +237,4 @@ impl<'a, 'b: 'a, 'c: 'a> Device<'a> for Bluetooth {
         unimplemented!()
     }
 }
+

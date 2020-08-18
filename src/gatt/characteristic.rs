@@ -1,5 +1,6 @@
 use crate::interfaces::*;
 use crate::introspect::*;
+use crate::gatt::*;
 use crate::*;
 use nix::errno::Errno;
 use nix::sys::socket;
@@ -14,6 +15,7 @@ use std::convert::TryFrom;
 use std::fmt::Debug;
 use std::ops::Deref;
 use std::os::unix::io::RawFd;
+use std::ffi::OsStr;
 
 #[derive(Clone, Copy)]
 pub struct CharValue {
@@ -79,7 +81,7 @@ impl Deref for CharValue {
 }
 
 /// Describes the methods avaliable on GATT characteristics.
-pub trait Characteristic {
+pub trait Characteristic<'a>: GattDbusObject + HasChildren<'a> {
     fn read(&mut self) -> Result<Pending<Result<CharValue, Error>, Rc<Cell<CharValue>>>, Error>;
     /// Generally returns a previous value of the GATT characteristic. Check the individual implementors,
     /// for a more precise definition.
@@ -92,10 +94,6 @@ pub trait Characteristic {
     fn write(&mut self, val: &[u8]) -> Result<Pending<(), ()>, Error>;
     /// Write a value to a GATT characteristic and wait for completion.
     fn write_wait(&mut self, val: &[u8]) -> Result<(), Error>;
-    /// Get the UUID of the service.
-    /// TODO: change to UUID (Rc<str>)
-    fn uuid(&self) -> &str;
-    //    fn service(&self) -> &Path;
     /// Checks if the characteristic's write fd from [`AcquireWrite`] has already been acquired.
     /// Corresponds to reading [`WriteAcquired`] property.
     ///
@@ -195,23 +193,6 @@ impl LocalCharBase {
         }
     }
 
-    pub(super) fn match_descs(
-        &mut self,
-        msg_path: &Path,
-        header: &DynamicHeader,
-    ) -> Option<DbusObject> {
-        let path = msg_path.to_str().unwrap();
-        if !path.starts_with("desc") || path.len() != 8 {
-            return None;
-        }
-        for desc in self.descs.values_mut() {
-            let desc_name = desc.path.file_name().unwrap().to_str().unwrap();
-            if desc_name == path {
-                return Some(DbusObject::Desc(desc));
-            }
-        }
-        None
-    }
     /// Creates a new `LocalCharBase` with `uuid` and `flags`.
     ///
     /// It can be added a local service with [`LocalServiceBase::add_char()`].
@@ -240,12 +221,30 @@ impl LocalCharBase {
         desc.index = self.desc_index;
         desc.char_uuid = self.uuid.clone();
         self.desc_index += 1;
-        eprintln!("Adding desc: {:?}\nto\n{:?}", desc, self);
+        // eprintln!("Adding desc: {:?}\nto\n{:?}", desc, self);
         self.descs.insert(desc.uuid.clone(), desc);
     }
 }
+impl GattDbusObject for LocalCharBase {
+	fn path(&self) -> &Path {
+		&self.path
+	}
+	fn uuid(&self) -> &UUID {
+		&self.uuid
+	}
+}
+impl<'a> HasChildren<'a> for LocalCharBase {
+	type Child = &'a mut LocalDescBase;
+	fn get_children(&self) -> Vec<UUID> {
+		self.descs.keys().map(|x| x.clone()).collect()
+	}
+	fn get_child<T: ToUUID>(&'a mut self, uuid: T) -> Option<Self::Child> {
+		let uuid = uuid.to_uuid();
+		self.descs.get_mut(&uuid)
+	}
+}
 
-pub struct LocalCharactersitic<'a, 'b: 'a> {
+pub struct LocalCharactersitic<'a, 'b: 'a> {// 'b: 'a means 'b outlive 'a
     pub(crate) uuid: UUID,
     pub(super) service: &'a mut LocalService<'b>,
     #[cfg(feature = "unsafe-opt")]
@@ -847,8 +846,27 @@ impl CharFlags {
         ret
     }
 }
+impl<'a,'b: 'a,'c: 'b> HasChildren<'a> for LocalCharactersitic<'b, 'c> {
+	type Child = LocalDescriptor<'a, 'b, 'c>;
+	fn get_children(&self) -> Vec<UUID> {
+		self.get_char_base().get_children()
+	}
+	fn get_child<T: ToUUID>(&'a mut self, uuid: T) -> Option<Self::Child> {
+		let uuid = uuid.to_uuid();
+		let base = self.get_char_base_mut().descs.get_mut(&uuid);
+		Some(LocalDescriptor::new(self, uuid))
+	}
+}
+impl GattDbusObject for LocalCharactersitic<'_, '_> {
+	fn path(&self) -> &Path {
+		self.get_char_base().path()
+	}
+	fn uuid(&self) -> &UUID {
+		self.get_char_base().uuid()
+	}
+}
 
-impl Characteristic for LocalCharactersitic<'_, '_> {
+impl<'a, 'b: 'a, 'c: 'b> Characteristic<'a> for LocalCharactersitic<'b, 'c> {
     fn read(&mut self) -> Result<Pending<Result<CharValue, Error>, Rc<Cell<CharValue>>>, Error> {
         self.check_write_fd()?;
         let base = self.get_char_base_mut();
@@ -921,10 +939,6 @@ impl Characteristic for LocalCharactersitic<'_, '_> {
     fn notifying(&self) -> bool {
         let base = self.get_char_base();
         base.notify.is_some()
-    }
-    fn uuid(&self) -> &str {
-        let base = self.get_char_base();
-        &base.uuid
     }
     fn flags(&self) -> CharFlags {
         let base = self.get_char_base();
@@ -1034,8 +1048,8 @@ impl Properties for LocalCharBase {
     }
 }
 pub struct RemoteCharBase {
-    pub(crate) uuid: UUID,
-    chars: HashMap<UUID, RemoteDescBase>,
+    uuid: UUID,
+    descs: HashMap<UUID, RemoteDescBase>,
     notify_fd: Option<RawFd>,
     path: PathBuf,
 }
@@ -1062,11 +1076,29 @@ impl RemoteCharBase {
         };
         Ok(RemoteCharBase {
             uuid,
-            chars: HashMap::new(),
+            descs: HashMap::new(),
             notify_fd: None,
             path,
         })
     }
+}
+impl GattDbusObject for RemoteCharBase {
+	fn path(&self) -> &Path {
+		&self.path
+	}
+	fn uuid(&self) -> &UUID {
+		&self.uuid
+	}
+}
+impl<'a> HasChildren<'a> for RemoteCharBase {
+	type Child = &'a mut RemoteDescBase;
+	fn get_children(&self) -> Vec<UUID> {
+		self.descs.keys().map(|x| x.clone()).collect()
+	}
+	fn get_child<T: ToUUID>(&'a mut self, uuid: T) -> Option<Self::Child> {
+		let uuid = uuid.to_uuid();
+		self.descs.get_mut(&uuid)
+	}
 }
 impl Drop for RemoteCharBase {
     fn drop(&mut self) {
@@ -1208,8 +1240,24 @@ impl<'a, 'b, 'c> RemoteChar<'a, 'b, 'c> {
     }
     /*pub fn start_notify(&self) -> ();*/
 }
-
-impl Characteristic for RemoteChar<'_, '_, '_> {
+impl GattDbusObject for RemoteChar<'_, '_, '_> {
+	fn path(&self) -> &Path {
+		self.get_char().path()
+	}
+	fn uuid(&self) -> &UUID {
+		self.get_char().uuid()
+	}
+}
+impl HasChildren<'_> for RemoteChar<'_, '_, '_> {
+	type Child = RemoteDescriptor;
+	fn get_children(&self) -> Vec<UUID> {
+		self.get_char().get_children()
+	}
+	fn get_child<T: ToUUID>(&'_ mut self, uuid: T) -> Option<Self::Child> {
+		unimplemented!()
+	}
+}
+impl<'a> Characteristic<'a> for RemoteChar<'_, '_, '_> {
     /// Reads a value from the remote device's characteristic.
     fn read(&mut self) -> Result<Pending<Result<CharValue, Error>, Rc<Cell<CharValue>>>, Error> {
         let base = self.get_char_mut();
@@ -1257,9 +1305,6 @@ impl Characteristic for RemoteChar<'_, '_, '_> {
         self.get_blue_mut().resolve(pend).map_err(|e| e.1)?;
         Ok(())
     }
-    fn uuid(&self) -> &str {
-        &self.uuid
-    }
     /*fn service(&self) -> &Path {
         unimplemented!()
     }*/
@@ -1276,7 +1321,42 @@ impl Characteristic for RemoteChar<'_, '_, '_> {
         unimplemented!()
     }
 }
-
+/*
+pub(crate) fn match_chars<'a, T, U, V >(
+        serv: &'a mut V,
+        msg_path: &Path,
+        header: &DynamicHeader,
+    ) -> Option<DbusObject<'a>> 
+		where T: GattDbusObject, //desc
+		      U: GattDbusObject + HasChildren<'a, Child=T> + 'a, //characteristic
+			  V: GattDbusObject + for<'b>HasChildren<'b, Child=U> //service
+	{
+        // eprintln!("Checking for characteristic for match: {:?}", msg_path);
+        let mut components = msg_path.components();
+        if let Component::Normal(path) = components.next().unwrap() {
+            let path = path.to_str().unwrap();
+            if !path.starts_with("char") || path.len() != 8 {
+                return None;
+            }
+			let serv_uuid = serv.uuid().clone();
+            for uuid in serv.get_children() {
+				let mut character = serv.get_child(uuid).unwrap();
+                let char_name = character.path().file_name().unwrap();
+                if let Ok(path) = msg_path.strip_prefix(char_name) {
+                    // eprintln!("match_chars() path: {:?}", path);
+                    if path == OsStr::new("") {
+                        return Some(DbusObject::Char(serv_uuid, character.uuid().clone()));
+                    } else {
+						return match_descs(&mut character, path, header, serv_uuid);
+                    }
+                }
+            }
+            None
+        } else {
+            None
+        }
+    }
+*/
 fn mm_to_charvalue(
     res: MarshalledMessage,
     _data: Option<Rc<Cell<CharValue>>>,
@@ -1292,3 +1372,4 @@ fn mm_to_charvalue(
         _ => unreachable!(),
     }
 }
+

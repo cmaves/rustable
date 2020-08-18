@@ -1,18 +1,14 @@
 use crate::gatt::*;
 use crate::introspect::*;
 use crate::*;
-use rustbus::params::message::Message;
-use std::collections::hash_map::Keys;
 use std::collections::HashMap;
 use std::ffi::OsStr;
 use std::path::{Component, Path, PathBuf};
+use std::borrow::{Borrow, BorrowMut};
 
 /// Describes the methods avaliable on remote and local GATT services
 pub trait Service<'a> {
-    type CharType: Characteristic;
-    /// The Value type for the Keys iterator on `Service::char_uuids()`
-    /// [`Service::char_uuids()`]: ./trait.Service.html#method.char_uuids
-    type Value;
+    type CharType: Characteristic<'a>;
     /// Return the `UUID` of the service.
     fn uuid(&self) -> &UUID;
     /// Return in a service is primary service.
@@ -23,11 +19,12 @@ pub trait Service<'a> {
     /// Get the Bluetooth handle of service
     fn handle(&self) -> u16;
     /// Get an iterator of all the keys on the valu
-    fn char_uuids(&self) -> Keys<UUID, Self::Value>;
+    fn char_uuids(&self) -> Vec<UUID>;
     /// Get a characteristic of a GATT service by UUID.
     fn get_char<T: ToUUID>(&'a mut self, uuid: T) -> Option<Self::CharType>;
+	/// Get the DBus path of the service.
+	fn get_path(&self) -> &Path;
 }
-
 /// `LocalServiceBase` is used to construct local service to be provided by the local GATT server.
 pub struct LocalServiceBase {
     pub(crate) index: u8,
@@ -67,7 +64,7 @@ impl LocalServiceBase {
         }
         character.index = self.char_index;
         self.char_index += 1;
-        eprintln!("Adding char: {:?}\nto\n{:?}", character, self.uuid);
+        // eprintln!("Adding char: {:?}\nto\n{:?}", character, self.uuid);
         self.chars.insert(character.uuid.clone(), character);
     }
     /// Handle method calls on the local servic
@@ -84,34 +81,32 @@ impl LocalServiceBase {
             character.update_path(&self.path);
         }
     }
-    pub(crate) fn match_chars(
-        &mut self,
-        msg_path: &Path,
-        header: &DynamicHeader,
-    ) -> Option<DbusObject> {
-        // eprintln!("Checking for characteristic for match: {:?}", msg_path);
-        let mut components = msg_path.components();
-        if let Component::Normal(path) = components.next().unwrap() {
-            let path = path.to_str().unwrap();
-            if !path.starts_with("char") || path.len() != 8 {
-                return None;
-            }
-            for character in self.chars.values_mut() {
-                let char_name = character.path.file_name().unwrap();
-                if let Ok(path) = msg_path.strip_prefix(char_name) {
-                    // eprintln!("match_chars() path: {:?}", path);
-                    if path == OsStr::new("") {
-                        return Some(DbusObject::Char(character));
-                    } else {
-                        return character.match_descs(path, header);
-                    }
-                }
-            }
-            None
-        } else {
-            None
-        }
-    }
+
+}
+/*
+impl AsRef<LocalServiceBase> for LocalServiceBase {
+	fn as_ref(&self) -> &LocalServiceBase {
+		&self
+	}
+}
+*/
+impl GattDbusObject for LocalServiceBase {
+	fn path(&self) -> &Path {
+		&self.path
+	}
+	fn uuid(&self) -> &UUID {
+		&self.uuid
+	}
+}
+impl<'a> HasChildren<'a> for LocalServiceBase {
+	type Child = &'a mut LocalCharBase;
+	fn get_children(&self) -> Vec<UUID> {
+		self.chars.keys().map(|x| x.clone()).collect()
+	}
+	fn get_child<T: ToUUID>(&'a mut self, uuid: T) -> Option<Self::Child> {
+		let uuid = uuid.to_uuid();
+		self.chars.get_mut(&uuid)
+	}
 }
 /// Struct representing service currently being hosted by the local GATT server
 pub struct LocalService<'a> {
@@ -123,13 +118,12 @@ pub struct LocalService<'a> {
 
 impl<'a, 'b: 'a, 'c: 'a, 'd: 'a> Service<'a> for LocalService<'b> {
     type CharType = LocalCharactersitic<'a, 'b>;
-    type Value = LocalCharBase;
     fn uuid(&self) -> &UUID {
         &self.uuid
     }
-    fn char_uuids(&self) -> Keys<UUID, Self::Value> {
+    fn char_uuids(&self) -> Vec<UUID> {
         let service = self.get_service_base();
-        service.chars.keys()
+        service.chars.keys().map(|k| k.clone()).collect()
     }
     fn primary(&self) -> bool {
         let service = self.get_service_base();
@@ -154,6 +148,9 @@ impl<'a, 'b: 'a, 'c: 'a, 'd: 'a> Service<'a> for LocalService<'b> {
     fn handle(&self) -> u16 {
         unimplemented!()
     }
+	fn get_path(&self) -> &Path {
+		&self.get_service_base().path
+	}
 }
 
 impl<'a> LocalService<'a> {
@@ -283,6 +280,24 @@ impl RemoteServiceBase {
         })
     }
 }
+impl GattDbusObject for RemoteServiceBase {
+	fn path(&self) -> &Path {
+		&self.path
+	}
+	fn uuid(&self) -> &UUID {
+		&self.uuid
+	}
+}
+impl<'a> HasChildren<'a> for RemoteServiceBase {
+	type Child = RemoteCharBase;
+	fn get_children(&self) -> Vec<UUID> {
+		self.chars.keys().map(|x| x.clone()).collect()
+	}
+	fn get_child<T: ToUUID>(&'a mut self, uuid: T) -> Option<Self::Child> {
+		unimplemented!()
+	}
+
+}
 impl TryFrom<&Message<'_, '_>> for RemoteServiceBase {
     type Error = Error;
     fn try_from(_value: &Message) -> Result<Self, Self::Error> {
@@ -322,7 +337,6 @@ impl RemoteService<'_, '_> {
 
 impl<'a, 'b: 'a, 'c: 'a> Service<'a> for RemoteService<'b, 'c> {
     type CharType = RemoteChar<'a, 'b, 'c>;
-    type Value = RemoteCharBase;
     fn uuid(&self) -> &UUID {
         &self.get_service().uuid
     }
@@ -340,8 +354,8 @@ impl<'a, 'b: 'a, 'c: 'a> Service<'a> for RemoteService<'b, 'c> {
     fn handle(&self) -> u16 {
         unimplemented!()
     }
-    fn char_uuids(&self) -> Keys<UUID, Self::Value> {
-        self.get_service().chars.keys()
+    fn char_uuids(&self) -> Vec<UUID> {
+        self.get_service().chars.keys().map(|k| k.clone()).collect()
     }
     fn get_char<T: ToUUID>(&'a mut self, uuid: T) -> Option<Self::CharType> {
         let uuid = uuid.to_uuid();
@@ -356,4 +370,48 @@ impl<'a, 'b: 'a, 'c: 'a> Service<'a> for RemoteService<'b, 'c> {
             None
         }
     }
+	fn get_path(&self) -> &Path {
+		&self.get_service().path
+	}
 }
+impl GattDbusObject for RemoteService<'_, '_> {
+	fn path(&self) -> &Path {
+		self.get_service().path()
+	}
+	fn uuid(&self) -> &UUID {
+		self.get_service().uuid()
+	}
+}
+
+/*
+pub(crate) fn match_service<'a, T, U, V, W>(device: &'a mut W, msg_path: &Path, msg: &DynamicHeader) -> Option<DbusObject<'a>>
+		where T: GattDbusObject + 'a , // descriptor
+		      U: GattDbusObject + for<'b>HasChildren<'b, Child=T> + 'a, // character
+			  V: GattDbusObject + for<'b>HasChildren<'b, Child=U> + 'a, // service
+			  W: HasChildren<'a, Child=V> // device
+
+{
+        // eprintln!("Checking for service for match");
+        let mut components = msg_path.components().take(2);
+        if let Component::Normal(path) = components.next().unwrap() {
+            let path = path.to_str()?;
+            if !path.starts_with("service") {
+                return None;
+            }
+            for uuid in device.get_children() {
+				let mut service = device.get_child(&uuid).unwrap();
+				let service_str = service.path().file_name().unwrap();
+                if let Ok(path) = msg_path.strip_prefix(&service_str) {
+                    if let Some(_) = path.components().next() { // check to see if there is more to this
+						return match_chars(&mut service, path, msg);
+                    } else {
+                        return Some(DbusObject::Serv(service.uuid().clone()));
+                    }
+                }
+            }
+            None
+        } else {
+            None
+        }
+}
+*/

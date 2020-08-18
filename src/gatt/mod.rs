@@ -101,7 +101,7 @@ fn match_char(gdo: &mut LocalCharBase, path: &Path) -> Option<Option<UUID>>
 {
 	match path.strip_prefix(gdo.path().file_name().unwrap()) {
 		Ok(remaining) => if remaining == Path::new("") {
-			Some((gdo.uuid().clone(), None))
+			Some(None)
 		} else {
 			let r_str = remaining.to_str().unwrap();
 			if r_str.len() != 8 || &r_str[..4] != "desc" {
@@ -109,7 +109,7 @@ fn match_char(gdo: &mut LocalCharBase, path: &Path) -> Option<Option<UUID>>
 			}
 			for uuid in gdo.get_children() {
 				if match_object(&gdo.get_child(&uuid).unwrap(), remaining) {
-					return Some((gdo.uuid().clone(), Some(uuid)));
+					return Some(Some(uuid));
 				}
 			}
 			None
@@ -117,12 +117,12 @@ fn match_char(gdo: &mut LocalCharBase, path: &Path) -> Option<Option<UUID>>
 		Err(_) => None
 	}
 }
-fn match_serv(gdo: &mut LocalServiceBase, path: &Path) -> 
-	Option<(UUID, Option<(UUID, Option<UUID>)>)>
+pub fn match_serv(gdo: &mut LocalServiceBase, path: &Path) -> 
+	Option<Option<(UUID, Option<UUID>)>>
 {
 	match path.strip_prefix(gdo.path().file_name().unwrap()) {
 		Ok(remaining) => if remaining == Path::new("") {
-			Some((gdo.uuid().clone(), None))
+			Some(None)
 		} else {
 			let r_str = remaining.to_str().unwrap();
 			if (r_str.len() != 8 && r_str.len() != 17) || &r_str[..4] != "char" {
@@ -130,7 +130,7 @@ fn match_serv(gdo: &mut LocalServiceBase, path: &Path) ->
 			}
 			for uuid in gdo.get_children() {
 				if let Some(matc) = match_char(&mut gdo.get_child(&uuid).unwrap(), remaining) {
-					return Some((gdo.uuid().clone(), Some(matc)));
+					return Some(Some((uuid, matc)));
 				}
 			}
 			None
