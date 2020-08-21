@@ -278,7 +278,7 @@ impl Bluetooth {
             MessageType::Error => true,
             MessageType::Reply => true,
             MessageType::Invalid => false,
-            MessageType::Signal => false,
+            MessageType::Signal => true,
         }));
         ret.set_filter_dest(Some(BLUEZ_DEST.to_string()))?;
         Ok(ret)
@@ -360,7 +360,7 @@ impl Bluetooth {
         })
     }
     /// Gets a `HashSet` of known devices' `MAC` addresses.
-    pub fn devices(&self) -> HashSet<MAC> {
+    pub fn devices(&self) -> Vec<MAC> {
         self.devices.keys().map(|x| x.clone()).collect()
     }
     fn register_adv(&mut self, adv_idx: usize) -> Result<(), Error> {
@@ -786,7 +786,7 @@ impl Bluetooth {
             match sig.dynheader.interface.as_ref().unwrap().as_str() {
                 OBJ_MANAGER_IF_STR => match sig.dynheader.member.as_ref().unwrap().as_str() {
                     IF_ADDED_SIG => self.interface_added(sig)?,
-                    IF_REMOVED_SIG => unimplemented!(),
+                    IF_REMOVED_SIG => self.interface_removed(sig)?,
                     _ => (),
                 },
                 DBUS_IF_STR => match sig.dynheader.member.as_ref().unwrap().as_str() {
@@ -804,7 +804,11 @@ impl Bluetooth {
                                 self.clear_devices();
                             }
                         }
-                    }
+                    },
+					PROP_CHANGED_SIG => {
+						unimplemented!()
+
+					},
                     _ => (),
                 },
                 _ => (),
@@ -813,29 +817,42 @@ impl Bluetooth {
         Ok(())
     }
     fn interface_added(&mut self, sig: MarshalledMessage) -> Result<(), Error> {
-        let (path, interface_dict): (ObjectPath, HashMap<String, HashMap<String, Variant>>) =
-            sig.body.parser().get2()?;
-        let path: &Path = path.as_ref().as_ref();
-        let path = if let Ok(path) = path.strip_prefix(&self.blue_path) {
-            path
-        } else {
-            return Ok(());
-        };
-        let mut comps = path.components();
-        let device = comps.next();
-        let service = comps.next();
-        let _character = comps.next();
-        let _desc = comps.next();
-        let _end = comps.next();
-        if let Some(Component::Normal(_device)) = device {
-            if let Some(Component::Normal(_service)) = service {
-                unimplemented!()
-            } else {
-                unimplemented!()
-            }
-        }
-        Ok(())
+		match self.match_remote(&sig.dynheader) {
+			Some((mac, Some((serv_uuid, child_uuid)))) => {
+				let mut dev = self.devices.get_mut(&mac).unwrap();
+				let mut serv = dev.services.get_mut(&serv_uuid).unwrap();
+				match child_uuid {
+					Some((char_uuid, child_uuid)) => {
+						unimplemented!()
+					},
+					None => {
+						let mut i_and_p: HashMap<String, HashMap<String, Variant>> = sig.body.parser().get()?;
+						match i_and_p.remove("org.bluez.GattService1") {
+							Some(props) => serv.update_all(props),
+							None => Ok(())
+						}
+					}
+				}
+
+			},
+			_ => Ok(())
+		}
     }
+	fn interface_removed(&mut self, sig: MarshalledMessage) -> Result<(), Error> {
+		match self.match_remote(&sig.dynheader) {
+			Some((mac, child_uuid)) => {
+				match child_uuid {
+					Some((serv_uuid, child_uuid)) => {
+						unimplemented!()
+					},
+					None => {
+						unimplemented!()
+					}
+				}
+			},
+			None => Ok(())
+		}
+	}
     fn match_root(&mut self, dynheader: &DynamicHeader) -> DbusObject {
         let path = self.get_path();
         if let None = &dynheader.interface {
@@ -864,6 +881,23 @@ impl Bluetooth {
             }
         }
     }
+	fn match_remote(&mut self, header: &DynamicHeader) 
+		-> Option<(MAC, Option<(UUID, Option<(UUID, Option<UUID>)>)>)> 
+	{
+		let path: &Path = header.object.as_ref().unwrap().as_ref();
+		let path = match path.strip_prefix(self.blue_path.as_ref()) {
+			Ok(p) => p,
+			Err(_) => return None,
+		};
+		let first_comp = match path.components().next() {
+			Some(Component::Normal(p)) => p.to_str().unwrap(),
+			_ => return None,
+		};
+		let mac = devmac_to_mac(first_comp)?;
+		let mut dev = self.devices.get_mut(&mac)?;
+		let uuids = dev.match_dev(path.strip_prefix(&first_comp).unwrap())?;
+		Some((mac, uuids))
+	}
     fn match_services(&mut self, path: &Path) -> Option<(UUID, Option<(UUID, Option<UUID>)>)> {
         let r_str = path.to_str().unwrap();
         if (r_str.len() != 8 && r_str.len() != 17 && r_str.len() != 26) || &r_str[..4] != "serv" {
@@ -1166,13 +1200,17 @@ pub fn validate_devmac(devmac: &str) -> bool {
     true
 }
 pub fn devmac_to_mac(devmac: &str) -> Option<MAC> {
-    let mut ret = String::with_capacity(18);
+	if !validate_devmac(&devmac) {
+		return None;
+	}
+    let mut ret = String::with_capacity(17);
+	let devmac = &devmac[3..];
     for i in 0..5 {
-        let tar = i * 3;
+        let tar = i * 3 + 1;
         ret.push_str(&devmac[tar..tar + 2]);
         ret.push(':');
     }
-    ret.push_str(&devmac[15..17]);
+    ret.push_str(&devmac[16..18]);
     Some(ret.into())
 }
 /*
@@ -1597,122 +1635,3 @@ impl<'r, 'buf: 'r> Unmarshal<'r, 'buf> for Variant<'buf> {
         ))
     }
 }
-/*
-pub enum Variant {
-    Double(u64),
-    Byte(u8),
-    Int16(i16),
-    Uint16(u16),
-    Int32(i32),
-    Uint32(u32),
-    UnixFd(u32),
-    Int64(i64),
-    Uint64(u64),
-    String(String),
-    Signature(String),
-    ObjectPath(PathBuf),
-    Boolean(bool),
-    /*
-    Variant(usize, Vec<u8>),
-    VariantRef(usize, &'a [u8]),
-    DictRef(&'a HashMap<&K, &T>),
-    ArrayRef(&'a [T]),
-    Dict(HashMap<K, K>),
-    Array(Vec<T>),
-    */
-}
-impl Signature for Variant {
-    fn signature() -> signature::Type {
-        signature::Type::Container(signature::Container::Variant)
-    }
-    fn alignment() -> usize {
-        Self::signature().get_alignment()
-    }
-}
-
-impl<'r, 'buf: 'r> Unmarshal<'r, 'buf> for Variant {
-    fn unmarshal(
-        byteorder: ByteOrder,
-        buf: &'buf [u8],
-        offset: usize,
-    ) -> unmarshal::UnmarshalResult<Self> {
-        let sig_len = buf[offset];
-        let child_offset = offset + 1 + sig_len as usize;
-        let sig_str = std::str::from_utf8(&buf[offset + 1..child_offset])
-            .map_err(|_| unmarshal::Error::InvalidType)?;
-        let types = signature::Type::parse_description(sig_str)
-            .map_err(|_| unmarshal::Error::NoSignature)?;
-        if types.len() != 1 {
-            return Err(unmarshal::Error::NoSignature);
-        }
-        match &types[0] {
-            signature::Type::Base(base) => match base {
-                signature::Base::Byte => {
-                    let (offset, value) = Unmarshal::unmarshal(byteorder, buf, child_offset)?;
-                    Ok((offset, Variant::Byte(value)))
-                }
-                signature::Base::Int16 => {
-                    let (offset, value) = Unmarshal::unmarshal(byteorder, buf, child_offset)?;
-                    Ok((offset, Variant::Int16(value)))
-                }
-                signature::Base::Uint16 => {
-                    let (offset, value) = Unmarshal::unmarshal(byteorder, buf, child_offset)?;
-                    Ok((offset, Variant::Uint16(value)))
-                }
-                signature::Base::Int32 => {
-                    let (offset, value) = Unmarshal::unmarshal(byteorder, buf, child_offset)?;
-                    Ok((offset, Variant::Int32(value)))
-                }
-                signature::Base::Uint32 => {
-                    let (offset, value) = Unmarshal::unmarshal(byteorder, buf, child_offset)?;
-                    Ok((offset, Variant::Uint32(value)))
-                }
-                signature::Base::UnixFd => {
-                    let (offset, value) = Unmarshal::unmarshal(byteorder, buf, child_offset)?;
-                    Ok((offset, Variant::UnixFd(value)))
-                }
-                signature::Base::Int64 => {
-                    let (offset, value) = Unmarshal::unmarshal(byteorder, buf, child_offset)?;
-                    Ok((offset, Variant::Int64(value)))
-                }
-                signature::Base::Uint64 => {
-                    let (offset, value) = Unmarshal::unmarshal(byteorder, buf, child_offset)?;
-                    Ok((offset, Variant::Uint64(value)))
-                }
-                signature::Base::Double => {
-                    let (offset, value) = Unmarshal::unmarshal(byteorder, buf, child_offset)?;
-                    Ok((offset, Variant::Double(value)))
-                }
-                signature::Base::String => {
-                    let (offset, value) = Unmarshal::unmarshal(byteorder, buf, child_offset)?;
-                    Ok((offset, Variant::String(value)))
-                }
-                signature::Base::Signature => {
-                    let (offset, value) = Unmarshal::unmarshal(byteorder, buf, child_offset)?;
-                    match params::validate_signature(value) {
-                        Ok(_) => Ok((offset, Variant::Sig(value))),
-                        Err(_) => Err(unmarshal::Error::NoSignature),
-                    }
-                }
-                signature::Base::ObjectPath => {
-                    let (offset, value) = Unmarshal::unmarshal(byteorder, buf, child_offset)?;
-                    match params::validate_object_path(value) {
-                        Ok(_) => Ok((offset, Variant::ObjectPathRef(value.as_ref()))),
-                        Err(_) => Err(unmarshal::Error::NoSignature),
-                    }
-                }
-                signature::Base::Boolean => {
-                    let (offset, value) = Unmarshal::unmarshal(byteorder, buf, child_offset)?;
-                    Ok((offset, Variant::Boolean(value)))
-                }
-            },
-            signature::Type::Container(on) => match on {
-                signature::Container::Array(_) => unimplemented!(),
-                signature::Container::Struct(_) => unimplemented!(),
-                signature::Container::Dict(_, _) => unimplemented!(),
-                signature::Container::Variant => unimplemented!(),
-            },
-        }
-    }
-}
-*/

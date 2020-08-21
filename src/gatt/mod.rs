@@ -115,7 +115,7 @@ fn match_char(gdo: &mut LocalCharBase, path: &Path) -> Option<Option<UUID>> {
         Err(_) => None,
     }
 }
-pub fn match_serv(gdo: &mut LocalServiceBase, path: &Path) -> Option<Option<(UUID, Option<UUID>)>> {
+pub(crate) fn match_serv(gdo: &mut LocalServiceBase, path: &Path) -> Option<Option<(UUID, Option<UUID>)>> {
     match path.strip_prefix(gdo.path().file_name().unwrap()) {
         Ok(remaining) => {
             if remaining == Path::new("") {
@@ -136,15 +136,15 @@ pub fn match_serv(gdo: &mut LocalServiceBase, path: &Path) -> Option<Option<(UUI
         Err(_) => None,
     }
 }
-fn match_remote_char(gdo: &mut RemoteCharBase, path: &Path) -> Option<(UUID, Option<UUID>)> {
+fn match_remote_char(gdo: &mut RemoteCharBase, path: &Path) -> Option<Option<UUID>> {
     match path.strip_prefix(gdo.path().file_name().unwrap()) {
         Ok(remaining) => {
             if remaining == Path::new("") {
-                Some((gdo.uuid().clone(), None))
+                Some(None)
             } else {
                 for uuid in gdo.get_children() {
                     if match_object(&gdo.get_child(&uuid).unwrap(), remaining) {
-                        return Some((gdo.uuid().clone(), Some(uuid)));
+                        return Some(Some(uuid));
                     }
                 }
                 None
@@ -153,22 +153,22 @@ fn match_remote_char(gdo: &mut RemoteCharBase, path: &Path) -> Option<(UUID, Opt
         Err(_) => None,
     }
 }
-fn match_remote_serv(
+pub(crate) fn match_remote_serv(
     gdo: &mut RemoteServiceBase,
     path: &Path,
-) -> Option<(UUID, Option<(UUID, Option<UUID>)>)>
+) -> Option<Option<(UUID, Option<UUID>)>>
 //U: HasChildren<'b> + GattDbusObject
 {
     match path.strip_prefix(gdo.path().file_name().unwrap()) {
         Ok(remaining) => {
             if remaining == Path::new("") {
-                Some((gdo.uuid().clone(), None))
+                Some(None)
             } else {
                 for uuid in gdo.get_children() {
                     if let Some(matc) =
                         match_remote_char(&mut gdo.get_child(&uuid).unwrap(), remaining)
                     {
-                        return Some((gdo.uuid().clone(), Some(matc)));
+                        return Some(Some((uuid, matc)));
                     }
                 }
                 None

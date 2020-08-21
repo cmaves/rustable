@@ -276,6 +276,9 @@ impl RemoteServiceBase {
             chars: HashMap::new(),
         })
     }
+	pub(crate) fn update_all(&mut self, props: HashMap<String, Variant>) -> Result<(), Error> {
+		unimplemented!()
+	}
 }
 impl GattDbusObject for RemoteServiceBase {
     fn path(&self) -> &Path {
