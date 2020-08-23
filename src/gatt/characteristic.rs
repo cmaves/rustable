@@ -13,14 +13,14 @@ use std::borrow::Borrow;
 use std::cell::Cell;
 use std::convert::TryFrom;
 use std::fmt::Debug;
+use std::mem::MaybeUninit;
 use std::ops::{Deref, DerefMut};
 use std::os::unix::io::RawFd;
-use std::mem::MaybeUninit;
 
 #[derive(Clone, Copy)]
 pub struct CharValue {
     //buf: [u8; 512],
-	buf: [MaybeUninit<u8>; 512],
+    buf: [MaybeUninit<u8>; 512],
     len: usize,
 }
 impl Debug for CharValue {
@@ -33,84 +33,81 @@ impl Debug for CharValue {
     }
 }
 impl CharValue {
-	pub fn new(len: usize) -> Self {
-		assert!(len <= 512);
-		let mut ret = CharValue::default();
-		ret.resize(len, 0);
-		ret
-	}
-	pub fn resize(&mut self, new_len: usize, value: u8) {
-		if self.len < new_len {
-		for i in &mut self.buf[self.len..new_len] {
-			*i = MaybeUninit::new(value);
-		}
-		}
-		self.len = new_len;
-	}
-	pub fn resize_with<F: FnMut() -> u8>(&mut self, new_len: usize, mut f: F) {
-		if self.len < new_len {
-		for i in &mut self.buf[self.len..new_len] {
-			*i = MaybeUninit::new((f)());
-		}
-		}
-		self.len = new_len;
-	}
+    pub fn new(len: usize) -> Self {
+        assert!(len <= 512);
+        let mut ret = CharValue::default();
+        ret.resize(len, 0);
+        ret
+    }
+    pub fn resize(&mut self, new_len: usize, value: u8) {
+        if self.len < new_len {
+            for i in &mut self.buf[self.len..new_len] {
+                *i = MaybeUninit::new(value);
+            }
+        }
+        self.len = new_len;
+    }
+    pub fn resize_with<F: FnMut() -> u8>(&mut self, new_len: usize, mut f: F) {
+        if self.len < new_len {
+            for i in &mut self.buf[self.len..new_len] {
+                *i = MaybeUninit::new((f)());
+            }
+        }
+        self.len = new_len;
+    }
     pub fn as_slice(&self) -> &[u8] {
-		// SAFETY: MaybeUninit<u8> has same layout as u8
-        unsafe {std::mem::transmute(&self.buf[..self.len])}
+        // SAFETY: MaybeUninit<u8> has same layout as u8
+        unsafe { std::mem::transmute(&self.buf[..self.len]) }
     }
     pub fn as_mut_slice(&mut self) -> &mut [u8] {
-		// SAFETY: MaybeUninit<u8> has same layout as u8
-        unsafe {std::mem::transmute(&mut self.buf[..self.len])}
-	}
+        // SAFETY: MaybeUninit<u8> has same layout as u8
+        unsafe { std::mem::transmute(&mut self.buf[..self.len]) }
+    }
     pub fn update(&mut self, slice: &[u8], offset: usize) {
         assert!(offset <= self.len);
         let end = offset + slice.len();
-		for (tar, src) in self.buf[offset..end].iter_mut().zip(slice) {
-			*tar = MaybeUninit::new(*src);
-		}
+        for (tar, src) in self.buf[offset..end].iter_mut().zip(slice) {
+            *tar = MaybeUninit::new(*src);
+        }
         self.len = end;
     }
     pub fn extend_from_slice(&mut self, slice: &[u8]) {
-		let mut iter = slice.iter().map(|x| *x);
-		self.resize_with(self.len + slice.len(), || iter.next().unwrap());
+        let mut iter = slice.iter().map(|x| *x);
+        self.resize_with(self.len + slice.len(), || iter.next().unwrap());
     }
 }
 impl Default for CharValue {
     fn default() -> Self {
-		// SAFETY: assume_init() is safe for arrays if the underlying type is MaybeUninit 
-		let buf: [MaybeUninit<u8>; 512] = unsafe { MaybeUninit::uninit().assume_init() };
-        CharValue {
-            buf,
-            len: 0,
-        }
+        // SAFETY: assume_init() is safe for arrays if the underlying type is MaybeUninit
+        let buf: [MaybeUninit<u8>; 512] = unsafe { MaybeUninit::uninit().assume_init() };
+        CharValue { buf, len: 0 }
     }
 }
 impl Borrow<[u8]> for CharValue {
-	#[inline]
+    #[inline]
     fn borrow(&self) -> &[u8] {
-		self.as_slice()
+        self.as_slice()
     }
 }
 impl From<&[u8]> for CharValue {
     fn from(slice: &[u8]) -> Self {
-		let mut ret = CharValue::default();
-		ret.extend_from_slice(slice);
-		ret
+        let mut ret = CharValue::default();
+        ret.extend_from_slice(slice);
+        ret
     }
 }
 impl Deref for CharValue {
     type Target = [u8];
-	#[inline]
+    #[inline]
     fn deref(&self) -> &Self::Target {
-		self.as_slice()
+        self.as_slice()
     }
 }
 impl DerefMut for CharValue {
-	#[inline]
-	fn deref_mut(&mut self) -> &mut Self::Target {
-		self.as_mut_slice()
-	}
+    #[inline]
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        self.as_mut_slice()
+    }
 }
 
 /// Describes the methods avaliable on GATT characteristics.
@@ -290,12 +287,12 @@ impl<'c, 'd> LocalCharactersitic<'c, 'd> {
         // TODO: implement base for cfg unsafe-opt
         LocalCharactersitic { uuid, service }
     }
-	pub(crate) fn get_blue_mut(&mut self) -> &mut Bluetooth {
-		self.service.bt
-	}
-	pub(crate) fn get_blue(&mut self) -> &Bluetooth {
-		&self.service.bt
-	}
+    pub(crate) fn get_blue_mut(&mut self) -> &mut Bluetooth {
+        self.service.bt
+    }
+    pub(crate) fn get_blue(&mut self) -> &Bluetooth {
+        &self.service.bt
+    }
     pub(crate) fn char_call<'a, 'b>(&mut self, call: MarshalledMessage) -> MarshalledMessage {
         let base = self.get_char_base_mut();
         match &call.dynheader.member.as_ref().unwrap()[..] {
@@ -910,20 +907,20 @@ impl GattDbusObject for LocalCharactersitic<'_, '_> {
 
 impl<'a, 'b: 'a, 'c: 'b> Characteristic<'a> for LocalCharactersitic<'b, 'c> {
     fn read(&mut self) -> Result<Pending<Result<CharValue, Error>, Rc<Cell<CharValue>>>, Error> {
-		let leaking = self.get_blue().leaking.clone();
+        let leaking = self.get_blue().leaking.clone();
         self.check_write_fd()?;
         let base = self.get_char_base_mut();
         Ok(Pending {
             dbus_res: 0,
             typ: Some(PendingType::PreResolved(Ok(base.vf.to_value()))),
             data: Some(Rc::new(Cell::new(CharValue::default()))),
-			leaking,
+            leaking,
         })
     }
     /// Reads the local value of the characteristic. If the value
     /// of the characteristic is given by a function, it will be executed.
     fn read_wait(&mut self) -> Result<CharValue, Error> {
-		unimplemented!()
+        unimplemented!()
     }
     /// For `LocalCharactersitic` this function is identical to `read_wait()`
     /// (This does not not hold true for other implementors of this trait).
@@ -937,7 +934,7 @@ impl<'a, 'b: 'a, 'c: 'b> Characteristic<'a> for LocalCharactersitic<'b, 'c> {
         self.read_wait()
     }
     fn write(&mut self, val: &[u8]) -> Result<Pending<(), ()>, Error> {
-		let leaking = self.get_blue().leaking.clone();
+        let leaking = self.get_blue().leaking.clone();
         self.check_write_fd()?;
         let base = self.get_char_base_mut();
         let val = ValOrFn::Value(val.into());
@@ -946,11 +943,11 @@ impl<'a, 'b: 'a, 'c: 'b> Characteristic<'a> for LocalCharactersitic<'b, 'c> {
             dbus_res: 0,
             typ: Some(PendingType::PreResolved(())),
             data: Some(()),
-			leaking
+            leaking,
         })
     }
     fn write_wait(&mut self, val: &[u8]) -> Result<(), Error> {
-		unimplemented!()
+        unimplemented!()
     }
     /*fn service(&self) -> &Path {
         let base = self.get_char_base();
@@ -1191,14 +1188,11 @@ impl<'a, 'b, 'c> RemoteChar<'a, 'b, 'c> {
             }
         }
     }
-	#[inline]
+    #[inline]
     pub fn try_get_notify(&self) -> Result<CharValue, Error> {
-		self.wait_get_notify(Some(Duration::from_secs(0)))
+        self.wait_get_notify(Some(Duration::from_secs(0)))
     }
-    pub fn wait_get_notify(
-        &self,
-        timeout: Option<Duration>,
-    ) -> Result<CharValue, Error> {
+    pub fn wait_get_notify(&self, timeout: Option<Duration>) -> Result<CharValue, Error> {
         let base = self.get_char();
         let fd = match base.notify_fd {
             Some(fd) => fd,
@@ -1208,7 +1202,7 @@ impl<'a, 'b, 'c> RemoteChar<'a, 'b, 'c> {
             Some(dur) => dur.as_micros(),
             None => 0,
         };
-		let mut ret = CharValue::new(512);
+        let mut ret = CharValue::new(512);
         let msg = if timeout == 0 {
             socket::recvmsg(
                 fd,
@@ -1226,16 +1220,16 @@ impl<'a, 'b, 'c> RemoteChar<'a, 'b, 'c> {
                 socket::MsgFlags::empty(),
             )?
         };
-		ret.resize(msg.bytes, 0);
-		Ok(ret)
+        ret.resize(msg.bytes, 0);
+        Ok(ret)
     }
     pub fn get_notify_fd(&self) -> Option<RawFd> {
         let base = self.get_char();
         base.notify_fd
     }
     fn get_blue(&mut self) -> &Bluetooth {
-		&self.service.dev.blue
-	}
+        &self.service.dev.blue
+    }
     fn get_blue_mut(&mut self) -> &mut Bluetooth {
         self.service.dev.blue
     }
@@ -1289,7 +1283,7 @@ impl HasChildren<'_> for RemoteChar<'_, '_, '_> {
 impl<'a> Characteristic<'a> for RemoteChar<'_, '_, '_> {
     /// Reads a value from the remote device's characteristic.
     fn read(&mut self) -> Result<Pending<Result<CharValue, Error>, Rc<Cell<CharValue>>>, Error> {
-		let leaking = self.get_blue().leaking.clone();
+        let leaking = self.get_blue().leaking.clone();
         let base = self.get_char_mut();
         let path = base.path.to_str().unwrap().to_string();
         let mut msg = MessageBuilder::new()
@@ -1312,7 +1306,7 @@ impl<'a> Characteristic<'a> for RemoteChar<'_, '_, '_> {
             data: Some(Rc::new(Cell::new(CharValue::default()))), // TODO: update
             dbus_res: res_idx,
             typ: Some(PendingType::MessageCb(&mm_to_charvalue)),
-			leaking
+            leaking,
         })
         /*loop {
             blue.process_requests()?;
@@ -1387,10 +1381,7 @@ pub(crate) fn match_chars<'a, T, U, V >(
         }
     }
 */
-fn mm_to_charvalue(
-    res: MarshalledMessage,
-    _data: Rc<Cell<CharValue>>,
-) -> Result<CharValue, Error> {
+fn mm_to_charvalue(res: MarshalledMessage, _data: Rc<Cell<CharValue>>) -> Result<CharValue, Error> {
     match res.typ {
         MessageType::Reply => {
             let buf: &[u8] = res.body.parser().get()?;

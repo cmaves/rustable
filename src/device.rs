@@ -87,35 +87,40 @@ impl RemoteDeviceBase {
             services: HashMap::new(),
         })
     }
-    pub(crate) fn match_dev(&mut self, path: &Path) -> Option<Option<(UUID, Option<(UUID, Option<UUID>)>)>> {
-	    match path.strip_prefix(self.path().file_name().unwrap()) {
-	        Ok(remaining) => {
-	            if remaining == Path::new("") {
-	                Some(None)
-	            } else {
-	                let r_str = remaining.to_str().unwrap();
-					if &r_str[..4] != "serv" {
-						return None;
-					}
-	                for uuid in self.get_children() {
-	                    if let Some(matc) = match_remote_serv(&mut self.get_child(&uuid).unwrap(), remaining) {
-							return Some(Some((uuid, matc)));
-	                    }
-	                }
-	                None
-	            }
-	        }
-	        Err(_) => None,
-	    }
-	}
+    pub(crate) fn match_dev(
+        &mut self,
+        path: &Path,
+    ) -> Option<Option<(UUID, Option<(UUID, Option<UUID>)>)>> {
+        match path.strip_prefix(self.path().file_name().unwrap()) {
+            Ok(remaining) => {
+                if remaining == Path::new("") {
+                    Some(None)
+                } else {
+                    let r_str = remaining.to_str().unwrap();
+                    if &r_str[..4] != "serv" {
+                        return None;
+                    }
+                    for uuid in self.get_children() {
+                        if let Some(matc) =
+                            match_remote_serv(&mut self.get_child(&uuid).unwrap(), remaining)
+                        {
+                            return Some(Some((uuid, matc)));
+                        }
+                    }
+                    None
+                }
+            }
+            Err(_) => None,
+        }
+    }
 }
 impl GattDbusObject for RemoteDeviceBase {
-	fn path(&self) -> &Path {
-		&self.path
-	}
-	fn uuid(&self) -> &UUID {
-		&self.mac
-	}
+    fn path(&self) -> &Path {
+        &self.path
+    }
+    fn uuid(&self) -> &UUID {
+        &self.mac
+    }
 }
 impl<'a> HasChildren<'a> for RemoteDeviceBase {
     type Child = &'a mut RemoteServiceBase;

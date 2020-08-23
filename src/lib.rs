@@ -37,6 +37,7 @@ use rustbus::wire::unmarshal;
 use rustbus::wire::unmarshal::traits::Unmarshal;
 use rustbus::wire::unmarshal::Error as UnmarshalError;
 use rustbus::{get_system_bus_path, ByteOrder};
+use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::convert::{TryFrom, TryInto};
 use std::ffi::OsString;
@@ -45,22 +46,11 @@ use std::fmt::{Debug, Display, Formatter};
 use std::num::ParseIntError;
 use std::path::{Component, Path, PathBuf};
 use std::rc::Rc;
-use std::cell::{Cell, RefCell};
 mod bluetooth_cb;
 
 enum PendingType<T: 'static, U: 'static> {
     MessageCb(&'static dyn Fn(MarshalledMessage, U) -> T),
     PreResolved(T),
-}
-struct PendingDropCheck {}
-
-#[cfg(debug)]
-impl Drop for PendingDropCheck {
-    fn drop(&mut self) {
-        eprintln!(
-            "Error Pending was droppped without being resolved, this can result a resource leak."
-        );
-    }
 }
 pub struct Pending<T: 'static, U: 'static> {
     dbus_res: u32,
@@ -69,15 +59,17 @@ pub struct Pending<T: 'static, U: 'static> {
     leaking: Rc<RefCell<VecDeque<(u32, Box<dyn FnOnce(MarshalledMessage)>)>>>,
 }
 impl<T: 'static, U: 'static> Drop for Pending<T, U> {
-	fn drop(&mut self) {
-		if let Some(PendingType::MessageCb(cb)) = self.typ.take() {
-			let data = self.data.take().unwrap();
-			let fo_cb = move |call: MarshalledMessage| {
-				(cb)(call, data);
-			};
-			self.leaking.borrow_mut().push_back((self.dbus_res, Box::new(fo_cb)));
-		}
-	}
+    fn drop(&mut self) {
+        if let Some(PendingType::MessageCb(cb)) = self.typ.take() {
+            let data = self.data.take().unwrap();
+            let fo_cb = move |call: MarshalledMessage| {
+                (cb)(call, data);
+            };
+            self.leaking
+                .borrow_mut()
+                .push_back((self.dbus_res, Box::new(fo_cb)));
+        }
+    }
 }
 pub enum ResolveError<T: 'static, U: 'static> {
     StillPending(Pending<T, U>),
@@ -116,10 +108,10 @@ impl ToUUID for &str {
     }
 }
 impl ToUUID for String {
-	fn to_uuid(self) -> UUID {
-		assert!(validate_uuid(&self));
-		self.into()
-	}
+    fn to_uuid(self) -> UUID {
+        assert!(validate_uuid(&self));
+        self.into()
+    }
 }
 impl ToUUID for UUID {
     fn to_uuid(self) -> UUID {
@@ -174,13 +166,13 @@ pub trait ToMAC {
 impl ToMAC for &str {
     fn to_mac(self) -> MAC {
         assert!(validate_mac(self));
-		self.into()
+        self.into()
     }
 }
 impl ToMAC for String {
     fn to_mac(self) -> MAC {
         assert!(validate_mac(&self));
-		self.into()
+        self.into()
     }
 }
 
@@ -197,7 +189,7 @@ pub enum Error {
     DbusReqErr(String),
     Bluez(String),
     BadInput(String),
-	NoFd(String),
+    NoFd(String),
     Unix(nix::Error),
 }
 impl From<nix::Error> for Error {
@@ -260,10 +252,10 @@ pub struct Bluetooth {
     ad_index: u16,
     devices: HashMap<MAC, RemoteDeviceBase>,
     comp_map: HashMap<OsString, MAC>,
-	powered: Rc<Cell<bool>>,
-	discoverable: Rc<Cell<bool>>,
-	leaking: Rc<RefCell<VecDeque<(u32,Box<dyn FnOnce(MarshalledMessage)>)>>>,
-	addr: MAC,
+    powered: Rc<Cell<bool>>,
+    discoverable: Rc<Cell<bool>>,
+    leaking: Rc<RefCell<VecDeque<(u32, Box<dyn FnOnce(MarshalledMessage)>)>>>,
+    addr: MAC,
 }
 impl Bluetooth {
     /// Creates a new `Bluetooth` and setup a DBus client to interact with Bluez.
@@ -289,7 +281,6 @@ impl Bluetooth {
         path.push_str(&dbus_name.replace(".", "/"));
         let path = PathBuf::from(path);
 
-
         let blue_path: &Path = blue_path.as_ref();
         let mut ret = Bluetooth {
             rpc_con,
@@ -305,10 +296,10 @@ impl Bluetooth {
             ad_index: 0,
             devices: HashMap::new(),
             comp_map: HashMap::new(),
-			leaking: Rc::new(RefCell::new(VecDeque::new())),
-			powered: Rc::new(Cell::new(false)),
-			discoverable: Rc::new(Cell::new(false)),
-			addr: "00:00:00:00:00:00".into(),
+            leaking: Rc::new(RefCell::new(VecDeque::new())),
+            powered: Rc::new(Cell::new(false)),
+            discoverable: Rc::new(Cell::new(false)),
+            addr: "00:00:00:00:00:00".into(),
         };
         ret.rpc_con.set_filter(Box::new(move |msg| match msg.typ {
             MessageType::Call => true,
@@ -318,47 +309,63 @@ impl Bluetooth {
             MessageType::Signal => true,
         }));
         ret.set_filter(Some(BLUEZ_DEST.to_string()))?;
-		ret.update_adapter_props()?;
+        ret.update_adapter_props()?;
         Ok(ret)
     }
-	pub fn update_adapter_props(&mut self) -> Result<(), Error> {
-		// TODO: should this return a Pending
-		// get properties of local adapter
-		let mut msg = MessageBuilder::new().call("GetAll".to_string())
-			.with_interface(PROP_IF_STR.to_string())
-			.on(self.blue_path.to_str().unwrap().to_string())
-			.at(BLUEZ_DEST.to_string()).build();
-		msg.body.push_param(ADAPTER_IF_STR.to_string()).unwrap();
-		let res_idx = self.rpc_con.send_message(&mut msg, Timeout::Infinite)?;
-		let res = self.rpc_con.wait_response(res_idx, Timeout::Infinite)?;
-		let mut blue_props: HashMap<String, Variant> = res.body.parser().get()?;
-		let powered = match blue_props.remove("Powered") {
-			Some(var) => var.get()?,
-			None => return Err(Error::DbusReqErr("No 'Powered' property was present on adapter!".to_string()))
-		};
-		let addr = match blue_props.remove("Address") {
-			Some(var) => {
-				let addr_str: String = var.get()?;
-				if validate_mac(&addr_str) {
-					addr_str.to_mac()
-				} else {
-					return Err(Error::DbusReqErr("'Address' property was in invalid format!".to_string()))
-				}
-			},
-			None => return Err(Error::DbusReqErr("No 'Address' property was present on adapter!".to_string()))
-		};
-		let discoverable = match blue_props.remove("Discoverable") {
-			Some(var) => var.get()?,
-			None => return Err(Error::DbusReqErr("No 'Discoverable' property was present on adapter!".to_string()))
-		};
-		self.powered.replace(powered);
-		self.discoverable.replace(discoverable);
-		self.addr = addr;
-		Ok(())
-	}
-	pub fn addr(&self) -> &MAC {
-		&self.addr
-	}
+    pub fn update_adapter_props(&mut self) -> Result<(), Error> {
+        // TODO: should this return a Pending
+        // get properties of local adapter
+        let mut msg = MessageBuilder::new()
+            .call("GetAll".to_string())
+            .with_interface(PROP_IF_STR.to_string())
+            .on(self.blue_path.to_str().unwrap().to_string())
+            .at(BLUEZ_DEST.to_string())
+            .build();
+        msg.body.push_param(ADAPTER_IF_STR.to_string()).unwrap();
+        let res_idx = self.rpc_con.send_message(&mut msg, Timeout::Infinite)?;
+        let res = self.rpc_con.wait_response(res_idx, Timeout::Infinite)?;
+        let mut blue_props: HashMap<String, Variant> = res.body.parser().get()?;
+        let powered = match blue_props.remove("Powered") {
+            Some(var) => var.get()?,
+            None => {
+                return Err(Error::DbusReqErr(
+                    "No 'Powered' property was present on adapter!".to_string(),
+                ))
+            }
+        };
+        let addr = match blue_props.remove("Address") {
+            Some(var) => {
+                let addr_str: String = var.get()?;
+                if validate_mac(&addr_str) {
+                    addr_str.to_mac()
+                } else {
+                    return Err(Error::DbusReqErr(
+                        "'Address' property was in invalid format!".to_string(),
+                    ));
+                }
+            }
+            None => {
+                return Err(Error::DbusReqErr(
+                    "No 'Address' property was present on adapter!".to_string(),
+                ))
+            }
+        };
+        let discoverable = match blue_props.remove("Discoverable") {
+            Some(var) => var.get()?,
+            None => {
+                return Err(Error::DbusReqErr(
+                    "No 'Discoverable' property was present on adapter!".to_string(),
+                ))
+            }
+        };
+        self.powered.replace(powered);
+        self.discoverable.replace(discoverable);
+        self.addr = addr;
+        Ok(())
+    }
+    pub fn addr(&self) -> &MAC {
+        &self.addr
+    }
     pub fn set_filter(&mut self, filter: Option<String>) -> Result<(), Error> {
         match filter {
             Some(name) => {
@@ -596,7 +603,10 @@ impl Bluetooth {
     /// Set the Bluez controller power on (`true`) or off.
     ///
     /// **Calls process_requests()**
-	pub fn set_power(&mut self, on: bool) -> Result<Pending<Result<(), Error>, (Rc<Cell<bool>>, bool, &'static str)>, Error> {
+    pub fn set_power(
+        &mut self,
+        on: bool,
+    ) -> Result<Pending<Result<(), Error>, (Rc<Cell<bool>>, bool, &'static str)>, Error> {
         let mut msg = MessageBuilder::new()
             .call("Set".to_string())
             .on(self.blue_path.to_str().unwrap().to_string())
@@ -604,54 +614,60 @@ impl Bluetooth {
             .at(BLUEZ_DEST.to_string())
             .build();
         msg.body.push_param2(ADAPTER_IF_STR, "Powered").unwrap();
-		msg.body.push_variant(on).unwrap();
+        msg.body.push_variant(on).unwrap();
         let dbus_res = self.rpc_con.send_message(&mut msg, Timeout::Infinite)?;
-		Ok(Pending {
-			typ: Some(PendingType::MessageCb(&bluetooth_cb::set_power_cb)),
-			dbus_res,
-			data: Some((self.powered.clone(), on, bluetooth_cb::POWER)),
-			leaking: self.leaking.clone()
-		})
+        Ok(Pending {
+            typ: Some(PendingType::MessageCb(&bluetooth_cb::set_power_cb)),
+            dbus_res,
+            data: Some((self.powered.clone(), on, bluetooth_cb::POWER)),
+            leaking: self.leaking.clone(),
+        })
     }
     pub fn set_power_wait(&mut self, on: bool) -> Result<(), Error> {
-		let pend = self.set_discoverable(on)?;
-		self.wait_result_variant(pend)
-	}
+        let pend = self.set_discoverable(on)?;
+        self.wait_result_variant(pend)
+    }
     /// Set whether the Bluez controller should be discoverable (`true`) or not.
     ///
     /// **Calls process_requests()**
-	pub fn set_discoverable(&mut self, on: bool) -> Result<Pending<Result<(), Error>, (Rc<Cell<bool>>, bool, &'static str)>, Error> {
+    pub fn set_discoverable(
+        &mut self,
+        on: bool,
+    ) -> Result<Pending<Result<(), Error>, (Rc<Cell<bool>>, bool, &'static str)>, Error> {
         let mut msg = MessageBuilder::new()
             .call("Set".to_string())
             .on(self.blue_path.to_str().unwrap().to_string())
             .with_interface(PROP_IF_STR.to_string())
             .at(BLUEZ_DEST.to_string())
             .build();
-        msg.body.push_param2(ADAPTER_IF_STR, "Discoverable").unwrap();
-		msg.body.push_variant(on).unwrap();
+        msg.body
+            .push_param2(ADAPTER_IF_STR, "Discoverable")
+            .unwrap();
+        msg.body.push_variant(on).unwrap();
         let dbus_res = self.rpc_con.send_message(&mut msg, Timeout::Infinite)?;
-		Ok(Pending {
-			typ: Some(PendingType::MessageCb(&bluetooth_cb::set_power_cb)),
-			dbus_res,
-			data: Some((self.discoverable.clone(), on, bluetooth_cb::DISCOVERABLE)),
-			leaking: self.leaking.clone()
-		})
+        Ok(Pending {
+            typ: Some(PendingType::MessageCb(&bluetooth_cb::set_power_cb)),
+            dbus_res,
+            data: Some((self.discoverable.clone(), on, bluetooth_cb::DISCOVERABLE)),
+            leaking: self.leaking.clone(),
+        })
     }
     pub fn set_discoverable_wait(&mut self, on: bool) -> Result<(), Error> {
-		let pend = self.set_discoverable(on)?;
-		self.wait_result_variant(pend)
-	}
-	fn wait_result_variant<O, U>(&mut self, pend: Pending<Result<O, Error>, U>) -> Result<O, Error> {
-		match self.resolve(pend) {
-			Ok(res) => res,
-			Err((pend, err)) => {
-				Err(err)
-			}
-		}
-	}
-	pub fn power(&mut self) -> bool {
-		self.powered.get()
-	}
+        let pend = self.set_discoverable(on)?;
+        self.wait_result_variant(pend)
+    }
+    fn wait_result_variant<O, U>(
+        &mut self,
+        pend: Pending<Result<O, Error>, U>,
+    ) -> Result<O, Error> {
+        match self.resolve(pend) {
+            Ok(res) => res,
+            Err((pend, err)) => Err(err),
+        }
+    }
+    pub fn power(&mut self) -> bool {
+        self.powered.get()
+    }
     /// Registers the local application's GATT services/characteristics (TODO: descriptors)
     /// with the Bluez controller.
     ///
@@ -734,12 +750,14 @@ impl Bluetooth {
         Ok(())
     }
 
-	fn check_incoming(&self, sender: &str) -> bool {
-		match &self.filter_dest {
-			Some(dest) => !(&dest.0 != sender && (dest.1 == None || dest.1.as_ref().unwrap() != sender)),
-			None => true
-		}
-	}
+    fn check_incoming(&self, sender: &str) -> bool {
+        match &self.filter_dest {
+            Some(dest) => {
+                !(&dest.0 != sender && (dest.1 == None || dest.1.as_ref().unwrap() != sender))
+            }
+            None => true,
+        }
+    }
     /// Process incoming DBus requests for the local application.
     ///
     /// When using `Bluetooth` this function should be called on a regular basis.
@@ -755,28 +773,28 @@ impl Bluetooth {
             self.rpc_con
                 .send_message(&mut response, Timeout::Infinite)?;
         }
-		let mut leaking_bm = self.leaking.borrow_mut();
-		while leaking_bm.len() > 0 {
-			match self.rpc_con.try_get_response(leaking_bm[0].0) {
-				Some(call) => {
-					let (_, cb) = leaking_bm.pop_front().unwrap();
-					(cb)(call);
-				},
-				None => break
-			}
-		}
-		drop(leaking_bm);
+        let mut leaking_bm = self.leaking.borrow_mut();
+        while leaking_bm.len() > 0 {
+            match self.rpc_con.try_get_response(leaking_bm[0].0) {
+                Some(call) => {
+                    let (_, cb) = leaking_bm.pop_front().unwrap();
+                    (cb)(call);
+                }
+                None => break,
+            }
+        }
+        drop(leaking_bm);
         while let Some(call) = self.rpc_con.try_get_call() {
             // eprintln!("received call {:?}", call);
             let interface = (&call.dynheader.interface).as_ref().unwrap();
-			let sender = call.dynheader.sender.as_ref().unwrap();
-			if !self.check_incoming(sender) {
-                    let mut msg = call.dynheader.make_error_response(
-                        BLUEZ_NOT_PERM.to_string(),
-                        Some("Sender is not allowed to perform this action.".to_string()),
-                    );
-                    self.rpc_con.send_message(&mut msg, Timeout::Infinite)?;
-                    continue;
+            let sender = call.dynheader.sender.as_ref().unwrap();
+            if !self.check_incoming(sender) {
+                let mut msg = call.dynheader.make_error_response(
+                    BLUEZ_NOT_PERM.to_string(),
+                    Some("Sender is not allowed to perform this action.".to_string()),
+                );
+                self.rpc_con.send_message(&mut msg, Timeout::Infinite)?;
+                continue;
             }
             let mut reply = match self.match_root(&call.dynheader) {
                 DbusObject::Appl => match interface.as_ref() {
@@ -867,96 +885,88 @@ impl Bluetooth {
         while let Some(sig) = self.rpc_con.try_get_signal() {
             match sig.dynheader.interface.as_ref().unwrap().as_str() {
                 OBJ_MANAGER_IF_STR => {
-					if !self.check_incoming(sig.dynheader.sender.as_ref().unwrap()) { continue; }
-					match sig.dynheader.member.as_ref().unwrap().as_str() {
-                   		IF_ADDED_SIG => self.interface_added(sig)?,
-                   		IF_REMOVED_SIG => self.interface_removed(sig)?,
-                    	_ => (),
-					}
-                },
+                    if !self.check_incoming(sig.dynheader.sender.as_ref().unwrap()) {
+                        continue;
+                    }
+                    match sig.dynheader.member.as_ref().unwrap().as_str() {
+                        IF_ADDED_SIG => self.interface_added(sig)?,
+                        IF_REMOVED_SIG => self.interface_removed(sig)?,
+                        _ => (),
+                    }
+                }
                 DBUS_IF_STR => {
-					if sig.dynheader.sender.unwrap() != "org.freedesktop.Dbus" {
-						continue;
-					}
-					match sig.dynheader.member.as_ref().unwrap().as_str() {
-	                    NAME_LOST_SIG => {
-	                        if let Some(filter) = &mut self.filter_dest {
-	                            let lost_name: &str = sig.body.parser().get()?;
-	                            if filter.0 == lost_name {
-	                                filter.1 = None;
-	                                if self.verbose > 0 {
-	                                    eprintln!(
-	                                        "{} has disconnected for DBus?",
-	                                        self.filter_dest.as_ref().unwrap().0
-	                                    );
-	                                }
-	                                self.clear_devices();
-	                            }
-	                        }
-	                    }
-						NAME_OWNER_CHANGED => {
-	
-						},
-						_ => ()
-					}
-	            },
-				PROP_IF_STR => {
-					if !self.check_incoming(sig.dynheader.sender.as_ref().unwrap()) { continue; }
-					match sig.dynheader.member.as_ref().unwrap().as_str() {
-						PROP_CHANGED_SIG => self.properties_changed(sig)?,
-						_ => ()
-					}
-				}
-				_ => (),
-			}
+                    if sig.dynheader.sender.unwrap() != "org.freedesktop.Dbus" {
+                        continue;
+                    }
+                    match sig.dynheader.member.as_ref().unwrap().as_str() {
+                        NAME_LOST_SIG => {
+                            if let Some(filter) = &mut self.filter_dest {
+                                let lost_name: &str = sig.body.parser().get()?;
+                                if filter.0 == lost_name {
+                                    filter.1 = None;
+                                    if self.verbose > 0 {
+                                        eprintln!(
+                                            "{} has disconnected for DBus?",
+                                            self.filter_dest.as_ref().unwrap().0
+                                        );
+                                    }
+                                    self.clear_devices();
+                                }
+                            }
+                        }
+                        NAME_OWNER_CHANGED => {}
+                        _ => (),
+                    }
+                }
+                PROP_IF_STR => {
+                    if !self.check_incoming(sig.dynheader.sender.as_ref().unwrap()) {
+                        continue;
+                    }
+                    match sig.dynheader.member.as_ref().unwrap().as_str() {
+                        PROP_CHANGED_SIG => self.properties_changed(sig)?,
+                        _ => (),
+                    }
+                }
+                _ => (),
+            }
         }
         Ok(())
     }
-	fn properties_changed(&mut self, sig: MarshalledMessage) -> Result<(), Error> {
-		match self.match_remote(&sig.dynheader) {
-			Some((mac, Some((serv_uuid, child_uuid)))) => {
-				unimplemented!()
-			},
-			_ => Ok(())
-		}
-	}
-    fn interface_added(&mut self, sig: MarshalledMessage) -> Result<(), Error> {
-		match self.match_remote(&sig.dynheader) {
-			Some((mac, Some((serv_uuid, child_uuid)))) => {
-				let mut dev = self.devices.get_mut(&mac).unwrap();
-				let mut serv = dev.services.get_mut(&serv_uuid).unwrap();
-				match child_uuid {
-					Some((char_uuid, child_uuid)) => {
-						unimplemented!()
-					},
-					None => {
-						let mut i_and_p: HashMap<String, HashMap<String, Variant>> = sig.body.parser().get()?;
-						match i_and_p.remove("org.bluez.GattService1") {
-							Some(props) => serv.update_all(props),
-							None => Ok(())
-						}
-					}
-				}
-
-			},
-			_ => Ok(())
-		}
+    fn properties_changed(&mut self, sig: MarshalledMessage) -> Result<(), Error> {
+        match self.match_remote(&sig.dynheader) {
+            Some((mac, Some((serv_uuid, child_uuid)))) => unimplemented!(),
+            _ => Ok(()),
+        }
     }
-	fn interface_removed(&mut self, sig: MarshalledMessage) -> Result<(), Error> {
-		match self.match_remote(&sig.dynheader) {
-			Some((mac, child_uuid)) => {
-				match child_uuid {
-					Some((serv_uuid, child_uuid)) => {
-						unimplemented!()
-					},
-					None => {
-						unimplemented!()
-					}
-				}
-			},
-			None => Ok(())
-		}
-	}
+    fn interface_added(&mut self, sig: MarshalledMessage) -> Result<(), Error> {
+        match self.match_remote(&sig.dynheader) {
+            Some((mac, Some((serv_uuid, child_uuid)))) => {
+                let mut dev = self.devices.get_mut(&mac).unwrap();
+                let mut serv = dev.services.get_mut(&serv_uuid).unwrap();
+                match child_uuid {
+                    Some((char_uuid, child_uuid)) => unimplemented!(),
+                    None => {
+                        let mut i_and_p: HashMap<String, HashMap<String, Variant>> =
+                            sig.body.parser().get()?;
+                        match i_and_p.remove("org.bluez.GattService1") {
+                            Some(props) => serv.update_all(props),
+                            None => Ok(()),
+                        }
+                    }
+                }
+            }
+            _ => Ok(()),
+        }
+    }
+    fn interface_removed(&mut self, sig: MarshalledMessage) -> Result<(), Error> {
+        match self.match_remote(&sig.dynheader) {
+            Some((mac, child_uuid)) => match child_uuid {
+                Some((serv_uuid, child_uuid)) => unimplemented!(),
+                None => unimplemented!(),
+            },
+            None => Ok(()),
+        }
+    }
     fn match_root(&mut self, dynheader: &DynamicHeader) -> DbusObject {
         let path = self.get_path();
         if let None = &dynheader.interface {
@@ -985,23 +995,24 @@ impl Bluetooth {
             }
         }
     }
-	fn match_remote(&mut self, header: &DynamicHeader) 
-		-> Option<(MAC, Option<(UUID, Option<(UUID, Option<UUID>)>)>)> 
-	{
-		let path: &Path = header.object.as_ref().unwrap().as_ref();
-		let path = match path.strip_prefix(self.blue_path.as_ref()) {
-			Ok(p) => p,
-			Err(_) => return None,
-		};
-		let first_comp = match path.components().next() {
-			Some(Component::Normal(p)) => p.to_str().unwrap(),
-			_ => return None,
-		};
-		let mac = devmac_to_mac(first_comp)?;
-		let mut dev = self.devices.get_mut(&mac)?;
-		let uuids = dev.match_dev(path.strip_prefix(&first_comp).unwrap())?;
-		Some((mac, uuids))
-	}
+    fn match_remote(
+        &mut self,
+        header: &DynamicHeader,
+    ) -> Option<(MAC, Option<(UUID, Option<(UUID, Option<UUID>)>)>)> {
+        let path: &Path = header.object.as_ref().unwrap().as_ref();
+        let path = match path.strip_prefix(self.blue_path.as_ref()) {
+            Ok(p) => p,
+            Err(_) => return None,
+        };
+        let first_comp = match path.components().next() {
+            Some(Component::Normal(p)) => p.to_str().unwrap(),
+            _ => return None,
+        };
+        let mac = devmac_to_mac(first_comp)?;
+        let mut dev = self.devices.get_mut(&mac)?;
+        let uuids = dev.match_dev(path.strip_prefix(&first_comp).unwrap())?;
+        Some((mac, uuids))
+    }
     fn match_services(&mut self, path: &Path) -> Option<(UUID, Option<(UUID, Option<UUID>)>)> {
         let r_str = path.to_str().unwrap();
         if (r_str.len() != 9 && r_str.len() != 18 && r_str.len() != 27) || &r_str[..4] != "serv" {
@@ -1071,22 +1082,25 @@ impl Bluetooth {
         }
     }
     */
-    pub fn try_resolve<T, V, U>(&mut self, mut pend: Pending<T, U>) -> Result<T, ResolveError<T, U>> {
-		debug_assert!(Rc::ptr_eq(&self.leaking, &pend.leaking));
+    pub fn try_resolve<T, V, U>(
+        &mut self,
+        mut pend: Pending<T, U>,
+    ) -> Result<T, ResolveError<T, U>> {
+        debug_assert!(Rc::ptr_eq(&self.leaking, &pend.leaking));
         match pend.typ.as_ref().unwrap() {
             PendingType::PreResolved(_) => match pend.typ.take().unwrap() {
-					PendingType::PreResolved(t) => Ok(t),
-					_ => unreachable!()
-			},
+                PendingType::PreResolved(t) => Ok(t),
+                _ => unreachable!(),
+            },
             PendingType::MessageCb(cb) => {
                 if let Err(e) = self.process_requests() {
                     return Err(ResolveError::Error(pend, e));
                 }
                 match self.rpc_con.try_get_response(pend.dbus_res) {
                     Some(res) => {
-						let data = pend.data.take().unwrap();
+                        let data = pend.data.take().unwrap();
                         let ret = (cb)(res, data);
-						pend.typ.take();
+                        pend.typ.take();
                         Ok(ret)
                     }
                     None => Err(ResolveError::StillPending(pend)),
@@ -1095,7 +1109,7 @@ impl Bluetooth {
         }
     }
     pub fn resolve<T, U>(&mut self, mut pend: Pending<T, U>) -> Result<T, (Pending<T, U>, Error)> {
-		debug_assert!(Rc::ptr_eq(&self.leaking, &pend.leaking));
+        debug_assert!(Rc::ptr_eq(&self.leaking, &pend.leaking));
         match pend.typ.take().unwrap() {
             PendingType::PreResolved(t) => Ok(t),
             PendingType::MessageCb(cb) => loop {
@@ -1103,7 +1117,7 @@ impl Bluetooth {
                     break Err((pend, e));
                 }
                 if let Some(res) = self.rpc_con.try_get_response(pend.dbus_res) {
-					let data = pend.data.take().unwrap();
+                    let data = pend.data.take().unwrap();
                     let ret = (cb)(res, data);
                     break Ok(ret);
                 }
@@ -1310,11 +1324,11 @@ pub fn validate_devmac(devmac: &str) -> bool {
     true
 }
 pub fn devmac_to_mac(devmac: &str) -> Option<MAC> {
-	if !validate_devmac(&devmac) {
-		return None;
-	}
+    if !validate_devmac(&devmac) {
+        return None;
+    }
     let mut ret = String::with_capacity(17);
-	let devmac = &devmac[3..];
+    let devmac = &devmac[3..];
     for i in 0..5 {
         let tar = i * 3 + 1;
         ret.push_str(&devmac[tar..tar + 2]);

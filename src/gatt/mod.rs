@@ -115,7 +115,10 @@ fn match_char(gdo: &mut LocalCharBase, path: &Path) -> Option<Option<UUID>> {
         Err(_) => None,
     }
 }
-pub(crate) fn match_serv(gdo: &mut LocalServiceBase, path: &Path) -> Option<Option<(UUID, Option<UUID>)>> {
+pub(crate) fn match_serv(
+    gdo: &mut LocalServiceBase,
+    path: &Path,
+) -> Option<Option<(UUID, Option<UUID>)>> {
     match path.strip_prefix(gdo.path().file_name().unwrap()) {
         Ok(remaining) => {
             if remaining == Path::new("") {
