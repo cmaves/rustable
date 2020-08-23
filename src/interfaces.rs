@@ -97,6 +97,7 @@ pub const UNKNOWN_METHOD: &'static str = "org.dbus.freedesktop.UnknownMethod";
 pub const IF_ADDED_SIG: &'static str = "InterfaceAdded";
 pub const IF_REMOVED_SIG: &'static str = "InterfaceRemoved";
 pub const NAME_LOST_SIG: &'static str = "NameLost";
+pub const NAME_OWNER_CHANGED: &'static str = "NameOwnerChanged";
 
 pub(crate) fn if_dict_to_map<'a, 'b>(
     if_dict: Param<'a, 'b>,
