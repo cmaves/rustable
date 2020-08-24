@@ -325,6 +325,9 @@ impl Bluetooth {
         let res_idx = self.rpc_con.send_message(&mut msg, Timeout::Infinite)?;
         let res = self.rpc_con.wait_response(res_idx, Timeout::Infinite)?;
         let mut blue_props: HashMap<String, Variant> = res.body.parser().get()?;
+        self.update_from_props(blue_props)
+    }
+    fn update_from_props(&mut self, mut blue_props: HashMap<String, Variant>) -> Result<(), Error> {
         let powered = match blue_props.remove("Powered") {
             Some(var) => var.get()?,
             None => {
@@ -934,13 +937,23 @@ impl Bluetooth {
     }
     fn properties_changed(&mut self, sig: MarshalledMessage) -> Result<(), Error> {
         match self.match_remote(&sig.dynheader) {
-            Some((mac, Some((serv_uuid, child_uuid)))) => unimplemented!(),
+            Some(None) => {
+                let mut parser = sig.body.parser();
+                let interface: &str = parser.get()?;
+                if interface == ADAPTER_IF_STR {
+                    let blue_props: HashMap<String, Variant> = parser.get()?;
+                    self.update_from_props(blue_props)
+                } else {
+                    Ok(())
+                }
+            }
+            Some(Some((mac, Some((serv_uuid, child_uuid))))) => unimplemented!(),
             _ => Ok(()),
         }
     }
     fn interface_added(&mut self, sig: MarshalledMessage) -> Result<(), Error> {
         match self.match_remote(&sig.dynheader) {
-            Some((mac, Some((serv_uuid, child_uuid)))) => {
+            Some(Some((mac, Some((serv_uuid, child_uuid))))) => {
                 let mut dev = self.devices.get_mut(&mac).unwrap();
                 let mut serv = dev.services.get_mut(&serv_uuid).unwrap();
                 match child_uuid {
@@ -960,11 +973,11 @@ impl Bluetooth {
     }
     fn interface_removed(&mut self, sig: MarshalledMessage) -> Result<(), Error> {
         match self.match_remote(&sig.dynheader) {
-            Some((mac, child_uuid)) => match child_uuid {
+            Some(Some((mac, child_uuid))) => match child_uuid {
                 Some((serv_uuid, child_uuid)) => unimplemented!(),
                 None => unimplemented!(),
             },
-            None => Ok(()),
+            Some(None) | None => Ok(()),
         }
     }
     fn match_root(&mut self, dynheader: &DynamicHeader) -> DbusObject {
@@ -998,7 +1011,7 @@ impl Bluetooth {
     fn match_remote(
         &mut self,
         header: &DynamicHeader,
-    ) -> Option<(MAC, Option<(UUID, Option<(UUID, Option<UUID>)>)>)> {
+    ) -> Option<Option<(MAC, Option<(UUID, Option<(UUID, Option<UUID>)>)>)>> {
         let path: &Path = header.object.as_ref().unwrap().as_ref();
         let path = match path.strip_prefix(self.blue_path.as_ref()) {
             Ok(p) => p,
@@ -1006,12 +1019,13 @@ impl Bluetooth {
         };
         let first_comp = match path.components().next() {
             Some(Component::Normal(p)) => p.to_str().unwrap(),
+            None => return Some(None),
             _ => return None,
         };
         let mac = devmac_to_mac(first_comp)?;
         let mut dev = self.devices.get_mut(&mac)?;
         let uuids = dev.match_dev(path.strip_prefix(&first_comp).unwrap())?;
-        Some((mac, uuids))
+        Some(Some((mac, uuids)))
     }
     fn match_services(&mut self, path: &Path) -> Option<(UUID, Option<(UUID, Option<UUID>)>)> {
         let r_str = path.to_str().unwrap();
