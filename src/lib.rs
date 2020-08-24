@@ -1751,7 +1751,8 @@ impl<'r, 'buf: 'r> Unmarshal<'r, 'buf> for Variant<'buf> {
         offset: usize,
     ) -> unmarshal::UnmarshalResult<Self> {
         // let padding = rustbus::wire::util::align_offset(Self::get_alignment());
-        let (offset, desc) = rustbus::wire::util::unmarshal_signature(&buf[offset..])?;
+        let (mut used, desc) = rustbus::wire::util::unmarshal_signature(&buf[offset..])?;
+        let start_loc = offset + used;
         let mut sigs = match signature::Type::parse_description(desc) {
             Ok(sigs) => sigs,
             Err(_) => return Err(UnmarshalError::WrongSignature),
@@ -1760,14 +1761,15 @@ impl<'r, 'buf: 'r> Unmarshal<'r, 'buf> for Variant<'buf> {
             return Err(UnmarshalError::WrongSignature);
         }
         let sig = sigs.remove(0);
-        let end = rustbus::wire::validate_raw::validate_marshalled(byteorder, offset, buf, &sig)
-            .map_err(|e| e.1)?;
+        used +=
+            rustbus::wire::validate_raw::validate_marshalled(byteorder, offset + used, buf, &sig)
+                .map_err(|e| e.1)?;
         Ok((
-            end,
+            used,
             Variant {
                 sig,
-                buf: &buf[..end],
-                offset,
+                buf: &buf[..offset + used],
+                offset: start_loc,
                 byteorder,
             },
         ))
