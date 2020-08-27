@@ -121,9 +121,9 @@ pub trait Characteristic<'a>: GattDbusObject + HasChildren<'a> {
     fn read_wait(&mut self) -> Result<CharValue, Error>;
 
     /// Begin a write operation to a GATT characteristic.
-    fn write(&mut self, val: &[u8]) -> Result<Pending<(), ()>, Error>;
+    fn write(&mut self, val: CharValue) -> Result<Pending<(), ()>, Error>;
     /// Write a value to a GATT characteristic and wait for completion.
-    fn write_wait(&mut self, val: &[u8]) -> Result<(), Error>;
+    fn write_wait(&mut self, val: CharValue) -> Result<(), Error>;
     /// Checks if the characteristic's write fd from [`AcquireWrite`] has already been acquired.
     /// Corresponds to reading [`WriteAcquired`] property.
     ///
@@ -149,7 +149,7 @@ pub trait Characteristic<'a>: GattDbusObject + HasChildren<'a> {
 #[derive(Debug)]
 enum Notify {
     Signal,
-    Fd(RawFd),
+    Fd(RawFd, u16),
 }
 
 /// `LocalCharBase` is used to create GATT characteristics to be added to `LocalServiceBase`.
@@ -175,6 +175,7 @@ pub struct LocalCharBase {
     /// The `bool` is used to indicate whether an notification/indication should be issued after an update.
     pub write_callback:
         Option<Box<dyn FnMut(&[u8]) -> Result<(Option<ValOrFn>, bool), (String, Option<String>)>>>,
+    pub notify_fd_buf: Option<usize>,
 }
 impl Debug for LocalCharBase {
     fn fmt(&self, f: &mut Formatter<'_>) -> Result<(), std::fmt::Error> {
@@ -189,7 +190,7 @@ impl Debug for LocalCharBase {
 }
 impl Drop for LocalCharBase {
     fn drop(&mut self) {
-        if let Some(Notify::Fd(fd)) = self.notify {
+        if let Some(Notify::Fd(fd, _)) = self.notify {
             close(fd).ok(); // ignore error
         }
         if let Some(fd) = self.write {
@@ -244,6 +245,7 @@ impl LocalCharBase {
             allow_write: false,
             write_callback: None,
             serv_uuid: Rc::from(""),
+            notify_fd_buf: None,
         }
     }
     /// Adds a local descritpor to the characteristic.
@@ -438,7 +440,7 @@ impl<'c, 'd> LocalCharactersitic<'c, 'd> {
                                     }
                                     if notify {
                                         // TODO: is there a better way to handle this error?
-                                        if let Err(e) = self.notify() {
+                                        if let Err(e) = self.notify(None) {
                                             eprintln!(
                                                 "Failed to notify characteristic on change: {:?}",
                                                 e
@@ -501,13 +503,19 @@ impl<'c, 'd> LocalCharactersitic<'c, 'd> {
                                             if let Param::Base(Base::Uint16(mtu)) = mtu.value {
                                                 ret = ret.min(mtu);
                                             } else {
+                                                close(sock1).ok();
+                                                close(sock2).ok();
                                                 return call.dynheader.make_error_response("UnexpectedType".to_string(), Some("Expected a UInt16 as variant type for offset key.".to_string()));
                                             }
                                         } else {
+                                            close(sock1).ok();
+                                            close(sock2).ok();
                                             return call.dynheader.make_error_response("UnexpectedType".to_string(), Some("Expected a dict of variants as first parameter".to_string()));
                                         }
                                     }
                                 } else {
+                                    close(sock1).ok();
+                                    close(sock2).ok();
                                     return call.dynheader.make_error_response(
                                         "UnexpectedType".to_string(),
                                         Some("Expected a dict as first parameter".to_string()),
@@ -547,7 +555,9 @@ impl<'c, 'd> LocalCharactersitic<'c, 'd> {
                 } else if let Some(notify) = &base.notify {
                     let err_str = match notify {
                         Notify::Signal => "This characteristic is already notifying via signals.",
-                        Notify::Fd(_) => "This characteristic is already notifying via a socket.",
+                        Notify::Fd(_, _) => {
+                            "This characteristic is already notifying via a socket."
+                        }
                     };
                     call.dynheader.make_error_response(
                         "org.bluez.Error.InProgress".to_string(),
@@ -561,6 +571,23 @@ impl<'c, 'd> LocalCharactersitic<'c, 'd> {
                         socket::SockFlag::SOCK_CLOEXEC,
                     ) {
                         Ok((sock1, sock2)) => {
+                            if let Some(buf) = &base.notify_fd_buf {
+                                let cb = || {
+                                    socket::setsockopt(sock1, socket::sockopt::RcvBuf, buf)?;
+                                    socket::setsockopt(sock2, socket::sockopt::SndBuf, buf)
+                                };
+                                if let Err(_) = cb() {
+                                    close(sock1).ok();
+                                    close(sock2).ok();
+                                    return call.dynheader.make_error_response(
+       			                         BLUEZ_FAILED.to_string(),
+               		                 Some(
+                   		                 "An IO Error occured when creating the unix datagram socket."
+                       	                 .to_string(),
+                       		         ),
+                           		 	);
+                                }
+                            }
                             let call = call.unmarshall_all().unwrap();
                             let mut ret = 255;
                             if let Some(dict) = call.params.get(0) {
@@ -572,13 +599,19 @@ impl<'c, 'd> LocalCharactersitic<'c, 'd> {
                                             if let Param::Base(Base::Uint16(mtu)) = mtu.value {
                                                 ret = ret.min(mtu);
                                             } else {
+                                                close(sock1).ok();
+                                                close(sock2).ok();
                                                 return call.dynheader.make_error_response("UnexpectedType".to_string(), Some("Expected a dict of UInt16 as first offset type".to_string()));
                                             }
                                         } else {
+                                            close(sock1).ok();
+                                            close(sock2).ok();
                                             return call.dynheader.make_error_response("UnexpectedType".to_string(), Some("Expected a dict of variants as first parameter".to_string()));
                                         }
                                     }
                                 } else {
+                                    close(sock1).ok();
+                                    close(sock2).ok();
                                     return call.dynheader.make_error_response(
                                         "UnexpectedType".to_string(),
                                         Some("Expected a dict as first parameter".to_string()),
@@ -594,7 +627,7 @@ impl<'c, 'd> LocalCharactersitic<'c, 'd> {
                                 .unwrap();
                             res.dynheader.num_fds = Some(1);
                             res.raw_fds.push(sock1);
-                            base.notify = Some(Notify::Fd(sock2));
+                            base.notify = Some(Notify::Fd(sock2, ret));
                             res
                         }
                         Err(_) => call.dynheader.make_error_response(
@@ -616,7 +649,9 @@ impl<'c, 'd> LocalCharactersitic<'c, 'd> {
                 } else if let Some(notify) = &base.notify {
                     let err_str = match notify {
                         Notify::Signal => "This characteristic is already notifying via signals.",
-                        Notify::Fd(_) => "This characteristic is already notifying via a socket.",
+                        Notify::Fd(_, _) => {
+                            "This characteristic is already notifying via a socket."
+                        }
                     };
                     call.dynheader.make_error_response(
                         "org.bluez.Error.InProgress".to_string(),
@@ -672,7 +707,7 @@ impl<'c, 'd> LocalCharactersitic<'c, 'd> {
                                     }
                                     if notify {
                                         drop(base);
-                                        self.notify()?;
+                                        self.notify(None)?;
                                         base = self.get_char_base_mut();
                                     }
                                 }
@@ -745,14 +780,43 @@ impl<'c, 'd> LocalCharactersitic<'c, 'd> {
             .send_message(&mut msg, Timeout::Infinite)?;
         Ok(())
     }
-    pub fn notify(&mut self) -> Result<(), Error> {
+    pub fn notify_mtu(&self) -> Option<u16> {
+        let base = self.get_char_base();
+        if let Some(Notify::Fd(_, mtu)) = base.notify {
+            Some(mtu)
+        } else {
+            None
+        }
+    }
+    pub fn notify(&mut self, timeout: Option<Duration>) -> Result<(), Error> {
         let base = self.get_char_base_mut();
         if let Some(notify) = &mut base.notify {
             let cv = base.vf.to_value();
             match notify {
                 Notify::Signal => self.signal_change()?,
-                Notify::Fd(sock) => {
-                    if let Err(_) = socket::send(*sock, cv.as_slice(), socket::MsgFlags::MSG_EOR) {
+                Notify::Fd(sock, _) => {
+                    if let Err(_) = {
+                        match timeout {
+                            Some(to) => {
+                                debug_assert!(to.as_micros() <= std::i64::MAX as u128);
+                                let timeout = to.as_micros() as i64;
+                                let mut flags = socket::MsgFlags::MSG_EOR;
+                                if timeout == 0 {
+                                    flags |= socket::MsgFlags::MSG_DONTWAIT
+                                } else {
+                                    let tv = TimeVal::microseconds(timeout);
+                                    socket::setsockopt(*sock, socket::sockopt::SendTimeout, &tv)?;
+                                }
+                                socket::send(*sock, cv.as_slice(), flags)
+                                //let to = to.as
+                            }
+                            None => {
+                                let tv = TimeVal::microseconds(0);
+                                socket::setsockopt(*sock, socket::sockopt::SendTimeout, &tv)?;
+                                socket::send(*sock, cv.as_slice(), socket::MsgFlags::MSG_EOR)
+                            }
+                        }
+                    } {
                         base.notify = None;
                     }
                 }
@@ -933,11 +997,11 @@ impl<'a, 'b: 'a, 'c: 'b> Characteristic<'a> for LocalCharactersitic<'b, 'c> {
     fn read_cached(&mut self) -> Result<CharValue, Error> {
         self.read_wait()
     }
-    fn write(&mut self, val: &[u8]) -> Result<Pending<(), ()>, Error> {
+    fn write(&mut self, val: CharValue) -> Result<Pending<(), ()>, Error> {
         let leaking = self.get_blue().leaking.clone();
         self.check_write_fd()?;
         let base = self.get_char_base_mut();
-        let val = ValOrFn::Value(val.into());
+        let val = ValOrFn::Value(val);
         base.vf = val;
         Ok(Pending {
             dbus_res: 0,
@@ -946,8 +1010,12 @@ impl<'a, 'b: 'a, 'c: 'b> Characteristic<'a> for LocalCharactersitic<'b, 'c> {
             leaking,
         })
     }
-    fn write_wait(&mut self, val: &[u8]) -> Result<(), Error> {
-        unimplemented!()
+    fn write_wait(&mut self, val: CharValue) -> Result<(), Error> {
+        self.check_write_fd()?;
+        let base = self.get_char_base_mut();
+        let val = ValOrFn::Value(val);
+        base.vf = val;
+        Ok(())
     }
     /*fn service(&self) -> &Path {
         let base = self.get_char_base();
@@ -963,7 +1031,7 @@ impl<'a, 'b: 'a, 'c: 'b> Characteristic<'a> for LocalCharactersitic<'b, 'c> {
     }
     fn notify_acquired(&self) -> bool {
         let base = self.get_char_base();
-        if let Some(Notify::Fd(_)) = base.notify {
+        if let Some(Notify::Fd(_, _)) = base.notify {
             true
         } else {
             false
@@ -1198,29 +1266,32 @@ impl<'a, 'b, 'c> RemoteChar<'a, 'b, 'c> {
             Some(fd) => fd,
             None => return Err(Error::NoFd("No fd is avaliable".to_string())),
         };
-        let timeout = match timeout {
-            Some(dur) => dur.as_micros(),
-            None => 0,
-        };
         let mut ret = CharValue::new(512);
-        let msg = if timeout == 0 {
-            socket::recvmsg(
-                fd,
-                &[IoVec::from_mut_slice(&mut ret)],
-                None,
-                socket::MsgFlags::MSG_DONTWAIT,
-            )?
-        } else {
-            let tv = TimeVal::microseconds(timeout.try_into().unwrap());
-            socket::setsockopt(fd, socket::sockopt::ReceiveTimeout, &tv)?;
-            socket::recvmsg(
-                fd,
-                &[IoVec::from_mut_slice(&mut ret)],
-                None,
-                socket::MsgFlags::empty(),
-            )?
+        let msg_rcv = match timeout {
+            Some(dur) => {
+                debug_assert!(dur.as_micros() <= std::i64::MAX as u128);
+                let timeout = dur.as_micros() as i64;
+                let flags = if timeout == 0 {
+                    socket::MsgFlags::MSG_DONTWAIT
+                } else {
+                    let tv = TimeVal::microseconds(timeout);
+                    socket::setsockopt(fd, socket::sockopt::ReceiveTimeout, &tv)?;
+                    socket::MsgFlags::empty()
+                };
+                socket::recvmsg(fd, &[IoVec::from_mut_slice(&mut ret)], None, flags)?
+            }
+            None => {
+                let tv = TimeVal::microseconds(0);
+                socket::setsockopt(fd, socket::sockopt::ReceiveTimeout, &tv)?;
+                socket::recvmsg(
+                    fd,
+                    &[IoVec::from_mut_slice(&mut ret)],
+                    None,
+                    socket::MsgFlags::empty(),
+                )?
+            }
         };
-        ret.resize(msg.bytes, 0);
+        ret.resize(msg_rcv.bytes, 0);
         Ok(ret)
     }
     pub fn get_notify_fd(&self) -> Option<RawFd> {
@@ -1321,10 +1392,10 @@ impl<'a> Characteristic<'a> for RemoteChar<'_, '_, '_> {
         unimplemented!()
     }
 
-    fn write(&mut self, val: &[u8]) -> Result<Pending<(), ()>, Error> {
+    fn write(&mut self, val: CharValue) -> Result<Pending<(), ()>, Error> {
         unimplemented!()
     }
-    fn write_wait(&mut self, val: &[u8]) -> Result<(), Error> {
+    fn write_wait(&mut self, val: CharValue) -> Result<(), Error> {
         let pend = self.write(val)?;
         self.get_blue_mut().resolve(pend).map_err(|e| e.1)?;
         Ok(())

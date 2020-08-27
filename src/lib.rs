@@ -191,10 +191,14 @@ pub enum Error {
     BadInput(String),
     NoFd(String),
     Unix(nix::Error),
+    Timeout,
 }
 impl From<nix::Error> for Error {
     fn from(err: nix::Error) -> Self {
-        Error::Unix(err)
+        match err {
+            nix::Error::Sys(nix::errno::Errno::EAGAIN) => Error::Timeout,
+            err => Error::Unix(err),
+        }
     }
 }
 impl Display for Error {
