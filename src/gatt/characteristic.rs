@@ -17,7 +17,7 @@ use std::mem::MaybeUninit;
 use std::ops::{Deref, DerefMut};
 use std::os::unix::io::RawFd;
 
-#[derive(Clone, Copy)]
+#[derive(Copy)]
 pub struct CharValue {
     //buf: [u8; 512],
     buf: [MaybeUninit<u8>; 512],
@@ -81,6 +81,12 @@ impl Default for CharValue {
         // SAFETY: assume_init() is safe for arrays if the underlying type is MaybeUninit
         let buf: [MaybeUninit<u8>; 512] = unsafe { MaybeUninit::uninit().assume_init() };
         CharValue { buf, len: 0 }
+    }
+}
+impl Clone for CharValue {
+    fn clone(&self) -> Self {
+        let mut ret = CharValue::default();
+        ret.extend_from_slice(self.as_slice())
     }
 }
 impl Borrow<[u8]> for CharValue {
@@ -1150,6 +1156,7 @@ impl Properties for LocalCharBase {
 }
 pub struct RemoteCharBase {
     uuid: UUID,
+    value: Rc<Cell<CharValue>>,
     descs: HashMap<UUID, RemoteDescBase>,
     notify_fd: Option<RawFd>,
     path: PathBuf,
@@ -1386,7 +1393,9 @@ impl<'a> Characteristic<'a> for RemoteChar<'_, '_, '_> {
         }*/
     }
     fn read_wait(&mut self) -> Result<CharValue, Error> {
-        unimplemented!()
+        let pend = self.read()?;
+        let mut blue = self.get_blue_mut();
+        blue.resolve(pend).map_err(|e| e.1)
     }
     fn read_cached(&mut self) -> Result<CharValue, Error> {
         unimplemented!()

@@ -328,8 +328,17 @@ impl Bluetooth {
         msg.body.push_param(ADAPTER_IF_STR.to_string()).unwrap();
         let res_idx = self.rpc_con.send_message(&mut msg, Timeout::Infinite)?;
         let res = self.rpc_con.wait_response(res_idx, Timeout::Infinite)?;
-        let mut blue_props: HashMap<String, Variant> = res.body.parser().get()?;
-        self.update_from_props(blue_props)
+        match res.typ {
+            MessageType::Reply => {
+                let mut blue_props: HashMap<String, Variant> = res.body.parser().get()?;
+                self.update_from_props(blue_props)
+            }
+            MessageType::Error => Err(Error::DbusReqErr(format!(
+                "Error getting dbus adapter props: {:?}",
+                res
+            ))),
+            _ => unreachable!(),
+        }
     }
     fn update_from_props(&mut self, mut blue_props: HashMap<String, Variant>) -> Result<(), Error> {
         let powered = match blue_props.remove("Powered") {
@@ -600,6 +609,12 @@ impl Bluetooth {
                 }
             }
         }
+    }
+    pub fn remove_all_adv(&mut self) -> Result<(), Error> {
+        while self.ads.len() > 0 {
+            self.remove_adv(self.ads[0].index)?;
+        }
+        Ok(())
     }
     /// Removes the advertisement from the `Bluetooth` instance but does not unregister the
     /// advertisement with Bluez. It is recommended that this is not used.
