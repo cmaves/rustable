@@ -86,6 +86,19 @@ impl RemoteDeviceBase {
             services: HashMap::new(),
         })
     }
+    pub(crate) fn update_from_changed(
+        &mut self,
+        changed: HashMap<String, Variant>,
+    ) -> Result<(), Error> {
+        for (prop, var) in changed {
+            match prop.as_str() {
+                "Connected" => self.connected.set(var.get()?),
+                "Paired" => self.paired.set(var.get()?),
+                _ => (),
+            }
+        }
+        Ok(())
+    }
     pub(crate) fn match_dev(
         &mut self,
         path: &Path,

@@ -150,7 +150,7 @@ pub trait Characteristic<'a>: GattDbusObject + HasChildren<'a> {
     fn read(&mut self) -> Result<Pending<Result<CharValue, Error>, Rc<Cell<CharValue>>>, Error>;
     /// Generally returns a previous value of the GATT characteristic. Check the individual implementors,
     /// for a more precise definition.
-    fn read_cached(&mut self) -> Result<CharValue, Error>;
+    fn read_cached(&mut self) -> CharValue;
 
     /// Reads the value of a GATT characteristic, and waits for a response.
     fn read_wait(&mut self) -> Result<CharValue, Error>;
@@ -1006,7 +1006,9 @@ impl GattDbusObject for LocalCharactersitic<'_, '_> {
 
 impl<'a, 'b: 'a, 'c: 'b> Characteristic<'a> for LocalCharactersitic<'b, 'c> {
     fn read(&mut self) -> Result<Pending<Result<CharValue, Error>, Rc<Cell<CharValue>>>, Error> {
-        let leaking = self.get_blue().leaking.clone();
+        let blue = self.get_blue_mut();
+        blue.process_requests()?;
+        let leaking = blue.leaking.clone();
         self.check_write_fd()?;
         let base = self.get_char_base_mut();
         Ok(Pending {
@@ -1019,18 +1021,17 @@ impl<'a, 'b: 'a, 'c: 'b> Characteristic<'a> for LocalCharactersitic<'b, 'c> {
     /// Reads the local value of the characteristic. If the value
     /// of the characteristic is given by a function, it will be executed.
     fn read_wait(&mut self) -> Result<CharValue, Error> {
-        unimplemented!()
+        self.get_blue_mut().process_requests()?;
+        self.check_write_fd()?;
+        let base = self.get_char_base_mut();
+        Ok(base.vf.to_value())
     }
-    /// For `LocalCharactersitic` this function is identical to `read_wait()`
-    /// (This does not not hold true for other implementors of this trait).
+    /// For `LocalCharactersitic` this reads the value without tirgger withoug checking
+    /// `process_requests()` or the write fd.
     ///
-    /// # Notes
-    // TODO: implement this note
-    /// In the future, if the LocalCharactersitic value is given by a function,
-    /// a function, then this function may read a cached version of it.
-    #[inline]
-    fn read_cached(&mut self) -> Result<CharValue, Error> {
-        self.read_wait()
+    fn read_cached(&mut self) -> CharValue {
+        let base = self.get_char_base_mut();
+        base.vf.to_value()
     }
     fn write(&mut self, val: CharValue) -> Result<Pending<(), ()>, Error> {
         let leaking = self.get_blue().leaking.clone();
@@ -1232,6 +1233,19 @@ impl RemoteCharBase {
             notify_fd: None,
             path,
         })
+    }
+    pub(crate) fn update_from_changed(
+        &mut self,
+        changed: HashMap<String, Variant>,
+    ) -> Result<(), Error> {
+        for (prop, var) in changed {
+            match prop.as_str() {
+                "UUID" => self.uuid = var.get::<String>()?.to_uuid(),
+                "Value" => self.value.set(var.get()?),
+                _ => (),
+            }
+        }
+        Ok(())
     }
 }
 impl GattDbusObject for RemoteCharBase {
@@ -1441,9 +1455,8 @@ impl<'a> Characteristic<'a> for RemoteChar<'_, '_, '_> {
         let blue = self.get_blue_mut();
         blue.resolve(pend).map_err(|e| e.1)?
     }
-    fn read_cached(&mut self) -> Result<CharValue, Error> {
-        self.get_char().value.get();
-        unimplemented!()
+    fn read_cached(&mut self) -> CharValue {
+        self.get_char().value.get()
     }
 
     fn write(&mut self, val: CharValue) -> Result<Pending<(), ()>, Error> {

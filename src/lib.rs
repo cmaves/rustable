@@ -341,6 +341,7 @@ impl Bluetooth {
         }
     }
     fn update_from_props(&mut self, mut blue_props: HashMap<String, Variant>) -> Result<(), Error> {
+        let mut all = true;
         let powered = match blue_props.remove("Powered") {
             Some(var) => var.get()?,
             None => {
@@ -377,6 +378,17 @@ impl Bluetooth {
         self.powered.replace(powered);
         self.discoverable.replace(discoverable);
         self.addr = addr;
+        Ok(())
+    }
+    fn update_from_changed(&mut self, blue_props: HashMap<String, Variant>) -> Result<(), Error> {
+        for (prop, var) in blue_props {
+            match prop.as_str() {
+                "Powered" => self.powered.set(var.get()?),
+                "Address" => self.addr = var.get::<String>()?.to_uuid(),
+                "Discoverable" => self.discoverable.set(var.get()?),
+                _ => (),
+            }
+        }
         Ok(())
     }
     pub fn addr(&self) -> &MAC {
@@ -955,20 +967,66 @@ impl Bluetooth {
         Ok(())
     }
     fn properties_changed(&mut self, sig: MarshalledMessage) -> Result<(), Error> {
-        match self.match_remote(&sig.dynheader) {
-            Some(None) => {
-                let mut parser = sig.body.parser();
-                let interface: &str = parser.get()?;
-                if interface == ADAPTER_IF_STR {
-                    let blue_props: HashMap<String, Variant> = parser.get()?;
-                    self.update_from_props(blue_props)
-                } else {
-                    Ok(())
+        if let Some(child) = self.match_remote(&sig.dynheader) {
+            let mut parser = sig.body.parser();
+            let interface: &str = parser.get()?;
+            let changed = parser.get()?;
+            match child {
+                Some((dev_mac, child)) => {
+                    let dev = self.devices.get_mut(&dev_mac).unwrap();
+                    match child {
+                        Some((serv_uuid, child)) => {
+                            let serv = dev.get_child(&serv_uuid).unwrap();
+                            match child {
+                                Some((char_uuid, child)) => {
+                                    let mut character = serv.get_child(&char_uuid).unwrap();
+                                    match child {
+                                        Some(desc_uuid) => unimplemented!(),
+                                        None => {
+                                            if interface == CHAR_IF_STR {
+                                                character.update_from_changed(changed)?;
+                                            }
+                                        }
+                                    }
+                                }
+                                None => {
+                                    if interface == SERV_IF_STR {
+                                        serv.update_from_changed(changed)?;
+                                    }
+                                }
+                            }
+                        }
+                        None => {
+                            if interface == DEV_IF_STR {
+                                dev.update_from_changed(changed)?;
+                            }
+                        }
+                    }
+                }
+                None => {
+                    if interface == ADAPTER_IF_STR {
+                        self.update_from_changed(changed)?;
+                    }
                 }
             }
-            Some(Some((mac, Some((serv_uuid, child_uuid))))) => unimplemented!(),
-            _ => Ok(()),
         }
+        Ok(())
+        /*
+        Some(None) => {
+            let mut parser = sig.body.parser();
+        }
+        Some(Some((mac, None))) => {
+            let mut parser = sig.body.parser();
+            let interface: &str = parser.get()?;
+            if interface == DEV_IF_STR {
+            } else {
+                Ok(())
+            }
+
+        }
+        Some(Some((mac, Some((serv_uuid, child_uuid))))) => unimplemented!(),
+        _ => Ok(()),
+        */
     }
     fn interface_added(&mut self, sig: MarshalledMessage) -> Result<(), Error> {
         match self.match_remote(&sig.dynheader) {

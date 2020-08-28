@@ -274,6 +274,19 @@ impl RemoteServiceBase {
             chars: HashMap::new(),
         })
     }
+    pub(crate) fn update_from_changed(
+        &mut self,
+        changed: HashMap<String, Variant>,
+    ) -> Result<(), Error> {
+        for (prop, var) in changed {
+            match prop.as_str() {
+                "Primary" => self.primary = var.get()?,
+                "UUID" => self.uuid = var.get::<String>()?.to_uuid(),
+                _ => (),
+            }
+        }
+        Ok(())
+    }
     pub(crate) fn update_all(&mut self, props: HashMap<String, Variant>) -> Result<(), Error> {
         unimplemented!()
     }
