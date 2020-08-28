@@ -8,7 +8,8 @@ use nix::sys::time::{TimeVal, TimeValLike};
 use nix::sys::uio::IoVec;
 use nix::unistd::close;
 use rustbus::params::{Base, Container, Param};
-use rustbus::wire::marshal::traits::UnixFd;
+use rustbus::wire::marshal::traits::{Marshal, UnixFd};
+use rustbus::wire::unmarshal::traits::Unmarshal;
 use std::borrow::Borrow;
 use std::cell::Cell;
 use std::convert::TryFrom;
@@ -86,7 +87,8 @@ impl Default for CharValue {
 impl Clone for CharValue {
     fn clone(&self) -> Self {
         let mut ret = CharValue::default();
-        ret.extend_from_slice(self.as_slice())
+        ret.extend_from_slice(self.as_slice());
+        ret
     }
 }
 impl Borrow<[u8]> for CharValue {
@@ -113,6 +115,33 @@ impl DerefMut for CharValue {
     #[inline]
     fn deref_mut(&mut self) -> &mut Self::Target {
         self.as_mut_slice()
+    }
+}
+impl Signature for CharValue {
+    fn signature() -> crate::signature::Type {
+        <[u8]>::signature()
+    }
+    fn alignment() -> usize {
+        <[u8]>::alignment()
+    }
+}
+impl<'r, 'buf: 'r> Unmarshal<'r, 'buf> for CharValue {
+    fn unmarshal(
+        byteorder: ByteOrder,
+        buf: &'buf [u8],
+        offset: usize,
+    ) -> unmarshal::UnmarshalResult<Self> {
+        let (used, buf): (usize, &'r [u8]) = <&'r [u8]>::unmarshal(byteorder, buf, offset)?;
+        if buf.len() > 512 {
+            Err(unmarshal::Error::InvalidType)
+        } else {
+            Ok((used, buf.into()))
+        }
+    }
+}
+impl Marshal for CharValue {
+    fn marshal(&self, byteorder: ByteOrder, buf: &mut Vec<u8>) -> Result<(), rustbus::Error> {
+        self.as_slice().marshal(byteorder, buf)
     }
 }
 
@@ -1157,33 +1186,48 @@ impl Properties for LocalCharBase {
 pub struct RemoteCharBase {
     uuid: UUID,
     value: Rc<Cell<CharValue>>,
-    descs: HashMap<UUID, RemoteDescBase>,
+    pub(crate) descs: HashMap<UUID, RemoteDescBase>,
     notify_fd: Option<RawFd>,
     path: PathBuf,
 }
 impl RemoteCharBase {
     pub(crate) fn from_props(
-        value: &mut HashMap<String, params::Variant>,
+        mut props: HashMap<String, Variant>,
         path: PathBuf,
     ) -> Result<Self, Error> {
-        let uuid = match value.remove("UUID") {
-            Some(addr) => {
-                if let Param::Base(Base::String(addr)) = addr.value {
-                    addr.into()
-                } else {
+        let uuid = match props.remove("UUID") {
+            Some(addr) => match addr.get::<String>() {
+                Ok(addr) => addr.to_uuid(),
+                Err(_) => {
                     return Err(Error::DbusReqErr(
                         "Invalid device returned; UUID field is invalid type".to_string(),
-                    ));
+                    ))
                 }
-            }
+            },
             None => {
                 return Err(Error::DbusReqErr(
                     "Invalid device returned; missing UUID field".to_string(),
                 ))
             }
         };
+        let value = match props.remove("Value") {
+            Some(var) => match var.get() {
+                Ok(cv) => Rc::new(Cell::new(cv)),
+                Err(_) => {
+                    return Err(Error::DbusReqErr(
+                        "Invalid device returned; Value field is invalid type".to_string(),
+                    ))
+                }
+            },
+            None => {
+                return Err(Error::DbusReqErr(
+                    "Invalid device returned; missing Value field".to_string(),
+                ))
+            }
+        };
         Ok(RemoteCharBase {
             uuid,
+            value,
             descs: HashMap::new(),
             notify_fd: None,
             path,
@@ -1394,10 +1438,11 @@ impl<'a> Characteristic<'a> for RemoteChar<'_, '_, '_> {
     }
     fn read_wait(&mut self) -> Result<CharValue, Error> {
         let pend = self.read()?;
-        let mut blue = self.get_blue_mut();
-        blue.resolve(pend).map_err(|e| e.1)
+        let blue = self.get_blue_mut();
+        blue.resolve(pend).map_err(|e| e.1)?
     }
     fn read_cached(&mut self) -> Result<CharValue, Error> {
+        self.get_char().value.get();
         unimplemented!()
     }
 

@@ -234,38 +234,36 @@ pub struct RemoteServiceBase {
 }
 impl RemoteServiceBase {
     pub(crate) fn from_props(
-        value: &mut HashMap<String, params::Variant>,
+        mut value: HashMap<String, Variant>,
         path: PathBuf,
     ) -> Result<Self, Error> {
         let uuid = match value.remove("UUID") {
-            Some(addr) => {
-                if let Param::Base(Base::String(addr)) = addr.value {
-                    addr.into()
-                } else {
+            Some(addr) => match addr.get::<String>() {
+                Ok(addr) => addr.to_uuid(),
+                Err(_) => {
                     return Err(Error::DbusReqErr(
-                        "Invalid device returned; UUID field is invalid type".to_string(),
-                    ));
+                        "Invalid service returned; UUID is invalid type".to_string(),
+                    ))
                 }
-            }
+            },
             None => {
                 return Err(Error::DbusReqErr(
-                    "Invalid device returned; missing UUID field".to_string(),
+                    "Invalid service returned; missing UUID field".to_string(),
                 ))
             }
         };
         let primary = match value.remove("Primary") {
-            Some(p) => {
-                if let Param::Base(Base::Boolean(p)) = p.value {
-                    p.into()
-                } else {
+            Some(primary) => match primary.get::<bool>() {
+                Ok(primary) => primary,
+                Err(_) => {
                     return Err(Error::DbusReqErr(
-                        "Invalid device returned; UUID field is invalid type".to_string(),
-                    ));
+                        "Invalid service returned; Primary is invalid type".to_string(),
+                    ))
                 }
-            }
+            },
             None => {
                 return Err(Error::DbusReqErr(
-                    "Invalid device returned; missing UUID field".to_string(),
+                    "Invalid service returned; missing Primary field".to_string(),
                 ))
             }
         };

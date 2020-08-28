@@ -1,9 +1,11 @@
 use crate::gatt::*;
-use crate::{Bluetooth, Error, ToUUID, MAC, UUID};
+use crate::{Bluetooth, Error, ToMAC, ToUUID, Variant, MAC, UUID};
 use rustbus::params;
 use rustbus::params::{Base, Param};
+use std::cell::Cell;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::rc::Rc;
 
 pub enum AddrType {
     Public,
@@ -22,25 +24,24 @@ pub struct RemoteDeviceBase {
     pub(crate) mac: MAC,
     pub(crate) path: PathBuf,
     pub(crate) services: HashMap<MAC, RemoteServiceBase>,
-    connected: State,
-    paired: State,
+    connected: Rc<Cell<bool>>,
+    paired: Rc<Cell<bool>>,
     //comp_map: HashMap<OsString, MAC>,
 }
 impl RemoteDeviceBase {
     pub(crate) fn from_props(
-        value: &mut HashMap<String, params::Variant>,
+        mut value: HashMap<String, Variant>,
         path: PathBuf,
     ) -> Result<Self, Error> {
         let mac = match value.remove("Address") {
-            Some(addr) => {
-                if let Param::Base(Base::String(addr)) = addr.value {
-                    addr.into()
-                } else {
+            Some(addr) => match addr.get::<String>() {
+                Ok(mac) => mac.to_mac(),
+                Err(_) => {
                     return Err(Error::DbusReqErr(
                         "Invalid device returned; Address field is invalid type".to_string(),
-                    ));
+                    ))
                 }
-            }
+            },
             None => {
                 return Err(Error::DbusReqErr(
                     "Invalid device returned; missing Address field".to_string(),
@@ -48,34 +49,32 @@ impl RemoteDeviceBase {
             }
         };
         let connected = match value.remove("Connected") {
-            Some(val) => {
-                if let Param::Base(Base::Boolean(val)) = val.value {
-                    val.into()
-                } else {
+            Some(con) => match con.get::<bool>() {
+                Ok(con) => Rc::new(Cell::new(con)),
+                Err(_) => {
                     return Err(Error::DbusReqErr(
-                        "Invalid device returned; Address field is invalid type".to_string(),
-                    ));
+                        "Invalid device returned; Connected field is invalid type".to_string(),
+                    ))
                 }
-            }
+            },
             None => {
                 return Err(Error::DbusReqErr(
-                    "Invalid device returned; missing Address field".to_string(),
+                    "Invalid device returned; missing Connected field".to_string(),
                 ))
             }
         };
         let paired = match value.remove("Paired") {
-            Some(val) => {
-                if let Param::Base(Base::Boolean(val)) = val.value {
-                    val.into()
-                } else {
+            Some(paired) => match paired.get::<bool>() {
+                Ok(paired) => Rc::new(Cell::new(paired)),
+                Err(_) => {
                     return Err(Error::DbusReqErr(
-                        "Invalid device returned; Address field is invalid type".to_string(),
-                    ));
+                        "Invalid device returned; Paired field is invalid type".to_string(),
+                    ))
                 }
-            }
+            },
             None => {
                 return Err(Error::DbusReqErr(
-                    "Invalid device returned; missing Address field".to_string(),
+                    "Invalid device returned; missing Paired field".to_string(),
                 ))
             }
         };
@@ -132,20 +131,6 @@ impl<'a> HasChildren<'a> for RemoteDeviceBase {
         self.services.get_mut(&uuid)
     }
 }
-enum State {
-    WaitRes(u32),
-    Yes,
-    No,
-}
-impl From<bool> for State {
-    fn from(b: bool) -> Self {
-        if b {
-            State::Yes
-        } else {
-            State::No
-        }
-    }
-}
 
 pub struct RemoteDevice<'a> {
     pub(crate) mac: MAC,
@@ -170,22 +155,14 @@ impl RemoteDevice<'_> {
     }
     #[inline]
     pub fn connected(&self) -> bool {
-        if let State::Yes = self.get_base().connected {
-            true
-        } else {
-            false
-        }
+        self.get_base().connected.get()
     }
     pub fn connect(&mut self) -> Result<(), Error> {
         unimplemented!()
     }
     #[inline]
     pub fn paired(&self) -> bool {
-        if let State::Yes = self.get_base().paired {
-            true
-        } else {
-            false
-        }
+        self.get_base().paired.get()
     }
     pub fn pair(&mut self) -> Result<(), Error> {
         unimplemented!()

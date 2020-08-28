@@ -330,7 +330,7 @@ impl Bluetooth {
         let res = self.rpc_con.wait_response(res_idx, Timeout::Infinite)?;
         match res.typ {
             MessageType::Reply => {
-                let mut blue_props: HashMap<String, Variant> = res.body.parser().get()?;
+                let blue_props: HashMap<String, Variant> = res.body.parser().get()?;
                 self.update_from_props(blue_props)
             }
             MessageType::Error => Err(Error::DbusReqErr(format!(
@@ -973,8 +973,8 @@ impl Bluetooth {
     fn interface_added(&mut self, sig: MarshalledMessage) -> Result<(), Error> {
         match self.match_remote(&sig.dynheader) {
             Some(Some((mac, Some((serv_uuid, child_uuid))))) => {
-                let mut dev = self.devices.get_mut(&mac).unwrap();
-                let mut serv = dev.services.get_mut(&serv_uuid).unwrap();
+                let dev = self.devices.get_mut(&mac).unwrap();
+                let serv = dev.services.get_mut(&serv_uuid).unwrap();
                 match child_uuid {
                     Some((char_uuid, child_uuid)) => unimplemented!(),
                     None => {
@@ -1042,7 +1042,7 @@ impl Bluetooth {
             _ => return None,
         };
         let mac = devmac_to_mac(first_comp)?;
-        let mut dev = self.devices.get_mut(&mac)?;
+        let dev = self.devices.get_mut(&mac)?;
         let uuids = dev.match_dev(path.strip_prefix(&first_comp).unwrap())?;
         Some(Some((mac, uuids)))
     }
@@ -1078,7 +1078,7 @@ impl Bluetooth {
     /// on the Bluez controller. Use `set_scan()` to initiate actual device discovery.
     ///
     /// **Calls process_requests()**
-    pub fn discover_devices(&mut self) -> Result<HashSet<MAC>, Error> {
+    pub fn discover_devices(&mut self) -> Result<Vec<MAC>, Error> {
         self.discover_devices_filter(self.blue_path.clone())
     }
 
@@ -1157,153 +1157,82 @@ impl Bluetooth {
             },
         }
     }
-    /*
-    	*/
-    fn get_managed_objects<'a, 'b>(
+
+    fn discover_devices_filter<'a, T: AsRef<Path>>(
         &mut self,
-        path: String,
-        filter_path: &Path,
-    ) -> Result<
-        Vec<(
-            PathBuf,
-            HashMap<String, HashMap<String, params::Variant<'a, 'b>>>,
-        )>,
-        Error,
-    > {
+        filter_path: T,
+    ) -> Result<Vec<MAC>, Error> {
+        self.devices.clear();
         let mut msg = MessageBuilder::new()
             .call(MANGAGED_OBJ_CALL.to_string())
-            .on(path)
             .at(BLUEZ_DEST.to_string())
+            .on(self.blue_path.to_str().unwrap().to_string())
             .with_interface(OBJ_MANAGER_IF_STR.to_string())
             .build();
+
         let res_idx = self.rpc_con.send_message(&mut msg, Timeout::Infinite)?;
         loop {
             self.process_requests()?;
             if let Some(res) = self.rpc_con.try_get_response(res_idx) {
-                let mut res = match res.typ {
-                    MessageType::Reply => res.unmarshall_all().unwrap(),
-                    MessageType::Error => {
-                        return Err(Error::DbusReqErr(format!(
-                            "GetManagedObjects call returned error: {:?}",
-                            res
-                        )))
-                    }
-                    _ => unreachable!(),
-                };
-                if res.params.len() < 1 {
-                    return Err(Error::Bluez(
-                        "GetManagedObjects called didn't return any parameters".to_string(),
-                    ));
-                }
-                res.params.truncate(1);
-                if let Param::Container(Container::Dict(path_dict)) = res.params.remove(0) {
-                    let path_map = path_dict.map;
-                    let mut pairs: Vec<(
-                        PathBuf,
-                        HashMap<String, HashMap<String, params::Variant>>,
-                    )> = path_map
-                        .into_iter()
-                        .filter_map(|pair| {
-                            if let Base::ObjectPath(path) = pair.0 {
-                                let path: PathBuf = path.into();
-                                if path.starts_with(filter_path) {
-                                    let if_map = if_dict_to_map(pair.1);
-                                    return Some((path, if_map));
+                let filter_path = filter_path.as_ref();
+                let path_map: HashMap<PathBuf, HashMap<String, HashMap<String, Variant>>> =
+                    res.body.parser().get()?;
+                let mut pairs: Vec<(PathBuf, HashMap<String, HashMap<String, Variant>>)> = path_map
+                    .into_iter()
+                    .filter(|pair| pair.0.starts_with(filter_path))
+                    .collect();
+                pairs.sort_by(|a, b| a.0.cmp(&b.0));
+                let mut ret = Vec::new();
+                let mut device_base: Option<RemoteDeviceBase> = None;
+                let mut service_base: Option<RemoteServiceBase> = None;
+                let mut character_base: Option<RemoteCharBase> = None;
+                let mut descriptor_base: Option<RemoteDescBase> = None;
+                for (path, mut if_map) in pairs {
+                    if let Some(dev_base_props) = if_map.remove(DEV_IF_STR) {
+                        // handle adding remote device
+                        if let Some(dev) = device_base {
+                            ret.push(dev.uuid().clone());
+                            self.insert_device(dev);
+                        }
+                        device_base = Some(RemoteDeviceBase::from_props(dev_base_props, path)?);
+                    } else if let Some(dev_base) = &mut device_base {
+                        if let Some(serv_base_props) = if_map.remove(SERV_IF_STR) {
+                            // add remote service
+                            if !path.starts_with(&dev_base.path) {
+                                continue;
+                            }
+                            if let Some(serv) = service_base {
+                                dev_base.services.insert(serv.uuid().clone(), serv);
+                            }
+                            service_base =
+                                Some(RemoteServiceBase::from_props(serv_base_props, path)?);
+                        } else if let Some(serv_base) = &mut service_base {
+                            if let Some(char_base_props) = if_map.remove(CHAR_IF_STR) {
+                                if !path.starts_with(serv_base.path()) {
+                                    continue;
+                                }
+                                if let Some(character) = character_base {
+                                    serv_base.chars.insert(character.uuid().clone(), character);
+                                }
+                                character_base =
+                                    Some(RemoteCharBase::from_props(char_base_props, path)?);
+                            } else if let Some(char_base) = &mut character_base {
+                                if let Some(desc_base_props) = if_map.remove(DESC_IF_STR) {
+                                    if !path.starts_with(char_base.path()) {
+                                        continue;
+                                    }
+                                    if let Some(desc_base) = descriptor_base {
+                                        char_base.descs.insert(desc_base.uuid().clone(), desc_base);
+                                    }
+                                    unimplemented!();
                                 }
                             }
-                            None
-                        })
-                        .collect();
-                    pairs.sort_by(|pair1, pair2| pair1.0.cmp(&pair2.0));
-                    return Ok(pairs);
-                } else {
-                    return Err(Error::DbusReqErr(
-                        "GetManagedObjects called didn't return unexpected parameters".to_string(),
-                    ));
-                }
-            }
-        }
-    }
-    fn discover_devices_filter<T: AsRef<Path>>(
-        &mut self,
-        filter_path: T,
-    ) -> Result<HashSet<MAC>, Error> {
-        self.devices.clear();
-        let pairs = self.get_managed_objects("/".to_string(), filter_path.as_ref())?;
-        let mut set = HashSet::new();
-        let mut device_base: Option<RemoteDeviceBase> = None;
-        let mut service_base: Option<RemoteServiceBase> = None;
-        let mut characteristic_base: Option<RemoteCharBase> = None;
-        for (path, mut if_map) in pairs {
-            if let Some(mut props) = if_map.get_mut(DEV_IF_STR) {
-                let mut dev_comps = path.strip_prefix(&self.blue_path).unwrap().components();
-                /*if let None = match dev_comps.next() {
-                    Some(comp) => comp,
-                    None => return Err(Error::Bluez("Bluez returned invalid device".to_string()))
-                };*/
-                if let None = dev_comps.next() {
-                    return Err(Error::Bluez("Bluez returned invalid device".to_string()));
-                }
-                let device = RemoteDeviceBase::from_props(&mut props, path)?;
-                set.insert(device.mac.clone());
-                if let Some(base) = device_base {
-                    self.insert_device(base)
-                }
-                device_base = Some(device);
-            // self.insert_device(device);
-            } else if let Some(props) = if_map.get_mut(SERV_IF_STR) {
-                match &mut device_base {
-                    Some(dev_base) => {
-                        let service = RemoteServiceBase::from_props(props, path)?;
-                        // base.services.insert(service.uuid.clone(), service);
-                        if let Some(serv_base) = service_base {
-                            dev_base.services.insert(serv_base.uuid.clone(), serv_base);
                         }
-                        service_base = Some(service);
-                    }
-                    None => {
-                        return Err(Error::DbusReqErr(format!(
-                            "Received service {:?} without device",
-                            path
-                        )))
                     }
                 }
-            } else if let Some(props) = if_map.get_mut(CHAR_IF_STR) {
-                match &mut service_base {
-                    Some(serv_base) => {
-                        let character = RemoteCharBase::from_props(props, path)?;
-                        if let Some(char_base) = characteristic_base {
-                            serv_base.chars.insert(char_base.uuid().clone(), char_base);
-                        }
-                        characteristic_base = Some(character);
-                    }
-                    None => {
-                        return Err(Error::DbusReqErr(format!(
-                            "Received characteristic {:?} without service",
-                            path
-                        )))
-                    }
-                }
-            } else if let Some(_props) = if_map.get_mut(DESC_IF_STR) {
-                // TODO: implement for descriptor
-                if self.verbose >= 2 {
-                    eprintln!("Descriptor skipped because it is not implemented.")
-                }
+                return Ok(ret);
             }
         }
-        // handle final device
-        if let Some(mut dev_base) = device_base {
-            if let Some(mut serv_base) = service_base {
-                if let Some(char_base) = characteristic_base {
-                    // TODO add descriptor
-                    serv_base.chars.insert(char_base.uuid().clone(), char_base);
-                }
-                dev_base.services.insert(serv_base.uuid.clone(), serv_base);
-            }
-            self.insert_device(dev_base);
-        }
-
-        Ok(set)
     }
     fn insert_device(&mut self, device: RemoteDeviceBase) {
         let devmac = device.mac.clone();
