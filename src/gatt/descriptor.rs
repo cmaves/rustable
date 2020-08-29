@@ -370,14 +370,56 @@ impl Descriptor for LocalDescriptor<'_, '_, '_> {
     }
 }
 
-pub struct RemoteDescBase {}
+pub struct RemoteDescBase {
+    uuid: UUID,
+    value: Rc<Cell<CharValue>>,
+    path: PathBuf,
+}
+impl RemoteDescBase {
+    pub(crate) fn from_props(
+        mut props: HashMap<String, Variant>,
+        path: PathBuf,
+    ) -> Result<Self, Error> {
+        let uuid = match props.remove("UUID") {
+            Some(addr) => match addr.get::<String>() {
+                Ok(addr) => addr.to_uuid(),
+                Err(_) => {
+                    return Err(Error::DbusReqErr(
+                        "Invalid descriptor returned; UUID field is invalid type".to_string(),
+                    ))
+                }
+            },
+            None => {
+                return Err(Error::DbusReqErr(
+                    "Invalid descriptor returned; missing UUID field".to_string(),
+                ))
+            }
+        };
+        let value = match props.remove("Value") {
+            Some(var) => match var.get() {
+                Ok(cv) => Rc::new(Cell::new(cv)),
+                Err(_) => {
+                    return Err(Error::DbusReqErr(
+                        "Invalid descriptor returned; Value field is invalid type".to_string(),
+                    ))
+                }
+            },
+            None => {
+                return Err(Error::DbusReqErr(
+                    "Invalid descriptor returned; missing Value field".to_string(),
+                ))
+            }
+        };
+        Ok(RemoteDescBase { uuid, value, path })
+    }
+}
 
 impl GattDbusObject for RemoteDescBase {
     fn path(&self) -> &Path {
-        unimplemented!()
+        &self.path
     }
     fn uuid(&self) -> &UUID {
-        unimplemented!()
+        &self.uuid
     }
 }
 /*

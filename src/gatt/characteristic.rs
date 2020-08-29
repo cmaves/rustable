@@ -1201,13 +1201,13 @@ impl RemoteCharBase {
                 Ok(addr) => addr.to_uuid(),
                 Err(_) => {
                     return Err(Error::DbusReqErr(
-                        "Invalid device returned; UUID field is invalid type".to_string(),
+                        "Invalid characteristic returned; UUID field is invalid type".to_string(),
                     ))
                 }
             },
             None => {
                 return Err(Error::DbusReqErr(
-                    "Invalid device returned; missing UUID field".to_string(),
+                    "Invalid characteristic returned; missing UUID field".to_string(),
                 ))
             }
         };
@@ -1216,13 +1216,13 @@ impl RemoteCharBase {
                 Ok(cv) => Rc::new(Cell::new(cv)),
                 Err(_) => {
                     return Err(Error::DbusReqErr(
-                        "Invalid device returned; Value field is invalid type".to_string(),
+                        "Invalid characteristic returned; Value field is invalid type".to_string(),
                     ))
                 }
             },
             None => {
                 return Err(Error::DbusReqErr(
-                    "Invalid device returned; missing Value field".to_string(),
+                    "Invalid characteristic returned; missing Value field".to_string(),
                 ))
             }
         };

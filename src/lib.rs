@@ -1224,7 +1224,7 @@ impl Bluetooth {
         let mut msg = MessageBuilder::new()
             .call(MANGAGED_OBJ_CALL.to_string())
             .at(BLUEZ_DEST.to_string())
-            .on(self.blue_path.to_str().unwrap().to_string())
+            .on("/".to_string())
             .with_interface(OBJ_MANAGER_IF_STR.to_string())
             .build();
 
@@ -1232,6 +1232,12 @@ impl Bluetooth {
         loop {
             self.process_requests()?;
             if let Some(res) = self.rpc_con.try_get_response(res_idx) {
+                if let MessageType::Error = res.typ {
+                    return Err(Error::DbusReqErr(format!(
+                        "Failed to discover device: {:?}",
+                        res
+                    )));
+                }
                 let filter_path = filter_path.as_ref();
                 let path_map: HashMap<PathBuf, HashMap<String, HashMap<String, Variant>>> =
                     res.body.parser().get()?;
@@ -1248,7 +1254,16 @@ impl Bluetooth {
                 for (path, mut if_map) in pairs {
                     if let Some(dev_base_props) = if_map.remove(DEV_IF_STR) {
                         // handle adding remote device
-                        if let Some(dev) = device_base {
+                        if let Some(mut dev) = device_base {
+                            if let Some(mut serv_base) = service_base.take() {
+                                if let Some(mut char_base) = character_base.take() {
+                                    if let Some(desc_base) = descriptor_base.take() {
+                                        char_base.descs.insert(desc_base.uuid().clone(), desc_base);
+                                    }
+                                    serv_base.chars.insert(char_base.uuid().clone(), char_base);
+                                }
+                                dev.services.insert(serv_base.uuid().clone(), serv_base);
+                            }
                             ret.push(dev.uuid().clone());
                             self.insert_device(dev);
                         }
@@ -1259,8 +1274,16 @@ impl Bluetooth {
                             if !path.starts_with(&dev_base.path) {
                                 continue;
                             }
-                            if let Some(serv) = service_base {
-                                dev_base.services.insert(serv.uuid().clone(), serv);
+                            if let Some(mut serv_base) = service_base {
+                                if let Some(mut char_base) = character_base.take() {
+                                    if let Some(desc_base) = descriptor_base.take() {
+                                        char_base.descs.insert(desc_base.uuid().clone(), desc_base);
+                                    }
+                                    serv_base.chars.insert(char_base.uuid().clone(), char_base);
+                                }
+                                dev_base
+                                    .services
+                                    .insert(serv_base.uuid().clone(), serv_base);
                             }
                             service_base =
                                 Some(RemoteServiceBase::from_props(serv_base_props, path)?);
@@ -1269,8 +1292,11 @@ impl Bluetooth {
                                 if !path.starts_with(serv_base.path()) {
                                     continue;
                                 }
-                                if let Some(character) = character_base {
-                                    serv_base.chars.insert(character.uuid().clone(), character);
+                                if let Some(mut char_base) = character_base {
+                                    if let Some(desc_base) = descriptor_base.take() {
+                                        char_base.descs.insert(desc_base.uuid().clone(), desc_base);
+                                    }
+                                    serv_base.chars.insert(char_base.uuid().clone(), char_base);
                                 }
                                 character_base =
                                     Some(RemoteCharBase::from_props(char_base_props, path)?);
@@ -1282,11 +1308,27 @@ impl Bluetooth {
                                     if let Some(desc_base) = descriptor_base {
                                         char_base.descs.insert(desc_base.uuid().clone(), desc_base);
                                     }
-                                    unimplemented!();
+                                    descriptor_base =
+                                        Some(RemoteDescBase::from_props(desc_base_props, path)?);
                                 }
                             }
                         }
                     }
+                }
+                // handle stragalers
+                if let Some(mut dev_base) = device_base {
+                    if let Some(mut serv_base) = service_base {
+                        if let Some(mut char_base) = character_base {
+                            if let Some(desc_base) = descriptor_base {
+                                char_base.descs.insert(desc_base.uuid().clone(), desc_base);
+                            }
+                            serv_base.chars.insert(char_base.uuid().clone(), char_base);
+                        }
+                        dev_base
+                            .services
+                            .insert(serv_base.uuid().clone(), serv_base);
+                    }
+                    self.devices.insert(dev_base.uuid().clone(), dev_base);
                 }
                 return Ok(ret);
             }
