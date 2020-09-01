@@ -474,7 +474,7 @@ impl Bluetooth {
     pub fn devices(&self) -> Vec<MAC> {
         self.devices.keys().map(|x| x.clone()).collect()
     }
-    fn register_adv(&mut self, adv_idx: usize) -> Result<(), Error> {
+    fn register_adv(&mut self, adv_loc: usize) -> Result<(), Error> {
         let mut msg = MessageBuilder::new()
             .call("RegisterAdvertisement".to_string())
             .with_interface("org.bluez.LEAdvertisingManager1".to_string())
@@ -486,7 +486,7 @@ impl Bluetooth {
             value_sig: signature::Type::Container(signature::Container::Variant),
             map: HashMap::new(),
         };
-        let adv_path_str = self.ads[adv_idx].path.to_str().unwrap().to_string();
+        let adv_path_str = self.ads[adv_loc].path.to_str().unwrap().to_string();
         msg.body
             .push_old_params(&[
                 Param::Base(Base::ObjectPath(adv_path_str)),
@@ -539,15 +539,16 @@ impl Bluetooth {
     ///
     /// **Calls process_requests()**
     pub fn start_adv(&mut self, mut adv: Advertisement) -> Result<u16, (u16, Error)> {
-        let idx = self.ads.len();
+        let ad_loc = self.ads.len();
         adv.index = self.ad_index;
+        let ret_idx = self.ad_index;
         self.ad_index += 1;
         let adv_path = self.path.join(format!("adv{:04x}", adv.index));
         adv.path = adv_path;
         self.ads.push_back(adv);
-        self.register_adv(idx)
-            .map(|_| idx as u16)
-            .map_err(|err| (idx as u16, err))
+        self.register_adv(ad_loc)
+            .map(|_| ret_idx as u16)
+            .map_err(|err| (ret_idx as u16, err))
     }
     /// Checks if an advertisement is still active, or if Bluez has signaled it has ended.
     pub fn is_adv_active(&self, index: u16) -> Option<bool> {
