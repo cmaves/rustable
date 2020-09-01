@@ -32,7 +32,7 @@ use rustbus::params::message::Message;
 use rustbus::params::{Base, Container, Param};
 use rustbus::signature;
 use rustbus::standard_messages;
-use rustbus::wire::marshal::traits::{ObjectPath, Signature};
+use rustbus::wire::marshal::traits::{Marshal, ObjectPath, Signature};
 use rustbus::wire::unmarshal;
 use rustbus::wire::unmarshal::traits::Unmarshal;
 use rustbus::wire::unmarshal::Error as UnmarshalError;
@@ -1800,7 +1800,6 @@ impl<'r, 'buf: 'r> Unmarshal<'r, 'buf> for Variant<'buf> {
     ) -> unmarshal::UnmarshalResult<Self> {
         // let padding = rustbus::wire::util::align_offset(Self::get_alignment());
         let (mut used, desc) = rustbus::wire::util::unmarshal_signature(&buf[offset..])?;
-        let start_loc = offset + used;
         let mut sigs = match signature::Type::parse_description(desc) {
             Ok(sigs) => sigs,
             Err(_) => return Err(UnmarshalError::WrongSignature),
@@ -1809,9 +1808,10 @@ impl<'r, 'buf: 'r> Unmarshal<'r, 'buf> for Variant<'buf> {
             return Err(UnmarshalError::WrongSignature);
         }
         let sig = sigs.remove(0);
-        used +=
-            rustbus::wire::validate_raw::validate_marshalled(byteorder, offset + used, buf, &sig)
-                .map_err(|e| e.1)?;
+        used += rustbus::wire::util::align_offset(sig.get_alignment(), buf, offset + used)?;
+        let start_loc = offset + used;
+        used += rustbus::wire::validate_raw::validate_marshalled(byteorder, start_loc, buf, &sig)
+            .map_err(|e| e.1)?;
         Ok((
             used,
             Variant {
@@ -1821,5 +1821,26 @@ impl<'r, 'buf: 'r> Unmarshal<'r, 'buf> for Variant<'buf> {
                 byteorder,
             },
         ))
+    }
+}
+impl Marshal for Variant<'_> {
+    fn marshal(&self, byteorder: ByteOrder, buf: &mut Vec<u8>) -> Result<(), rustbus::Error> {
+        if let ByteOrder::LittleEndian = byteorder {
+            if let ByteOrder::BigEndian = self.byteorder {
+                panic!("Byte order mismatch");
+            }
+        } else {
+            if let ByteOrder::LittleEndian = self.byteorder {
+                panic!("Byte order mismatch");
+            }
+        }
+        let mut sig_str = String::new();
+        self.sig.to_str(&mut sig_str);
+        debug_assert!(sig_str.len() <= 255);
+        buf.push(sig_str.len() as u8);
+        buf.extend_from_slice(sig_str.as_bytes());
+        rustbus::wire::util::pad_to_align(self.sig.get_alignment(), buf);
+        buf.extend_from_slice(&self.buf[self.offset..]);
+        Ok(())
     }
 }
