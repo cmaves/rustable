@@ -32,21 +32,24 @@ use rustbus::params::message::Message;
 use rustbus::params::{Base, Container, Param};
 use rustbus::signature;
 use rustbus::standard_messages;
-use rustbus::wire::marshal::traits::{Marshal, ObjectPath, Signature};
+use rustbus::wire::marshal::traits::{Marshal, Signature};
 use rustbus::wire::unmarshal;
 use rustbus::wire::unmarshal::traits::Unmarshal;
 use rustbus::wire::unmarshal::Error as UnmarshalError;
 use rustbus::{get_system_bus_path, ByteOrder};
 use std::cell::{Cell, RefCell};
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashMap, VecDeque};
 use std::convert::{TryFrom, TryInto};
 use std::ffi::OsString;
 use std::fmt::Write;
 use std::fmt::{Debug, Display, Formatter};
 use std::num::ParseIntError;
+use std::os::unix::prelude::{AsRawFd, RawFd};
 use std::path::{Component, Path, PathBuf};
-use std::rc::Rc;
+use std::rc::{Rc, Weak};
+
 mod bluetooth_cb;
+pub mod path;
 
 enum PendingType<T: 'static, U: 'static> {
     MessageCb(&'static dyn Fn(MarshalledMessage, U) -> T),
@@ -55,19 +58,21 @@ enum PendingType<T: 'static, U: 'static> {
 pub struct Pending<T: 'static, U: 'static> {
     dbus_res: u32,
     typ: Option<PendingType<T, U>>,
-    data: Option<U>,
-    leaking: Rc<RefCell<VecDeque<(u32, Box<dyn FnOnce(MarshalledMessage)>)>>>,
+    data: Option<U>, // this option allows it to be take
+    leaking: Weak<RefCell<VecDeque<(u32, Box<dyn FnOnce(MarshalledMessage)>)>>>,
 }
 impl<T: 'static, U: 'static> Drop for Pending<T, U> {
     fn drop(&mut self) {
         if let Some(PendingType::MessageCb(cb)) = self.typ.take() {
-            let data = self.data.take().unwrap();
-            let fo_cb = move |call: MarshalledMessage| {
-                (cb)(call, data);
-            };
-            self.leaking
-                .borrow_mut()
-                .push_back((self.dbus_res, Box::new(fo_cb)));
+            if let Some(leaking) = self.leaking.upgrade() {
+                let data = self.data.take().unwrap();
+                let fo_cb = move |call: MarshalledMessage| {
+                    (cb)(call, data);
+                };
+                leaking
+                    .borrow_mut()
+                    .push_back((self.dbus_res, Box::new(fo_cb)));
+            }
         }
     }
 }
@@ -341,7 +346,6 @@ impl Bluetooth {
         }
     }
     fn update_from_props(&mut self, mut blue_props: HashMap<String, Variant>) -> Result<(), Error> {
-        let mut all = true;
         let powered = match blue_props.remove("Powered") {
             Some(var) => var.get()?,
             None => {
@@ -654,7 +658,7 @@ impl Bluetooth {
             typ: Some(PendingType::MessageCb(&bluetooth_cb::set_power_cb)),
             dbus_res,
             data: Some((self.powered.clone(), on, bluetooth_cb::POWER)),
-            leaking: self.leaking.clone(),
+            leaking: Rc::downgrade(&self.leaking),
         })
     }
     pub fn set_power_wait(&mut self, on: bool) -> Result<(), Error> {
@@ -683,7 +687,7 @@ impl Bluetooth {
             typ: Some(PendingType::MessageCb(&bluetooth_cb::set_power_cb)),
             dbus_res,
             data: Some((self.discoverable.clone(), on, bluetooth_cb::DISCOVERABLE)),
-            leaking: self.leaking.clone(),
+            leaking: Rc::downgrade(&self.leaking),
         })
     }
     pub fn set_discoverable_wait(&mut self, on: bool) -> Result<(), Error> {
@@ -1177,7 +1181,7 @@ impl Bluetooth {
         &mut self,
         mut pend: Pending<T, U>,
     ) -> Result<T, ResolveError<T, U>> {
-        debug_assert!(Rc::ptr_eq(&self.leaking, &pend.leaking));
+        debug_assert_eq!(Rc::as_ptr(&self.leaking), pend.leaking.as_ptr());
         match pend.typ.as_ref().unwrap() {
             PendingType::PreResolved(_) => match pend.typ.take().unwrap() {
                 PendingType::PreResolved(t) => Ok(t),
@@ -1200,7 +1204,7 @@ impl Bluetooth {
         }
     }
     pub fn resolve<T, U>(&mut self, mut pend: Pending<T, U>) -> Result<T, (Pending<T, U>, Error)> {
-        debug_assert!(Rc::ptr_eq(&self.leaking, &pend.leaking));
+        debug_assert_eq!(Rc::as_ptr(&self.leaking), pend.leaking.as_ptr());
         match pend.typ.take().unwrap() {
             PendingType::PreResolved(t) => Ok(t),
             PendingType::MessageCb(cb) => loop {
@@ -1239,9 +1243,14 @@ impl Bluetooth {
                     )));
                 }
                 let filter_path = filter_path.as_ref();
-                let path_map: HashMap<PathBuf, HashMap<String, HashMap<String, Variant>>> =
-                    res.body.parser().get()?;
-                let mut pairs: Vec<(PathBuf, HashMap<String, HashMap<String, Variant>>)> = path_map
+                let path_map: HashMap<
+                    path::ObjectPathBuf,
+                    HashMap<String, HashMap<String, Variant>>,
+                > = res.body.parser().get()?;
+                let mut pairs: Vec<(
+                    path::ObjectPathBuf,
+                    HashMap<String, HashMap<String, Variant>>,
+                )> = path_map
                     .into_iter()
                     .filter(|pair| pair.0.starts_with(filter_path))
                     .collect();
@@ -1267,7 +1276,8 @@ impl Bluetooth {
                             ret.push(dev.uuid().clone());
                             self.insert_device(dev);
                         }
-                        device_base = Some(RemoteDeviceBase::from_props(dev_base_props, path)?);
+                        device_base =
+                            Some(RemoteDeviceBase::from_props(dev_base_props, path.into())?);
                     } else if let Some(dev_base) = &mut device_base {
                         if let Some(serv_base_props) = if_map.remove(SERV_IF_STR) {
                             // add remote service
@@ -1286,7 +1296,7 @@ impl Bluetooth {
                                     .insert(serv_base.uuid().clone(), serv_base);
                             }
                             service_base =
-                                Some(RemoteServiceBase::from_props(serv_base_props, path)?);
+                                Some(RemoteServiceBase::from_props(serv_base_props, path.into())?);
                         } else if let Some(serv_base) = &mut service_base {
                             if let Some(char_base_props) = if_map.remove(CHAR_IF_STR) {
                                 if !path.starts_with(serv_base.path()) {
@@ -1299,7 +1309,7 @@ impl Bluetooth {
                                     serv_base.chars.insert(char_base.uuid().clone(), char_base);
                                 }
                                 character_base =
-                                    Some(RemoteCharBase::from_props(char_base_props, path)?);
+                                    Some(RemoteCharBase::from_props(char_base_props, path.into())?);
                             } else if let Some(char_base) = &mut character_base {
                                 if let Some(desc_base_props) = if_map.remove(DESC_IF_STR) {
                                     if !path.starts_with(char_base.path()) {
@@ -1308,8 +1318,10 @@ impl Bluetooth {
                                     if let Some(desc_base) = descriptor_base {
                                         char_base.descs.insert(desc_base.uuid().clone(), desc_base);
                                     }
-                                    descriptor_base =
-                                        Some(RemoteDescBase::from_props(desc_base_props, path)?);
+                                    descriptor_base = Some(RemoteDescBase::from_props(
+                                        desc_base_props,
+                                        path.into(),
+                                    )?);
                                 }
                             }
                         }
@@ -1351,6 +1363,18 @@ impl Bluetooth {
         .into();
         self.discover_devices_filter(&self.blue_path.join(devmac))
             .map(|_| ())
+    }
+}
+
+impl AsRawFd for Bluetooth {
+    fn as_raw_fd(&self) -> RawFd {
+        unsafe {
+            // SAFETY: This is safe because as_raw_fd() use an immutable receiver (&self)
+            // We need this unsafe code because conn_mut() is only accessible with a mutable reference
+            let rpc_con = &self.rpc_con as *const RpcConn as *mut RpcConn;
+            let rpc_con = &mut *rpc_con;
+            rpc_con.conn_mut().as_raw_fd()
+        }
     }
 }
 pub fn mac_to_devmac(mac: &MAC) -> Option<String> {

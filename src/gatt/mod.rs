@@ -5,6 +5,7 @@ use nix::poll::{poll, PollFd, PollFlags};
 use std::os::unix::io::RawFd;
 use std::path::Path;
 use std::time::Duration;
+use rustbus::dbus_variant;
 
 mod characteristic;
 mod descriptor;
@@ -14,6 +15,9 @@ mod service;
 pub use characteristic::*;
 pub use descriptor::*;
 pub use service::*;
+
+
+dbus_variant!(CharVar, U16 => u16; String => String);
 
 /*
 pub struct DbusNotifier<'a> {
@@ -275,3 +279,4 @@ mod tests {
         );
     }
 }
+

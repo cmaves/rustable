@@ -1,7 +1,5 @@
 use crate::gatt::*;
 use crate::{Bluetooth, Error, ToMAC, ToUUID, Variant, MAC, UUID};
-use rustbus::params;
-use rustbus::params::{Base, Param};
 use std::cell::Cell;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};

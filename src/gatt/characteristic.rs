@@ -17,6 +17,7 @@ use std::fmt::Debug;
 use std::mem::MaybeUninit;
 use std::ops::{Deref, DerefMut};
 use std::os::unix::io::RawFd;
+use std::rc::Weak;
 
 #[derive(Copy)]
 pub struct CharValue {
@@ -145,6 +146,22 @@ impl Marshal for CharValue {
     }
 }
 
+#[derive(Clone,Copy,Debug)]
+pub enum WriteType {
+	WithoutRes,
+	WithRes,
+	Reliable
+}
+
+impl WriteType {
+	fn to_str(&self) -> &'static str {
+		match self {
+			WriteType::WithoutRes => "command",
+			WriteType::WithRes => "request",
+			WriteType::Reliable => "reliable"
+		}
+	}
+}
 /// Describes the methods avaliable on GATT characteristics.
 pub trait Characteristic<'a>: GattDbusObject + HasChildren<'a> {
     fn read(&mut self) -> Result<Pending<Result<CharValue, Error>, Rc<Cell<CharValue>>>, Error>;
@@ -156,9 +173,9 @@ pub trait Characteristic<'a>: GattDbusObject + HasChildren<'a> {
     fn read_wait(&mut self) -> Result<CharValue, Error>;
 
     /// Begin a write operation to a GATT characteristic.
-    fn write(&mut self, val: CharValue) -> Result<Pending<(), ()>, Error>;
+    fn write(&mut self, val: CharValue, write_type: WriteType) -> Result<Pending<Result<(), Error>, ()>, Error>;
     /// Write a value to a GATT characteristic and wait for completion.
-    fn write_wait(&mut self, val: CharValue) -> Result<(), Error>;
+    fn write_wait(&mut self, val: CharValue, write_type: WriteType) -> Result<(), Error>;
     /// Checks if the characteristic's write fd from [`AcquireWrite`] has already been acquired.
     /// Corresponds to reading [`WriteAcquired`] property.
     ///
@@ -475,7 +492,7 @@ impl<'c, 'd> LocalCharactersitic<'c, 'd> {
                                     }
                                     if notify {
                                         // TODO: is there a better way to handle this error?
-                                        if let Err(e) = self.notify(None) {
+                                        if let Err(e) = self.notify() {
                                             eprintln!(
                                                 "Failed to notify characteristic on change: {:?}",
                                                 e
@@ -742,7 +759,7 @@ impl<'c, 'd> LocalCharactersitic<'c, 'd> {
                                     }
                                     if notify {
                                         drop(base);
-                                        self.notify(None)?;
+                                        self.notify()?;
                                         base = self.get_char_base_mut();
                                     }
                                 }
@@ -815,7 +832,7 @@ impl<'c, 'd> LocalCharactersitic<'c, 'd> {
             .send_message(&mut msg, Timeout::Infinite)?;
         Ok(())
     }
-    pub fn notify_mtu(&self) -> Option<u16> {
+    pub fn get_notify_mtu(&self) -> Option<u16> {
         let base = self.get_char_base();
         if let Some(Notify::Fd(_, mtu)) = base.notify {
             Some(mtu)
@@ -823,41 +840,44 @@ impl<'c, 'd> LocalCharactersitic<'c, 'd> {
             None
         }
     }
-    pub fn notify(&mut self, timeout: Option<Duration>) -> Result<(), Error> {
+	pub fn get_notify_fd(&self) -> Option<RawFd> {
+		let base = self.get_char_base();
+		match &base.notify {
+			Some(notify) => match notify {
+				Notify::Fd(fd, _) => Some(*fd),
+				Notify::Signal => None
+			},
+			None => None
+		}
+	}
+	pub fn get_write_fd(&self) -> Option<RawFd> {
+		let base = self.get_char_base();
+		base.write
+	}
+    pub fn notify(&mut self) -> Result<(), Error> {
         let base = self.get_char_base_mut();
         if let Some(notify) = &mut base.notify {
             let cv = base.vf.to_value();
             match notify {
                 Notify::Signal => self.signal_change()?,
                 Notify::Fd(sock, _) => {
-                    if let Err(_) = {
-                        match timeout {
-                            Some(to) => {
-                                debug_assert!(to.as_micros() <= std::i64::MAX as u128);
-                                let timeout = to.as_micros() as i64;
-                                let mut flags = socket::MsgFlags::MSG_EOR;
-                                if timeout == 0 {
-                                    flags |= socket::MsgFlags::MSG_DONTWAIT
-                                } else {
-                                    let tv = TimeVal::microseconds(timeout);
-                                    socket::setsockopt(*sock, socket::sockopt::SendTimeout, &tv)?;
-                                }
-                                socket::send(*sock, cv.as_slice(), flags)
-                                //let to = to.as
-                            }
-                            None => {
-                                let tv = TimeVal::microseconds(0);
-                                socket::setsockopt(*sock, socket::sockopt::SendTimeout, &tv)?;
-                                socket::send(*sock, cv.as_slice(), socket::MsgFlags::MSG_EOR)
-                            }
-                        }
-                    } {
+                    if let Err(_) = socket::send(*sock, cv.as_slice(), socket::MsgFlags::MSG_EOR) {
+                        close(*sock).ok();
                         base.notify = None;
                     }
                 }
             }
         }
         Ok(())
+    }
+    pub fn set_write_callback(
+        &mut self,
+        cb: Option<
+            Box<dyn FnMut(&[u8]) -> Result<(Option<ValOrFn>, bool), (String, Option<String>)>>,
+        >,
+    ) {
+        let base = self.get_char_base_mut();
+        base.write_callback = cb;
     }
     pub(super) fn get_char_base_mut(&mut self) -> &mut LocalCharBase {
         self.service
@@ -896,68 +916,71 @@ pub struct CharFlags {
     pub authorize: bool,
 }
 impl CharFlags {
-    fn to_strings(&self) -> Vec<String> {
+    fn to_strings(&self) -> Vec<&'static str> {
         let mut ret = Vec::new();
         if self.broadcast {
-            ret.push("broadcast".to_string());
+            ret.push("broadcast");
         }
         if self.read {
-            ret.push("read".to_string());
+            ret.push("read");
         }
         if self.write {
-            ret.push("write".to_string())
+            ret.push("write")
         }
         if self.write_wo_response {
-            ret.push("write-without-response".to_string());
+            ret.push("write-without-response");
         }
         if self.notify {
-            ret.push("notify".to_string());
+            ret.push("notify");
         }
         if self.indicate {
-            ret.push("indicate".to_string());
+            ret.push("indicate");
         }
         if self.auth_signed_writes {
             unimplemented!();
-            ret.push("authenticated-signed-writes".to_string());
+            ret.push("authenticated-signed-writes");
         }
         if self.extended_properties {
-            ret.push("extended-properties".to_string());
+            ret.push("extended-properties");
         }
         if self.reliable_write {
-            ret.push("reliable-write".to_string());
+            ret.push("reliable-write");
         }
         if self.writable_auxiliaries {
             unimplemented!();
-            ret.push("writable-auxiliaries".to_string());
+            ret.push("writable-auxiliaries");
         }
         if self.encrypt_read {
-            ret.push("encrypt-read".to_string());
+            ret.push("encrypt-read");
         }
         if self.encrypt_write {
-            ret.push("encrypt-write".to_string());
+            ret.push("encrypt-write");
         }
         if self.encrypt_auth_read {
-            ret.push("encrypt-authenticated-read".to_string());
+            ret.push("encrypt-authenticated-read");
         }
         if self.encrypt_auth_write {
-            ret.push("encrypt-authenticated-write".to_string());
+            ret.push("encrypt-authenticated-write");
         }
         if self.secure_write {
-            ret.push("secure-write".to_string());
+            ret.push("secure-write");
         }
         if self.secure_read {
-            ret.push("secure-read".to_string());
+            ret.push("secure-read");
         }
         if self.authorize {
             unimplemented!();
-            ret.push("authorize".to_string());
+            ret.push("authorize");
         }
         ret
     }
-    fn from_strings(flags: &[String]) -> CharFlags {
+    fn from_strings<'a, I>(flags: I) -> CharFlags
+    where
+        I: IntoIterator<Item = &'a str>,
+    {
         let mut ret = CharFlags::default();
         for flag in flags {
-            match flag.as_str() {
+            match flag {
                 "broadcast" => ret.broadcast = true,
                 "read" => ret.read = true,
                 "write" => ret.write = true,
@@ -975,7 +998,7 @@ impl CharFlags {
                 "secure-write" => ret.secure_write = true,
                 "secure-read" => ret.secure_read = true,
                 "authorize" => ret.authorize = true,
-                _ => unimplemented!(),
+                _ => unreachable!(),
             }
         }
         ret
@@ -1008,7 +1031,7 @@ impl<'a, 'b: 'a, 'c: 'b> Characteristic<'a> for LocalCharactersitic<'b, 'c> {
     fn read(&mut self) -> Result<Pending<Result<CharValue, Error>, Rc<Cell<CharValue>>>, Error> {
         let blue = self.get_blue_mut();
         blue.process_requests()?;
-        let leaking = blue.leaking.clone();
+        let leaking = Rc::downgrade(&blue.leaking);
         self.check_write_fd()?;
         let base = self.get_char_base_mut();
         Ok(Pending {
@@ -1033,20 +1056,21 @@ impl<'a, 'b: 'a, 'c: 'b> Characteristic<'a> for LocalCharactersitic<'b, 'c> {
         let base = self.get_char_base_mut();
         base.vf.to_value()
     }
-    fn write(&mut self, val: CharValue) -> Result<Pending<(), ()>, Error> {
-        let leaking = self.get_blue().leaking.clone();
+    fn write(&mut self, val: CharValue, write_type: WriteType) -> Result<Pending<Result<(), Error>, ()>, Error> {
+        let blue = self.get_blue();
+        let leaking = Rc::downgrade(&blue.leaking);
         self.check_write_fd()?;
         let base = self.get_char_base_mut();
         let val = ValOrFn::Value(val);
         base.vf = val;
         Ok(Pending {
             dbus_res: 0,
-            typ: Some(PendingType::PreResolved(())),
+            typ: Some(PendingType::PreResolved(Ok(()))),
             data: Some(()),
             leaking,
         })
     }
-    fn write_wait(&mut self, val: CharValue) -> Result<(), Error> {
+    fn write_wait(&mut self, val: CharValue, _write_type: WriteType) -> Result<(), Error> {
         self.check_write_fd()?;
         let base = self.get_char_base_mut();
         let val = ValOrFn::Value(val);
@@ -1144,7 +1168,7 @@ impl Properties for LocalCharBase {
                 NOTIFYING_PROP => Some(base_param_to_variant(Base::Boolean(self.notify.is_some()))),
                 FLAGS_PROP => {
                     let flags = self.flags.to_strings();
-                    let vec = flags.into_iter().map(|s| Base::String(s).into()).collect();
+                    let vec = flags.into_iter().map(|s| Base::String(s.to_string()).into()).collect();
                     let val = Param::Container(Container::Array(params::Array {
                         element_sig: signature::Type::Base(signature::Base::String),
                         values: vec,
@@ -1189,7 +1213,9 @@ pub struct RemoteCharBase {
     value: Rc<Cell<CharValue>>,
     pub(crate) descs: HashMap<UUID, RemoteDescBase>,
     notify_fd: Option<RawFd>,
+    write_fd: Rc<Cell<Option<(u16,RawFd)>>>,
     path: PathBuf,
+    flags: Rc<Cell<CharFlags>>,
 }
 impl RemoteCharBase {
     pub(crate) fn from_props(
@@ -1226,11 +1252,28 @@ impl RemoteCharBase {
                 ))
             }
         };
+        let flags = match props.remove("Flags") {
+            Some(var) => match var.get::<Vec<&str>>() {
+                Ok(flags) => Rc::new(Cell::new(CharFlags::from_strings(flags))),
+                Err(_) => {
+                    return Err(Error::DbusReqErr(
+                        "Invalid characteristic returned; Flags field is invalid type".to_string(),
+                    ));
+                }
+            },
+            None => {
+                return Err(Error::DbusReqErr(
+                    "Invalid characteristic returned: missing Flags field".to_string(),
+                ));
+            }
+        };
         Ok(RemoteCharBase {
             uuid,
             value,
             descs: HashMap::new(),
             notify_fd: None,
+            write_fd: Rc::new(Cell::new(None)),
+            flags,
             path,
         })
     }
@@ -1242,6 +1285,9 @@ impl RemoteCharBase {
             match prop.as_str() {
                 "UUID" => self.uuid = var.get::<String>()?.to_uuid(),
                 "Value" => self.value.set(var.get()?),
+                "Flags" => self
+                    .flags
+                    .set(CharFlags::from_strings(var.get::<Vec<&str>>()?)),
                 _ => (),
             }
         }
@@ -1321,6 +1367,46 @@ impl<'a, 'b, 'c> RemoteChar<'a, 'b, 'c> {
             }
         }
     }
+    pub fn acquire_write(
+        &mut self,
+    ) -> Result<Pending<Result<(), Error>, Weak<Cell<Option<(u16, RawFd)>>>>, Error> {
+        let base = self.get_char();
+        match base.write_fd.get() {
+            Some(write_fd) => Ok(Pending {
+                dbus_res: 0,
+                typ: Some(PendingType::PreResolved(Ok(()))),
+                data: Some(Weak::new()),
+                leaking: Weak::new(),
+            }),
+            None => {
+                let data = Rc::downgrade(&base.write_fd);
+                let mut msg = MessageBuilder::new()
+                    .call("AcquireWrite".to_string())
+                    .with_interface(CHAR_IF_STR.to_string())
+                    .at(BLUEZ_DEST.to_string())
+                    .on(base.path.to_str().unwrap().to_string())
+                    .build();
+				let blue = self.get_blue_mut();
+                let leaking = Rc::downgrade(&blue.leaking);
+                let options: HashMap<String, Variant> = HashMap::new();
+                msg.body.push_param(options).unwrap();
+				let res_idx = blue.rpc_con.send_message(&mut msg, Timeout::Infinite)?;
+                Ok(Pending {
+                    dbus_res: res_idx,
+                    typ: Some(PendingType::MessageCb(&acquire_cb)),
+                    data: Some(data),
+                    leaking,
+                })
+            }
+        }
+    }
+	pub fn acquire_write_wait(&mut self,
+    ) -> Result<(), Error> {
+		let pending = self.acquire_write()?;
+		let blue = self.get_blue_mut();
+		blue.resolve(pending).map_err(|err| err.1)?
+	}
+
     #[inline]
     pub fn try_get_notify(&self) -> Result<CharValue, Error> {
         self.wait_get_notify(Some(Duration::from_secs(0)))
@@ -1363,6 +1449,15 @@ impl<'a, 'b, 'c> RemoteChar<'a, 'b, 'c> {
         let base = self.get_char();
         base.notify_fd
     }
+	pub fn get_write_fd(&self) -> Option<RawFd> {
+		let base = self.get_char();
+		base.write_fd.get().map(|val| val.1)
+
+	}
+	pub fn get_write_mtu(&self) -> Option<u16> {
+		let base = self.get_char();
+		base.write_fd.get().map(|val| val.0)
+	}
     fn get_blue(&mut self) -> &Bluetooth {
         &self.service.dev.blue
     }
@@ -1397,6 +1492,23 @@ impl<'a, 'b, 'c> RemoteChar<'a, 'b, 'c> {
             .get_mut(&self.uuid)
             .unwrap()
     }
+	pub fn write_with_fd(&mut self, val: CharValue) -> Result<(), Error> {
+		let base = self.get_char_mut();
+		match base.write_fd.get() {
+			Some((mtu, fd)) => {
+				let mtu = val.len().min(mtu as usize);
+				match socket::send(fd, &val[..mtu], socket::MsgFlags::MSG_EOR) {
+					Ok(_) => Ok(()),
+					Err(e) => {
+						base.write_fd.set(None);
+						Err(Error::Unix(e))
+					}
+				}
+			}
+			None => Err(Error::NoFd(format!("No write fd has been acquired"))),
+		}
+
+	}
     /*pub fn start_notify(&self) -> ();*/
 }
 impl GattDbusObject for RemoteChar<'_, '_, '_> {
@@ -1419,7 +1531,7 @@ impl HasChildren<'_> for RemoteChar<'_, '_, '_> {
 impl<'a> Characteristic<'a> for RemoteChar<'_, '_, '_> {
     /// Reads a value from the remote device's characteristic.
     fn read(&mut self) -> Result<Pending<Result<CharValue, Error>, Rc<Cell<CharValue>>>, Error> {
-        let leaking = self.get_blue().leaking.clone();
+        let leaking = Rc::downgrade(&self.get_blue().leaking);
         let base = self.get_char_mut();
         let path = base.path.to_str().unwrap().to_string();
         let mut msg = MessageBuilder::new()
@@ -1459,13 +1571,42 @@ impl<'a> Characteristic<'a> for RemoteChar<'_, '_, '_> {
         self.get_char().value.get()
     }
 
-    fn write(&mut self, val: CharValue) -> Result<Pending<(), ()>, Error> {
-        unimplemented!()
+    fn write(&mut self, val: CharValue, write_type: WriteType) -> Result<Pending<Result<(), Error>, ()>, Error> {
+		let base = self.get_char();
+		if let (WriteType::WithoutRes, Some((mtu, fd))) = (write_type, base.write_fd.get()) {
+				let mtu = val.len().min(mtu as usize);
+				match socket::send(fd, &val[..mtu], socket::MsgFlags::MSG_EOR) {
+					Ok(_) => return Ok(Pending {
+						dbus_res: 0,
+						typ: Some(PendingType::PreResolved(Ok(()))),
+						data: Some(()),
+						leaking: Weak::new()
+					}),
+					Err(e) => base.write_fd.set(None),
+			}
+		}
+		let mut options = HashMap::new();
+		options.insert("type", CharVar::String(write_type.to_str().to_string()));
+		let mut msg = MessageBuilder::new().call("WriteValue".to_string())
+			.with_interface(CHAR_IF_STR.to_string())
+			.on(base.path.to_str().unwrap().to_string())
+			.at(BLUEZ_DEST.to_string())
+			.build();
+
+		msg.body.push_param2(val.as_slice(), options).unwrap();
+		let blue = self.get_blue_mut();
+		let res_idx = blue.rpc_con.send_message(&mut msg, Timeout::Infinite)?;
+		Ok(Pending {
+			dbus_res: res_idx,
+			typ: Some(PendingType::MessageCb(&write_cb)),
+			data: Some(()),
+			leaking: Rc::downgrade(&blue.leaking)
+		})
+		
     }
-    fn write_wait(&mut self, val: CharValue) -> Result<(), Error> {
-        let pend = self.write(val)?;
-        self.get_blue_mut().resolve(pend).map_err(|e| e.1)?;
-        Ok(())
+    fn write_wait(&mut self, val: CharValue, write_type: WriteType) -> Result<(), Error> {
+        let pend = self.write(val, write_type)?;
+        self.get_blue_mut().resolve(pend).map_err(|e| e.1)?
     }
     /*fn service(&self) -> &Path {
         unimplemented!()
@@ -1480,7 +1621,8 @@ impl<'a> Characteristic<'a> for RemoteChar<'_, '_, '_> {
         unimplemented!()
     }
     fn flags(&self) -> CharFlags {
-        unimplemented!()
+        let base = self.get_char();
+        base.flags.get()
     }
 }
 /*
@@ -1519,15 +1661,36 @@ pub(crate) fn match_chars<'a, T, U, V >(
         }
     }
 */
-fn mm_to_charvalue(res: MarshalledMessage, _data: Rc<Cell<CharValue>>) -> Result<CharValue, Error> {
+fn mm_to_charvalue(res: MarshalledMessage, data: Rc<Cell<CharValue>>) -> Result<CharValue, Error> {
     match res.typ {
         MessageType::Reply => {
-            let buf: &[u8] = res.body.parser().get()?;
-            return Ok(buf.into());
+            let buf: CharValue = res.body.parser().get()?;
+            data.set(buf);
+            return Ok(buf);
         }
         MessageType::Error => {
             return Err(Error::DbusReqErr(format!("Read call failed: {:?}", res)))
         }
         _ => unreachable!(),
     }
+}
+
+fn acquire_cb(res: MarshalledMessage, data: Weak<Cell<Option<(u16,RawFd)>>>) -> Result<(), Error> {
+    match data.upgrade() {
+        Some(mtu_fd) => {
+			let (fd, mtu): (UnixFd, u16)  = res.body.parser().get2()?;
+			let fd = res.raw_fds[fd.0 as usize];
+			mtu_fd.set(Some((mtu, fd)));
+            Ok(())
+        }
+        None => Ok(()),
+    }
+}
+
+fn write_cb(res: MarshalledMessage, _: ()) -> Result<(), Error> {
+	match res.typ {
+		MessageType::Reply => Ok(()),
+		MessageType::Error => Err(Error::DbusReqErr(format!("Failed to write to characteristic: {:?}", res.dynheader.error_name))),
+		_ => unreachable!()
+	}
 }
