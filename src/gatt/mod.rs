@@ -2,10 +2,10 @@
 //! GATT services/characteristics/descriptors and creating local GATT services.
 use crate::{Error, ToUUID, UUID};
 use nix::poll::{poll, PollFd, PollFlags};
+use rustbus::dbus_variant;
 use std::os::unix::io::RawFd;
 use std::path::Path;
 use std::time::Duration;
-use rustbus::dbus_variant;
 
 mod characteristic;
 mod descriptor;
@@ -15,7 +15,6 @@ mod service;
 pub use characteristic::*;
 pub use descriptor::*;
 pub use service::*;
-
 
 dbus_variant!(CharVar, U16 => u16; String => String);
 
@@ -279,4 +278,3 @@ mod tests {
         );
     }
 }
-
