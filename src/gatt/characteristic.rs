@@ -532,7 +532,7 @@ impl<'c, 'd> LocalCharactersitic<'c, 'd> {
                         .dynheader
                         .make_error_response("org.bluez.Error.NotSupported".to_string(), None);
                 }
-                if base.flags.write {
+                if base.flags.write_wo_response {
                     if let Some(_) = base.write {
                         return call.dynheader.make_error_response(
                             "org.bluez.Error.InProgress".to_string(),
@@ -550,7 +550,7 @@ impl<'c, 'd> LocalCharactersitic<'c, 'd> {
                     ) {
                         Ok((sock1, sock2)) => {
                             let call = call.unmarshall_all().unwrap();
-                            let mut ret = 512;
+                            let mut ret = 517;
                             if let Some(dict) = call.params.get(0) {
                                 if let Param::Container(Container::Dict(dict)) = dict {
                                     if let Some(mtu) =
@@ -599,7 +599,7 @@ impl<'c, 'd> LocalCharactersitic<'c, 'd> {
                 } else {
                     call.dynheader.make_error_response(
                         BLUEZ_NOT_PERM.to_string(),
-                        Some("This is not a writable characteristic.".to_string()),
+                        Some("This is not a write-without-response characteristic.".to_string()),
                     )
                 }
             }
