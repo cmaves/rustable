@@ -10,6 +10,6 @@ repository = "https://github.com/cmaves/rustable"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-# rustbus = { git = "https://github.com/KillingSpark/rustbus.git" }
-rustbus = "0.6.0"
+# rustbus = "0.6.0"
+rustbus = { git = "https://github.com/cmaves/rustbus.git", branch="rustable_dev" }
 nix = "0.18.0"
