@@ -16,7 +16,6 @@ use std::fmt::Debug;
 use std::os::unix::io::RawFd;
 use std::rc::Weak;
 
-
 /// Represents the different write types when writing to characteristics.
 #[derive(Clone, Copy, Debug)]
 pub enum WriteType {
@@ -145,8 +144,6 @@ impl LocalCharBase {
         // eprintln!("Adding desc: {:?}\nto\n{:?}", desc, self);
         self.descs.insert(desc.uuid.clone(), desc);
     }
-
-
 }
 impl AttObject for LocalCharBase {
     fn path(&self) -> &Path {
@@ -968,10 +965,9 @@ impl<'a, 'b: 'a> WritableAtt for LocalCharactersitic<'a, 'b> {
             false
         }
     }
-
 }
 impl FlaggedAtt for LocalCharactersitic<'_, '_> {
-	type Flags = CharFlags;
+    type Flags = CharFlags;
     fn flags(&self) -> Self::Flags {
         let base = self.get_char_base();
         base.flags
@@ -1520,14 +1516,13 @@ impl WritableAtt for RemoteChar<'_, '_, '_> {
     fn write_acquired(&self) -> bool {
         unimplemented!()
     }
-
 }
 impl FlaggedAtt for RemoteChar<'_, '_, '_> {
-	type Flags = CharFlags;
-	fn flags(&self) -> Self::Flags {
-		let base = self.get_char();
+    type Flags = CharFlags;
+    fn flags(&self) -> Self::Flags {
+        let base = self.get_char();
         base.flags.get()
-	}
+    }
 }
 /*
 pub(crate) fn match_chars<'a, T, U, V >(

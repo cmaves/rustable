@@ -1,18 +1,18 @@
 //! Module containing structures and traits for interacting with remote
 //! GATT services/characteristics/descriptors and creating local GATT services.
-use crate::{Error, ToUUID, UUID, Pending};
+use crate::{Error, Pending, ToUUID, UUID};
 use rustbus::wire::marshal::traits::{Marshal, Signature};
 use rustbus::wire::unmarshal;
 use rustbus::wire::unmarshal::traits::Unmarshal;
 use rustbus::{dbus_variant, ByteOrder};
 use std::borrow::Borrow;
+use std::cell::Cell;
 use std::fmt::{Debug, Formatter};
 use std::mem::MaybeUninit;
 use std::ops::{Deref, DerefMut};
 use std::path::Path;
-use std::time::Duration;
 use std::rc::Rc;
-use std::cell::Cell;
+use std::time::Duration;
 
 mod characteristic;
 mod descriptor;
@@ -25,12 +25,12 @@ pub use service::*;
 
 dbus_variant!(CharVar, U16 => u16; String => String);
 
-/// Types implementing this trait represent Bluetooth ATT (services/characteristics,descriptors), 
+/// Types implementing this trait represent Bluetooth ATT (services/characteristics,descriptors),
 /// and their associated DBus path.
 pub trait AttObject {
-	/// Get the DBus object path.
+    /// Get the DBus object path.
     fn path(&self) -> &Path;
-	/// Get the 128-bit UUID of the object.
+    /// Get the 128-bit UUID of the object.
     fn uuid(&self) -> &UUID;
 }
 impl<T: AttObject> AttObject for &T {
@@ -50,34 +50,34 @@ impl<T: AttObject> AttObject for &mut T {
     }
 }
 pub trait FlaggedAtt: AttObject {
-	type Flags;
-	fn flags(&self) -> Self::Flags;
+    type Flags;
+    fn flags(&self) -> Self::Flags;
 }
 impl<T: FlaggedAtt> FlaggedAtt for &T {
-	type Flags = T::Flags;
-	fn flags(&self) -> Self::Flags {
-		T::flags(self)
-	}
+    type Flags = T::Flags;
+    fn flags(&self) -> Self::Flags {
+        T::flags(self)
+    }
 }
 impl<T: FlaggedAtt> FlaggedAtt for &mut T {
-	type Flags = T::Flags;
-	fn flags(&self) -> Self::Flags {
-		T::flags(self)
-	}
+    type Flags = T::Flags;
+    fn flags(&self) -> Self::Flags {
+        T::flags(self)
+    }
 }
 
 /// `AttObject`s implementing this type have 16-bit UUID assigned by the Bluetooth SIG.
 pub trait AssignedAtt: AttObject {
-	/// Get the 16-bit UUID of the object.
-	fn uuid_16(&self) -> u16;
+    /// Get the 16-bit UUID of the object.
+    fn uuid_16(&self) -> u16;
 }
 
 /// `AttObject`s implementing this trait are readable, *if* flags allow for it.
 pub trait ReadableAtt: AttObject + FlaggedAtt {
-	/// Starts a read request of the attribute. 
-	///
-	/// The returned `Pending` can be resolved with [`Bluetooth::resolve()`] to get the result
-	/// when it is finished.
+    /// Starts a read request of the attribute.
+    ///
+    /// The returned `Pending` can be resolved with [`Bluetooth::resolve()`] to get the result
+    /// when it is finished.
     fn read(&mut self) -> Result<Pending<Result<AttValue, Error>, Rc<Cell<AttValue>>>, Error>;
     /// Generally returns a previous value of the GATT characteristic. Check the individual implementors,
     /// for a more precise definition.
@@ -88,14 +88,14 @@ pub trait ReadableAtt: AttObject + FlaggedAtt {
 }
 impl<T: ReadableAtt> ReadableAtt for &mut T {
     fn read(&mut self) -> Result<Pending<Result<AttValue, Error>, Rc<Cell<AttValue>>>, Error> {
-		T::read(self)
-	}
+        T::read(self)
+    }
     fn read_cached(&mut self) -> AttValue {
-		T::read_cached(self)
-	}
-	fn read_wait(&mut self) -> Result<AttValue, Error> {
-		T::read_wait(self)
-	}
+        T::read_cached(self)
+    }
+    fn read_wait(&mut self) -> Result<AttValue, Error> {
+        T::read_wait(self)
+    }
 }
 /// `AttObject`s implementing this trait are writeable, *if* flags allow for it.
 pub trait WritableAtt: AttObject + FlaggedAtt {
@@ -120,15 +120,14 @@ impl<T: WritableAtt> WritableAtt for &mut T {
         val: AttValue,
         write_type: WriteType,
     ) -> Result<Pending<Result<(), Error>, ()>, Error> {
-		T::write(self, val, write_type)
-	}
+        T::write(self, val, write_type)
+    }
     fn write_wait(&mut self, val: AttValue, write_type: WriteType) -> Result<(), Error> {
-		T::write_wait(self, val, write_type)
-	}
-	fn write_acquired(&self) -> bool {
-		T::write_acquired(self)
-	}
-
+        T::write_wait(self, val, write_type)
+    }
+    fn write_acquired(&self) -> bool {
+        T::write_acquired(self)
+    }
 }
 fn match_char(gdo: &mut LocalCharBase, path: &Path) -> Option<Option<UUID>> {
     match path.strip_prefix(gdo.path().file_name().unwrap()) {
@@ -220,7 +219,6 @@ pub(crate) fn match_remote_serv(
 fn match_object<T: AttObject>(gdo: &T, path: &Path) -> bool {
     gdo.path().file_name().unwrap() == path
 }
-
 
 /// Objects implementing this trait have child attributes.
 pub trait HasChildren<'a> {
