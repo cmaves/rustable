@@ -124,7 +124,7 @@ impl RemoteDeviceBase {
         }
     }
 }
-impl GattDbusObject for RemoteDeviceBase {
+impl AttObject for RemoteDeviceBase {
     fn path(&self) -> &Path {
         &self.path
     }

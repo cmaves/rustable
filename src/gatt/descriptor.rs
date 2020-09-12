@@ -7,11 +7,11 @@ use std::fmt::Write;
 use std::path::{Path, PathBuf};
 
 /// Describes the methods avaliable on local and remote GATT descriptors.
-pub trait Descriptor: GattDbusObject {
+pub trait Descriptor: AttObject {
     /// Starts a read operation on the descriptor.
-    fn read(&mut self) -> Result<Pending<Result<CharValue, Error>, Rc<Cell<CharValue>>>, Error>;
+    fn read(&mut self) -> Result<Pending<Result<AttValue, Error>, Rc<Cell<AttValue>>>, Error>;
     /// Starts a read operations on the descriptor and waits for the result.
-    fn read_wait(&mut self) -> Result<CharValue, Error>;
+    fn read_wait(&mut self) -> Result<AttValue, Error>;
     /// Returns a previous value of the GATT descriptor. Check the individual
     /// implementors, for a more precise definition.
     fn read_cached(&mut self) -> Result<([u8; 512], usize), Error>;
@@ -66,7 +66,7 @@ impl Debug for LocalDescBase {
         write!(f, "LocalDescBase{{vf: {:?}, index: {:?}, handle: {:?}, uuid: {:?}, char_uuid: {:?}, serv_uuid: {:?}, path: {:?}, flags: {:?}, write_callback: {}}}", self.vf, self.index, self.handle, self.uuid, self.char_uuid, self.serv_uuid, self.path, self.flags, wc_str)
     }
 }
-impl GattDbusObject for LocalDescBase {
+impl AttObject for LocalDescBase {
     fn path(&self) -> &Path {
         &self.path
     }
@@ -221,6 +221,10 @@ impl<'a, 'b, 'c> LocalDescriptor<'a, 'b, 'c> {
     }
 }
 
+/// Flags for GATT descriptors. What each flags does is detailed on
+/// page 1552 (Table 3.5) and page 1554 (Table 3.8) of the [Core Specification (5.2)]
+///
+/// [Core Specification (5.2)]: https://www.bluetooth.com/specifications/bluetooth-core-specification/
 #[derive(Clone, Copy, Default, Debug)]
 pub struct DescFlags {
     pub read: bool,
@@ -343,7 +347,7 @@ impl Introspectable for LocalDescBase {
     }
 }
 
-impl GattDbusObject for LocalDescriptor<'_, '_, '_> {
+impl AttObject for LocalDescriptor<'_, '_, '_> {
     fn path(&self) -> &Path {
         self.get_desc_base().path()
     }
@@ -353,10 +357,10 @@ impl GattDbusObject for LocalDescriptor<'_, '_, '_> {
 }
 
 impl Descriptor for LocalDescriptor<'_, '_, '_> {
-    fn read(&mut self) -> Result<Pending<Result<CharValue, Error>, Rc<Cell<CharValue>>>, Error> {
+    fn read(&mut self) -> Result<Pending<Result<AttValue, Error>, Rc<Cell<AttValue>>>, Error> {
         unimplemented!()
     }
-    fn read_wait(&mut self) -> Result<CharValue, Error> {
+    fn read_wait(&mut self) -> Result<AttValue, Error> {
         unimplemented!()
     }
     fn read_cached(&mut self) -> Result<([u8; 512], usize), Error> {
@@ -372,7 +376,7 @@ impl Descriptor for LocalDescriptor<'_, '_, '_> {
 
 pub struct RemoteDescBase {
     uuid: UUID,
-    value: Rc<Cell<CharValue>>,
+    value: Rc<Cell<AttValue>>,
     path: PathBuf,
 }
 impl RemoteDescBase {
@@ -414,7 +418,7 @@ impl RemoteDescBase {
     }
 }
 
-impl GattDbusObject for RemoteDescBase {
+impl AttObject for RemoteDescBase {
     fn path(&self) -> &Path {
         &self.path
     }
@@ -429,8 +433,8 @@ pub(super) fn match_descs<'a, T,  V,  U: ToUUID> (
         header: &DynamicHeader,
         serv_uuid: U
     ) -> Option<DbusObject<'a>>
-    where T: GattDbusObject,
-          for<'b> V: GattDbusObject + HasChildren<'b, Child=T>
+    where T: AttObject,
+          for<'b> V: AttObject + HasChildren<'b, Child=T>
 {
         let path = msg_path.to_str().unwrap();
         if !path.starts_with("desc") || path.len() != 8 {
@@ -453,7 +457,7 @@ pub(super) fn match_descs<'a, T,  V,  U: ToUUID> (
 */
 
 pub struct RemoteDescriptor {}
-impl GattDbusObject for RemoteDescriptor {
+impl AttObject for RemoteDescriptor {
     fn path(&self) -> &Path {
         unimplemented!()
     }
@@ -462,10 +466,10 @@ impl GattDbusObject for RemoteDescriptor {
     }
 }
 impl Descriptor for RemoteDescriptor {
-    fn read(&mut self) -> Result<Pending<Result<CharValue, Error>, Rc<Cell<CharValue>>>, Error> {
+    fn read(&mut self) -> Result<Pending<Result<AttValue, Error>, Rc<Cell<AttValue>>>, Error> {
         unimplemented!()
     }
-    fn read_wait(&mut self) -> Result<CharValue, Error> {
+    fn read_wait(&mut self) -> Result<AttValue, Error> {
         unimplemented!()
     }
     fn read_cached(&mut self) -> Result<([u8; 512], usize), Error> {

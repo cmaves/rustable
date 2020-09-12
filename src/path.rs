@@ -19,7 +19,7 @@ pub enum InvalidObjectPath {
     TrailingSlash,
 }
 
-#[derive(PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(PartialEq, Eq, Hash, PartialOrd, Ord, Debug)]
 pub struct ObjectPath {
     inner: Path,
 }
@@ -151,7 +151,7 @@ impl<'r, 'buf: 'r> Unmarshal<'r, 'buf> for ObjectPathBuf {
     }
 }
 
-#[derive(PartialEq, Eq, Hash, PartialOrd, Ord, Clone)]
+#[derive(PartialEq, Eq, Hash, PartialOrd, Ord, Clone, Debug)]
 pub struct ObjectPathBuf {
     inner: PathBuf,
 }
@@ -173,8 +173,9 @@ impl ObjectPathBuf {
         self.inner.clear();
     }
     pub fn push(&mut self, path: &ObjectPath) {
-        let path = path.strip_prefix("/").unwrap();
-        self.inner.push(path);
+        let path: &Path = path.as_ref();
+        let stripped = path.strip_prefix("/").unwrap();
+        self.inner.push(stripped);
     }
     pub fn pop(&mut self) -> bool {
         self.inner.pop()
@@ -223,6 +224,11 @@ impl FromStr for ObjectPathBuf {
 impl From<ObjectPathBuf> for PathBuf {
     fn from(buf: ObjectPathBuf) -> Self {
         buf.inner
+    }
+}
+impl PartialEq<ObjectPath> for ObjectPathBuf {
+    fn eq(&self, other: &ObjectPath) -> bool {
+        self.deref().eq(other)
     }
 }
 #[cfg(test)]
@@ -317,8 +323,17 @@ mod tests {
     #[test]
     fn test_push() {
         let objpath = ObjectPath::new("/dbus/test").unwrap();
+        let objpath2 = ObjectPath::new("/freedesktop/more").unwrap();
         let mut objpathbuf = ObjectPathBuf::new();
         objpathbuf.push(objpath);
-        assert_eq!(objpathbuf, "/dbus/test".as_ref())
+        assert_eq!(objpathbuf, *objpath);
+        objpathbuf.push(objpath2);
+        assert_eq!(
+            objpathbuf,
+            *ObjectPath::new("/dbus/test/freedesktop/more").unwrap()
+        );
+        assert!(objpathbuf.starts_with(objpath));
+        assert!(!objpathbuf.starts_with(objpath2));
+        assert_eq!(objpathbuf.strip_prefix(objpath).unwrap(), objpath2);
     }
 }

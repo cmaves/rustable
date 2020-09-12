@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 
 /// Describes the methods avaliable on remote and local GATT services
 pub trait Service<'a> {
-    type CharType: Characteristic<'a>;
+    type CharType;
     /// Return the `UUID` of the service.
     fn uuid(&self) -> &UUID;
     /// Return in a service is primary service.
@@ -87,7 +87,7 @@ impl AsRef<LocalServiceBase> for LocalServiceBase {
     }
 }
 */
-impl GattDbusObject for LocalServiceBase {
+impl AttObject for LocalServiceBase {
     fn path(&self) -> &Path {
         &self.path
     }
@@ -291,7 +291,7 @@ impl RemoteServiceBase {
         unimplemented!()
     }
 }
-impl GattDbusObject for RemoteServiceBase {
+impl AttObject for RemoteServiceBase {
     fn path(&self) -> &Path {
         &self.path
     }
@@ -384,7 +384,7 @@ impl<'a, 'b: 'a, 'c: 'a> Service<'a> for RemoteService<'b, 'c> {
         &self.get_service().path
     }
 }
-impl GattDbusObject for RemoteService<'_, '_> {
+impl AttObject for RemoteService<'_, '_> {
     fn path(&self) -> &Path {
         self.get_service().path()
     }
@@ -395,9 +395,9 @@ impl GattDbusObject for RemoteService<'_, '_> {
 
 /*
 pub(crate) fn match_service<'a, T, U, V, W>(device: &'a mut W, msg_path: &Path, msg: &DynamicHeader) -> Option<DbusObject<'a>>
-        where T: GattDbusObject + 'a , // descriptor
-              U: GattDbusObject + for<'b>HasChildren<'b, Child=T> + 'a, // character
-              V: GattDbusObject + for<'b>HasChildren<'b, Child=U> + 'a, // service
+        where T: AttObject + 'a , // descriptor
+              U: AttObject + for<'b>HasChildren<'b, Child=T> + 'a, // character
+              V: AttObject + for<'b>HasChildren<'b, Child=U> + 'a, // service
               W: HasChildren<'a, Child=V> // device
 
 {

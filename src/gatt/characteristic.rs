@@ -9,144 +9,15 @@ use nix::sys::time::{TimeVal, TimeValLike};
 use nix::sys::uio::IoVec;
 use nix::unistd::close;
 use rustbus::params::{Base, Container, Param};
-use rustbus::wire::marshal::traits::{Marshal, UnixFd};
-use rustbus::wire::unmarshal::traits::Unmarshal;
-use std::borrow::Borrow;
+use rustbus::wire::marshal::traits::UnixFd;
 use std::cell::Cell;
 use std::convert::TryFrom;
 use std::fmt::Debug;
-use std::mem::MaybeUninit;
-use std::ops::{Deref, DerefMut};
 use std::os::unix::io::RawFd;
 use std::rc::Weak;
 
-#[derive(Copy)]
-pub struct CharValue {
-    //buf: [u8; 512],
-    buf: [MaybeUninit<u8>; 512],
-    len: usize,
-}
-impl Debug for CharValue {
-    fn fmt(&self, f: &mut Formatter<'_>) -> Result<(), std::fmt::Error> {
-        // TODO: use formmater helper functions
-        let slice = &self.buf[..self.len];
-        write!(f, "CharValue {{")?;
-        slice.fmt(f)?;
-        write!(f, "}}")
-    }
-}
-impl CharValue {
-    pub fn new(len: usize) -> Self {
-        assert!(len <= 512);
-        let mut ret = CharValue::default();
-        ret.resize(len, 0);
-        ret
-    }
-    pub fn resize(&mut self, new_len: usize, value: u8) {
-        if self.len < new_len {
-            for i in &mut self.buf[self.len..new_len] {
-                *i = MaybeUninit::new(value);
-            }
-        }
-        self.len = new_len;
-    }
-    pub fn resize_with<F: FnMut() -> u8>(&mut self, new_len: usize, mut f: F) {
-        if self.len < new_len {
-            for i in &mut self.buf[self.len..new_len] {
-                *i = MaybeUninit::new((f)());
-            }
-        }
-        self.len = new_len;
-    }
-    pub fn as_slice(&self) -> &[u8] {
-        // SAFETY: MaybeUninit<u8> has same layout as u8
-        unsafe { std::mem::transmute(&self.buf[..self.len]) }
-    }
-    pub fn as_mut_slice(&mut self) -> &mut [u8] {
-        // SAFETY: MaybeUninit<u8> has same layout as u8
-        unsafe { std::mem::transmute(&mut self.buf[..self.len]) }
-    }
-    pub fn update(&mut self, slice: &[u8], offset: usize) {
-        assert!(offset <= self.len);
-        let end = offset + slice.len();
-        for (tar, src) in self.buf[offset..end].iter_mut().zip(slice) {
-            *tar = MaybeUninit::new(*src);
-        }
-        self.len = end;
-    }
-    pub fn extend_from_slice(&mut self, slice: &[u8]) {
-        let mut iter = slice.iter().map(|x| *x);
-        self.resize_with(self.len + slice.len(), || iter.next().unwrap());
-    }
-}
-impl Default for CharValue {
-    fn default() -> Self {
-        // SAFETY: assume_init() is safe for arrays if the underlying type is MaybeUninit
-        let buf: [MaybeUninit<u8>; 512] = unsafe { MaybeUninit::uninit().assume_init() };
-        CharValue { buf, len: 0 }
-    }
-}
-impl Clone for CharValue {
-    fn clone(&self) -> Self {
-        let mut ret = CharValue::default();
-        ret.extend_from_slice(self.as_slice());
-        ret
-    }
-}
-impl Borrow<[u8]> for CharValue {
-    #[inline]
-    fn borrow(&self) -> &[u8] {
-        self.as_slice()
-    }
-}
-impl From<&[u8]> for CharValue {
-    fn from(slice: &[u8]) -> Self {
-        let mut ret = CharValue::default();
-        ret.extend_from_slice(slice);
-        ret
-    }
-}
-impl Deref for CharValue {
-    type Target = [u8];
-    #[inline]
-    fn deref(&self) -> &Self::Target {
-        self.as_slice()
-    }
-}
-impl DerefMut for CharValue {
-    #[inline]
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        self.as_mut_slice()
-    }
-}
-impl Signature for CharValue {
-    fn signature() -> crate::signature::Type {
-        <[u8]>::signature()
-    }
-    fn alignment() -> usize {
-        <[u8]>::alignment()
-    }
-}
-impl<'r, 'buf: 'r> Unmarshal<'r, 'buf> for CharValue {
-    fn unmarshal(
-        byteorder: ByteOrder,
-        buf: &'buf [u8],
-        offset: usize,
-    ) -> unmarshal::UnmarshalResult<Self> {
-        let (used, buf): (usize, &'r [u8]) = <&'r [u8]>::unmarshal(byteorder, buf, offset)?;
-        if buf.len() > 512 {
-            Err(unmarshal::Error::InvalidType)
-        } else {
-            Ok((used, buf.into()))
-        }
-    }
-}
-impl Marshal for CharValue {
-    fn marshal(&self, byteorder: ByteOrder, buf: &mut Vec<u8>) -> Result<(), rustbus::Error> {
-        self.as_slice().marshal(byteorder, buf)
-    }
-}
 
+/// Represents the different write types when writing to characteristics.
 #[derive(Clone, Copy, Debug)]
 pub enum WriteType {
     WithoutRes,
@@ -162,45 +33,6 @@ impl WriteType {
             WriteType::Reliable => "reliable",
         }
     }
-}
-/// Describes the methods avaliable on GATT characteristics.
-pub trait Characteristic<'a>: GattDbusObject + HasChildren<'a> {
-    fn read(&mut self) -> Result<Pending<Result<CharValue, Error>, Rc<Cell<CharValue>>>, Error>;
-    /// Generally returns a previous value of the GATT characteristic. Check the individual implementors,
-    /// for a more precise definition.
-    fn read_cached(&mut self) -> CharValue;
-
-    /// Reads the value of a GATT characteristic, and waits for a response.
-    fn read_wait(&mut self) -> Result<CharValue, Error>;
-
-    /// Begin a write operation to a GATT characteristic.
-    fn write(
-        &mut self,
-        val: CharValue,
-        write_type: WriteType,
-    ) -> Result<Pending<Result<(), Error>, ()>, Error>;
-    /// Write a value to a GATT characteristic and wait for completion.
-    fn write_wait(&mut self, val: CharValue, write_type: WriteType) -> Result<(), Error>;
-    /// Checks if the characteristic's write fd from [`AcquireWrite`] has already been acquired.
-    /// Corresponds to reading [`WriteAcquired`] property.
-    ///
-    /// [`AcquireWrite`]: https://git.kernel.org/pub/scm/bluetooth/bluez.git/tree/doc/gatt-api.txt#n115
-    /// [`WriteAcquired`]: https://git.kernel.org/pub/scm/bluetooth/bluez.git/tree/doc/gatt-api.txt#n223
-    fn write_acquired(&self) -> bool;
-    /// Checks if the characteristic's notify fd from [`AcquireNotify`] has already been acquired.
-    /// Corresponds to reading [`NotifyAcquired`] property.
-    ///
-    /// [`AcquireNotify`]: https://git.kernel.org/pub/scm/bluetooth/bluez.git/tree/doc/gatt-api.txt#n145
-    /// [`NotifyAcquired`]: https://git.kernel.org/pub/scm/bluetooth/bluez.git/tree/doc/gatt-api.txt#n234
-    fn notify_acquired(&self) -> bool;
-    /// Checks if the [`StartNotify`] command has been called on a characteristic.
-    /// Corresponds to reading [`Notifying`] property.
-    ///
-    /// [`StartNotify`]: https://git.kernel.org/pub/scm/bluetooth/bluez.git/tree/doc/gatt-api.txt#n181
-    /// [`Notifying`]: https://git.kernel.org/pub/scm/bluetooth/bluez.git/tree/doc/gatt-api.txt#n245
-    fn notifying(&self) -> bool;
-    /// Get the flags present on a characteristic.
-    fn flags(&self) -> CharFlags;
 }
 
 #[derive(Debug)]
@@ -313,8 +145,10 @@ impl LocalCharBase {
         // eprintln!("Adding desc: {:?}\nto\n{:?}", desc, self);
         self.descs.insert(desc.uuid.clone(), desc);
     }
+
+
 }
-impl GattDbusObject for LocalCharBase {
+impl AttObject for LocalCharBase {
     fn path(&self) -> &Path {
         &self.path
     }
@@ -340,7 +174,8 @@ pub struct LocalCharactersitic<'a, 'b: 'a> {
     #[cfg(feature = "unsafe-opt")]
     base: *mut LocalCharBase,
 }
-// ends around line 647
+
+// ends around line 766
 impl<'c, 'd> LocalCharactersitic<'c, 'd> {
     pub(crate) fn new(service: &'c mut LocalService<'d>, uuid: UUID) -> Self {
         // TODO: implement base for cfg unsafe-opt
@@ -898,6 +733,29 @@ impl<'c, 'd> LocalCharactersitic<'c, 'd> {
         let base = self.get_char_base_mut();
         base.write_callback = cb;
     }
+    /// Checks if the characteristic's notify fd from [`AcquireNotify`] has already been acquired.
+    /// Corresponds to reading [`NotifyAcquired`] property.
+    ///
+    /// [`AcquireNotify`]: https://git.kernel.org/pub/scm/bluetooth/bluez.git/tree/doc/gatt-api.txt#n145
+    /// [`NotifyAcquired`]: https://git.kernel.org/pub/scm/bluetooth/bluez.git/tree/doc/gatt-api.txt#n234
+    pub fn notify_acquired(&self) -> bool {
+        let base = self.get_char_base();
+        if let Some(Notify::Fd(_, _)) = base.notify {
+            true
+        } else {
+            false
+        }
+    }
+    /// Checks if the [`StartNotify`] command has been called on a characteristic.
+    /// Corresponds to reading [`Notifying`] property.
+    ///
+    /// [`StartNotify`]: https://git.kernel.org/pub/scm/bluetooth/bluez.git/tree/doc/gatt-api.txt#n181
+    /// [`Notifying`]: https://git.kernel.org/pub/scm/bluetooth/bluez.git/tree/doc/gatt-api.txt#n245
+    pub fn notifying(&self) -> bool {
+        let base = self.get_char_base();
+        base.notify.is_some()
+    }
+
     pub(super) fn get_char_base_mut(&mut self) -> &mut LocalCharBase {
         self.service
             .get_service_base_mut()
@@ -910,7 +768,7 @@ impl<'c, 'd> LocalCharactersitic<'c, 'd> {
     }
 }
 
-/// Flags for GATT characteristics. What each flags does it detailed on
+/// Flags for GATT characteristics. What each flags does is detailed on
 /// page 1552 (Table 3.5) and page 1554 (Table 3.8) of the [Core Specification (5.2)]
 ///
 /// [Core Specification (5.2)]: https://www.bluetooth.com/specifications/bluetooth-core-specification/
@@ -1037,7 +895,7 @@ impl<'a, 'b: 'a, 'c: 'b> HasChildren<'a> for LocalCharactersitic<'b, 'c> {
         }
     }
 }
-impl GattDbusObject for LocalCharactersitic<'_, '_> {
+impl AttObject for LocalCharactersitic<'_, '_> {
     fn path(&self) -> &Path {
         self.get_char_base().path()
     }
@@ -1046,8 +904,8 @@ impl GattDbusObject for LocalCharactersitic<'_, '_> {
     }
 }
 
-impl<'a, 'b: 'a, 'c: 'b> Characteristic<'a> for LocalCharactersitic<'b, 'c> {
-    fn read(&mut self) -> Result<Pending<Result<CharValue, Error>, Rc<Cell<CharValue>>>, Error> {
+impl<'a, 'b: 'a> ReadableAtt for LocalCharactersitic<'a, 'b> {
+    fn read(&mut self) -> Result<Pending<Result<AttValue, Error>, Rc<Cell<AttValue>>>, Error> {
         let blue = self.get_blue_mut();
         blue.process_requests()?;
         let leaking = Rc::downgrade(&blue.leaking);
@@ -1056,13 +914,13 @@ impl<'a, 'b: 'a, 'c: 'b> Characteristic<'a> for LocalCharactersitic<'b, 'c> {
         Ok(Pending {
             dbus_res: 0,
             typ: Some(PendingType::PreResolved(Ok(base.vf.to_value()))),
-            data: Some(Rc::new(Cell::new(CharValue::default()))),
+            data: Some(Rc::new(Cell::new(AttValue::default()))),
             leaking,
         })
     }
     /// Reads the local value of the characteristic. If the value
     /// of the characteristic is given by a function, it will be executed.
-    fn read_wait(&mut self) -> Result<CharValue, Error> {
+    fn read_wait(&mut self) -> Result<AttValue, Error> {
         self.get_blue_mut().process_requests()?;
         self.check_write_fd()?;
         let base = self.get_char_base_mut();
@@ -1071,13 +929,15 @@ impl<'a, 'b: 'a, 'c: 'b> Characteristic<'a> for LocalCharactersitic<'b, 'c> {
     /// For `LocalCharactersitic` this reads the value without tirgger withoug checking
     /// `process_requests()` or the write fd.
     ///
-    fn read_cached(&mut self) -> CharValue {
+    fn read_cached(&mut self) -> AttValue {
         let base = self.get_char_base_mut();
         base.vf.to_value()
     }
+}
+impl<'a, 'b: 'a> WritableAtt for LocalCharactersitic<'a, 'b> {
     fn write(
         &mut self,
-        val: CharValue,
+        val: AttValue,
         write_type: WriteType,
     ) -> Result<Pending<Result<(), Error>, ()>, Error> {
         let blue = self.get_blue();
@@ -1093,17 +953,13 @@ impl<'a, 'b: 'a, 'c: 'b> Characteristic<'a> for LocalCharactersitic<'b, 'c> {
             leaking,
         })
     }
-    fn write_wait(&mut self, val: CharValue, _write_type: WriteType) -> Result<(), Error> {
+    fn write_wait(&mut self, val: AttValue, _write_type: WriteType) -> Result<(), Error> {
         self.check_write_fd()?;
         let base = self.get_char_base_mut();
         let val = ValOrFn::Value(val);
         base.vf = val;
         Ok(())
     }
-    /*fn service(&self) -> &Path {
-        let base = self.get_char_base();
-        base.path.parent().unwrap()
-    }*/
     fn write_acquired(&self) -> bool {
         let base = self.get_char_base();
         if let Some(_) = base.write {
@@ -1112,19 +968,11 @@ impl<'a, 'b: 'a, 'c: 'b> Characteristic<'a> for LocalCharactersitic<'b, 'c> {
             false
         }
     }
-    fn notify_acquired(&self) -> bool {
-        let base = self.get_char_base();
-        if let Some(Notify::Fd(_, _)) = base.notify {
-            true
-        } else {
-            false
-        }
-    }
-    fn notifying(&self) -> bool {
-        let base = self.get_char_base();
-        base.notify.is_some()
-    }
-    fn flags(&self) -> CharFlags {
+
+}
+impl FlaggedAtt for LocalCharactersitic<'_, '_> {
+	type Flags = CharFlags;
+    fn flags(&self) -> Self::Flags {
         let base = self.get_char_base();
         base.flags
     }
@@ -1236,7 +1084,7 @@ impl Properties for LocalCharBase {
 }
 pub struct RemoteCharBase {
     uuid: UUID,
-    value: Rc<Cell<CharValue>>,
+    value: Rc<Cell<AttValue>>,
     pub(crate) descs: HashMap<UUID, RemoteDescBase>,
     notify_fd: Option<RawFd>,
     write_fd: Rc<Cell<Option<(u16, RawFd)>>>,
@@ -1320,7 +1168,7 @@ impl RemoteCharBase {
         Ok(())
     }
 }
-impl GattDbusObject for RemoteCharBase {
+impl AttObject for RemoteCharBase {
     fn path(&self) -> &Path {
         &self.path
     }
@@ -1433,16 +1281,16 @@ impl<'a, 'b, 'c> RemoteChar<'a, 'b, 'c> {
     }
 
     #[inline]
-    pub fn try_get_notify(&mut self) -> Result<CharValue, Error> {
+    pub fn try_get_notify(&mut self) -> Result<AttValue, Error> {
         self.wait_get_notify(Some(Duration::from_secs(0)))
     }
-    pub fn wait_get_notify(&mut self, timeout: Option<Duration>) -> Result<CharValue, Error> {
+    pub fn wait_get_notify(&mut self, timeout: Option<Duration>) -> Result<AttValue, Error> {
         let base = self.get_char_mut();
         let fd = match base.notify_fd {
             Some(fd) => fd,
             None => return Err(Error::NoFd("No fd is avaliable".to_string())),
         };
-        let mut ret = CharValue::new(512);
+        let mut ret = AttValue::new(512);
         let msg_rcv = match timeout {
             Some(dur) => {
                 debug_assert!(dur.as_micros() <= std::i64::MAX as u128);
@@ -1545,7 +1393,7 @@ impl<'a, 'b, 'c> RemoteChar<'a, 'b, 'c> {
             .get_mut(&self.uuid)
             .unwrap()
     }
-    pub fn write_with_fd(&mut self, val: CharValue) -> Result<(), Error> {
+    pub fn write_with_fd(&mut self, val: AttValue) -> Result<(), Error> {
         let base = self.get_char_mut();
         match base.write_fd.get() {
             Some((mtu, fd)) => {
@@ -1563,7 +1411,7 @@ impl<'a, 'b, 'c> RemoteChar<'a, 'b, 'c> {
     }
     /*pub fn start_notify(&self) -> ();*/
 }
-impl GattDbusObject for RemoteChar<'_, '_, '_> {
+impl AttObject for RemoteChar<'_, '_, '_> {
     fn path(&self) -> &Path {
         self.get_char().path()
     }
@@ -1580,9 +1428,10 @@ impl HasChildren<'_> for RemoteChar<'_, '_, '_> {
         unimplemented!()
     }
 }
-impl<'a> Characteristic<'a> for RemoteChar<'_, '_, '_> {
+
+impl ReadableAtt for RemoteChar<'_, '_, '_> {
     /// Reads a value from the remote device's characteristic.
-    fn read(&mut self) -> Result<Pending<Result<CharValue, Error>, Rc<Cell<CharValue>>>, Error> {
+    fn read(&mut self) -> Result<Pending<Result<AttValue, Error>, Rc<Cell<AttValue>>>, Error> {
         let leaking = Rc::downgrade(&self.get_blue().leaking);
         let base = self.get_char_mut();
         let path = base.path.to_str().unwrap().to_string();
@@ -1603,7 +1452,7 @@ impl<'a> Characteristic<'a> for RemoteChar<'_, '_, '_> {
         let blue = &mut self.service.dev.blue;
         let res_idx = blue.rpc_con.send_message(&mut msg, Timeout::Infinite)?;
         Ok(Pending {
-            data: Some(Rc::new(Cell::new(CharValue::default()))), // TODO: update
+            data: Some(Rc::new(Cell::new(AttValue::default()))), // TODO: update
             dbus_res: res_idx,
             typ: Some(PendingType::MessageCb(&mm_to_charvalue)),
             leaking,
@@ -1614,18 +1463,20 @@ impl<'a> Characteristic<'a> for RemoteChar<'_, '_, '_> {
             }
         }*/
     }
-    fn read_wait(&mut self) -> Result<CharValue, Error> {
+    fn read_wait(&mut self) -> Result<AttValue, Error> {
         let pend = self.read()?;
         let blue = self.get_blue_mut();
         blue.resolve(pend).map_err(|e| e.1)?
     }
-    fn read_cached(&mut self) -> CharValue {
+    fn read_cached(&mut self) -> AttValue {
         self.get_char().value.get()
     }
+}
 
+impl WritableAtt for RemoteChar<'_, '_, '_> {
     fn write(
         &mut self,
-        val: CharValue,
+        val: AttValue,
         write_type: WriteType,
     ) -> Result<Pending<Result<(), Error>, ()>, Error> {
         let base = self.get_char();
@@ -1662,26 +1513,21 @@ impl<'a> Characteristic<'a> for RemoteChar<'_, '_, '_> {
             leaking: Rc::downgrade(&blue.leaking),
         })
     }
-    fn write_wait(&mut self, val: CharValue, write_type: WriteType) -> Result<(), Error> {
+    fn write_wait(&mut self, val: AttValue, write_type: WriteType) -> Result<(), Error> {
         let pend = self.write(val, write_type)?;
         self.get_blue_mut().resolve(pend).map_err(|e| e.1)?
     }
-    /*fn service(&self) -> &Path {
-        unimplemented!()
-    }*/
     fn write_acquired(&self) -> bool {
         unimplemented!()
     }
-    fn notify_acquired(&self) -> bool {
-        unimplemented!()
-    }
-    fn notifying(&self) -> bool {
-        unimplemented!()
-    }
-    fn flags(&self) -> CharFlags {
-        let base = self.get_char();
+
+}
+impl FlaggedAtt for RemoteChar<'_, '_, '_> {
+	type Flags = CharFlags;
+	fn flags(&self) -> Self::Flags {
+		let base = self.get_char();
         base.flags.get()
-    }
+	}
 }
 /*
 pub(crate) fn match_chars<'a, T, U, V >(
@@ -1689,9 +1535,9 @@ pub(crate) fn match_chars<'a, T, U, V >(
         msg_path: &Path,
         header: &DynamicHeader,
     ) -> Option<DbusObject<'a>>
-        where T: GattDbusObject, //desc
-              U: GattDbusObject + HasChildren<'a, Child=T> + 'a, //characteristic
-              V: GattDbusObject + for<'b>HasChildren<'b, Child=U> //service
+        where T: AttObject, //desc
+              U: AttObject + HasChildren<'a, Child=T> + 'a, //characteristic
+              V: AttObject + for<'b>HasChildren<'b, Child=U> //service
     {
         // eprintln!("Checking for characteristic for match: {:?}", msg_path);
         let mut components = msg_path.components();
@@ -1719,10 +1565,10 @@ pub(crate) fn match_chars<'a, T, U, V >(
         }
     }
 */
-fn mm_to_charvalue(res: MarshalledMessage, data: Rc<Cell<CharValue>>) -> Result<CharValue, Error> {
+fn mm_to_charvalue(res: MarshalledMessage, data: Rc<Cell<AttValue>>) -> Result<AttValue, Error> {
     match res.typ {
         MessageType::Reply => {
-            let buf: CharValue = res.body.parser().get()?;
+            let buf: AttValue = res.body.parser().get()?;
             data.set(buf);
             return Ok(buf);
         }

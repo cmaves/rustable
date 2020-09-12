@@ -1,26 +1,35 @@
 //! # rustable
-//! rustable is yet another library for interfacing bluez over DBus.
+//! rustable is yet another library for interfacing Bluez over DBus.
+//! Its objective is to be a comprehensive tool for creating Bluetooth Low Energy
+//! enabled applications in Rust on Linux. It will supports to interacting with remote
+//! devices as a GATT client, and creating local services as a GATT Server.
+//! It currently allows the creation of advertisements/broadcasts as a Bluetooth peripherial.
 //!
 //! ## Supported Features
+//! ### GAP Peripheral
+//! - Advertisements
+//! - Broadcasts
 //! ### GATT Server
 //! - Creating local services
-//! - Reading/Writing local characteristics
-//! - Notifying/Indicating local characteristics with sockets.
-//! - Notifying/Indicating local characteristics with DBus signals.
-//!
+//! - Reading local characteristics from remote devices.
+//! - Writing to local characteristics from remote devices.
+//! - Write-without-response via sockets from remote devices (AcquireWrite).
+//! - Notifying/Indicating local characteristics with sockets (AcquireNotify).
+//! - Reading local descriptors from remote devices.
 //!  **To Do:**
-//!
-//! - Descriptors as a server.
+//! - Writable descriptors.
 //! ### GATT Client
+//! - Retreiving attribute metadata (Flags, UUIDs...).
+//! - Reading from remote characteristics.
+//! - Writing to remote characteristics.
+//! - Write-without-response via sockets to remote devices (AcquireWrite).
 //! - Receiving remote notification/indications with sockets.
-//!
 //!  **To Do:**
-//!
 //! - Descriptors as a client.
 //! ## Development status
 //! This library is unstable in *alpha*. There are planned functions
 //! in the API that have yet to be implemented. Unimplemented function are noted.
-//! The API is also subject to breaking changes.
+//! The API is subject to breaking changes.
 //!
 use gatt::*;
 use nix::unistd::close;
@@ -55,12 +64,24 @@ enum PendingType<T: 'static, U: 'static> {
     MessageCb(&'static dyn Fn(MarshalledMessage, U) -> T),
     PreResolved(T),
 }
+/// A struct representing pending Dbus Method-calls.
+///
+/// Many methods in this library return `Pending` (usually wrapped in `Result`).
+/// These methods are performed issuing a DBus Method-call to the Bluez daemon.
+/// This struct represents a pending response, that can be resolved using [`Bluetooth::resolve()`]/['try_resolve()`]
+/// This allows for multiple DBus requests to be issued at onces allow for more concurrent processing,
+/// such as reading multiple characteristics at once.
+/// ## Notes
+/// - If using multiple [`Bluetooth`] instances in one application, the `Pending` must be resolved with the `Bluetooth` instance
+/// that created it.
+/// - `Pending` implements [`Drop`], that will cause it to be resolved automatically by its parent `Bluetooth`.
 pub struct Pending<T: 'static, U: 'static> {
     dbus_res: u32,
     typ: Option<PendingType<T, U>>,
     data: Option<U>, // this option allows it to be take
     leaking: Weak<RefCell<VecDeque<(u32, Box<dyn FnOnce(MarshalledMessage)>)>>>,
 }
+
 impl<T: 'static, U: 'static> Drop for Pending<T, U> {
     fn drop(&mut self) {
         if let Some(PendingType::MessageCb(cb)) = self.typ.take() {
@@ -76,6 +97,9 @@ impl<T: 'static, U: 'static> Drop for Pending<T, U> {
         }
     }
 }
+
+/// Returned by [`Bluetooth::try_resolve()`] to distinguish between
+/// Errors, and results that didn't finish.
 pub enum ResolveError<T: 'static, U: 'static> {
     StillPending(Pending<T, U>),
     Error(Pending<T, U>, Error),
@@ -103,6 +127,12 @@ pub type MAC = Rc<str>;
 pub const MAX_APP_MTU: usize = 244;
 pub const MAX_CHAR_LEN: usize = 512;
 
+/// This trait creates a UUID from the implementing Type.
+/// This trait can panic if the given type doesn't represent a valid uuid.
+/// Only 128-bit uuids are supported at the moment.
+/// ## Note
+/// This trait exists because UUID and MAC will eventually be converted into
+/// their own structs rather than being aliases for `Rc<str>`
 pub trait ToUUID {
     fn to_uuid(self) -> UUID;
 }
@@ -141,6 +171,9 @@ impl ToUUID for u128 {
         .into()
     }
 }
+/// Checks if a string is valid MAC.
+/// Currently MAC address must be uppercase and use ':' as the seperator.
+/// These former requirement will be removed in the future, and '_' will also be accepted as a seperator.
 fn validate_mac(mac: &str) -> bool {
     if mac.len() != 17 {
         return false;
@@ -198,6 +231,7 @@ pub enum Error {
     Unix(nix::Error),
     Timeout,
 }
+
 impl From<nix::Error> for Error {
     fn from(err: nix::Error) -> Self {
         match err {
@@ -253,6 +287,7 @@ pub struct Bluetooth {
     name: String,
     path: PathBuf,
     pub verbose: u8,
+    /// Allows for verbose messages to be printed to stderr. Useful for debugging.
     services: HashMap<UUID, LocalServiceBase>,
     registered: bool,
     filter_dest: Option<(String, Option<String>)>,
@@ -266,6 +301,7 @@ pub struct Bluetooth {
     leaking: Rc<RefCell<VecDeque<(u32, Box<dyn FnOnce(MarshalledMessage)>)>>>,
     addr: MAC,
 }
+
 impl Bluetooth {
     /// Creates a new `Bluetooth` and setup a DBus client to interact with Bluez.
     pub fn new(dbus_name: String, blue_path: String) -> Result<Self, Error> {
@@ -318,9 +354,35 @@ impl Bluetooth {
             MessageType::Signal => true,
         }));
         ret.set_filter(Some(BLUEZ_DEST.to_string()))?;
+        ret.setup_match()?;
         ret.update_adapter_props()?;
         Ok(ret)
     }
+    fn setup_match(&mut self) -> Result<(), Error> {
+        let match_str = format!(
+            "sender='{}',path_namespace='{}',type='signal',",
+            BLUEZ_DEST,
+            self.blue_path.to_str().unwrap()
+        );
+        eprintln!("{}", match_str); // TODO remvoe
+        let mut msg = standard_messages::add_match(match_str);
+        let res_idx = self.rpc_con.send_message(&mut msg, Timeout::Infinite)?;
+        let res = self.rpc_con.wait_response(res_idx, Timeout::Infinite)?;
+        match res.typ {
+            MessageType::Reply => Ok(()),
+            MessageType::Error => Err(Error::DbusReqErr(format!(
+                "Error adding match: {}",
+                res.dynheader.error_name.unwrap()
+            ))),
+            _ => unreachable!(),
+        }
+    }
+    /// Forces an update of the local cached adapter state by reading the
+    /// properties using a Dbus message.
+    ///
+    /// Generally the locally cached state of the adapter is kept up to date,
+    /// by reading DBus signals coming from the Bluez daemon, so this method
+    /// doesn't typically need to be called.
     pub fn update_adapter_props(&mut self) -> Result<(), Error> {
         // TODO: should this return a Pending
         // get properties of local adapter
@@ -395,9 +457,16 @@ impl Bluetooth {
         }
         Ok(())
     }
+    /// Get the `MAC` of the local adapter.
     pub fn addr(&self) -> &MAC {
         &self.addr
     }
+    /// Allows for changing which messages sources are allowed or rejected.
+    ///
+    /// By default, `Bluetooth`'s filter is set to org.bluez, only allowing
+    /// it to receive messages from the bluetooth daemon.
+    /// This method allows this filter to be eliminated (`None`) or set to something else.
+    /// This can be useful for debugging.
     pub fn set_filter(&mut self, filter: Option<String>) -> Result<(), Error> {
         match filter {
             Some(name) => {
@@ -640,8 +709,6 @@ impl Bluetooth {
         self.ads.remove(idx)
     }
     /// Set the Bluez controller power on (`true`) or off.
-    ///
-    /// **Calls process_requests()**
     pub fn set_power(
         &mut self,
         on: bool,
@@ -662,13 +729,14 @@ impl Bluetooth {
             leaking: Rc::downgrade(&self.leaking),
         })
     }
+    /// Set the Bluez controller power on (`true`) or off and waits for the response.
+    ///
+    /// **Calls process_requests()**
     pub fn set_power_wait(&mut self, on: bool) -> Result<(), Error> {
         let pend = self.set_discoverable(on)?;
         self.wait_result_variant(pend)
     }
     /// Set whether the Bluez controller should be discoverable (`true`) or not.
-    ///
-    /// **Calls process_requests()**
     pub fn set_discoverable(
         &mut self,
         on: bool,
@@ -691,6 +759,13 @@ impl Bluetooth {
             leaking: Rc::downgrade(&self.leaking),
         })
     }
+    /// Get whether the Bluez controller is currently discoverable.
+    pub fn discoverable(&self) -> bool {
+        self.discoverable.get()
+    }
+    /// Set whether the Bluez controller should be discoverable (`true`) or not and waits for the response.
+    ///
+    /// **Calls process_requests()**
     pub fn set_discoverable_wait(&mut self, on: bool) -> Result<(), Error> {
         let pend = self.set_discoverable(on)?;
         self.wait_result_variant(pend)
@@ -701,13 +776,14 @@ impl Bluetooth {
     ) -> Result<O, Error> {
         match self.resolve(pend) {
             Ok(res) => res,
-            Err((pend, err)) => Err(err),
+            Err((_pend, err)) => Err(err),
         }
     }
+    /// Get whether the Bluez controller is currently powered.
     pub fn power(&mut self) -> bool {
         self.powered.get()
     }
-    /// Registers the local application's GATT services/characteristics (TODO: descriptors)
+    /// Registers the local application's GATT services/characteristics/descriptors.
     /// with the Bluez controller.
     ///
     /// **Calls process_requests()**
@@ -1134,6 +1210,9 @@ impl Bluetooth {
         }
         None
     }
+    /// Clear the known the devices from the local application.
+    /// This function does *not* remove the devices from the controller.
+    /// It merely causes the local application to forget them.
     pub fn clear_devices(&mut self) {
         self.devices.clear()
     }
@@ -1178,6 +1257,12 @@ impl Bluetooth {
         }
     }
     */
+    /// Tries to resolve a `Pending`. If the `Pending` is not ready, or an
+    /// error occurs it will return an `Err(ResolveError)`
+    ///
+    /// **Sometimes Calls process_requests()**. If the `Pending` is fetching remote information
+    /// then this will call [`process_requests()`], but some `Pending` are already resolved when created,
+    /// such as reading a local characteristic. (These "PreResolved" `Pending`s exist to satisfy trait defitions.
     pub fn try_resolve<T, V, U>(
         &mut self,
         mut pend: Pending<T, U>,
@@ -1204,6 +1289,11 @@ impl Bluetooth {
             }
         }
     }
+    /// Resolve a `Pending` by waiting for its response.
+    ///
+    /// **Sometimes Calls process_requests()**. If the `Pending` is fetching remote information
+    /// then this will call [`process_requests()`], but some `Pending` are already resolved when created,
+    /// such as reading a local characteristic. (These "PreResolved" `Pending`s exist to satisfy trait defitions.
     pub fn resolve<T, U>(&mut self, mut pend: Pending<T, U>) -> Result<T, (Pending<T, U>, Error)> {
         debug_assert_eq!(Rc::as_ptr(&self.leaking), pend.leaking.as_ptr());
         match pend.typ.take().unwrap() {
@@ -1367,6 +1457,9 @@ impl Bluetooth {
     }
 }
 
+/// Gets the underlying `RawFd` used to talk to DBus.
+/// This can be useful for using `select`/`poll` to check
+/// if [`process_requests`] needs to be called.
 impl AsRawFd for Bluetooth {
     fn as_raw_fd(&self) -> RawFd {
         unsafe {
@@ -1750,49 +1843,7 @@ pub fn validate_uuid(uuid: &str) -> bool {
     }
 }
 
-pub enum ValOrFn {
-    Value(CharValue),
-    Function(Box<dyn FnMut() -> CharValue>),
-}
-impl Default for ValOrFn {
-    fn default() -> Self {
-        ValOrFn::Value(CharValue::default())
-    }
-}
-impl AsRef<CharValue> for CharValue {
-    fn as_ref(&self) -> &CharValue {
-        self
-    }
-}
-impl<T: AsRef<CharValue>> From<T> for ValOrFn {
-    fn from(cv: T) -> Self {
-        ValOrFn::Value(*cv.as_ref())
-    }
-}
-
-impl Debug for ValOrFn {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        if let ValOrFn::Value(cv) = self {
-            write!(f, "ValOrFn {{ Value: {:?} }}", cv)
-        } else {
-            write!(f, "ValOrFn {{ Fn  }}")
-        }
-    }
-}
-
-impl ValOrFn {
-    #[inline]
-    pub fn to_value(&mut self) -> CharValue {
-        match self {
-            ValOrFn::Value(cv) => (*cv),
-            ValOrFn::Function(f) => f(),
-        }
-    }
-    pub fn from_slice(slice: &[u8]) -> Self {
-        ValOrFn::Value(slice.into())
-    }
-}
-pub struct Variant<'buf> {
+struct Variant<'buf> {
     sig: signature::Type,
     byteorder: ByteOrder,
     offset: usize,
