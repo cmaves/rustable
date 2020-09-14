@@ -6,22 +6,9 @@ use std::path::{Path, PathBuf};
 
 /// Describes the methods avaliable on remote and local GATT services
 pub trait Service<'a> {
-    type CharType;
-    /// Return the `UUID` of the service.
-    fn uuid(&self) -> &UUID;
     /// Return in a service is primary service.
     fn primary(&self) -> bool;
-    /// Get the path to the parent service.
-    fn device(&self) -> &Path;
     fn includes(&self) -> &[&Path];
-    /// Get the Bluetooth handle of service
-    fn handle(&self) -> u16;
-    /// Get an iterator of all the keys on the valu
-    fn char_uuids(&self) -> Vec<UUID>;
-    /// Get a characteristic of a GATT service by UUID.
-    fn get_char<T: ToUUID>(&'a mut self, uuid: T) -> Option<Self::CharType>;
-    /// Get the DBus path of the service.
-    fn get_path(&self) -> &Path;
 }
 /// `LocalServiceBase` is used to construct local service to be provided by the local GATT server.
 pub struct LocalServiceBase {
@@ -88,6 +75,12 @@ impl AsRef<LocalServiceBase> for LocalServiceBase {
 }
 */
 impl AttObject for LocalServiceBase {
+    /// This always returns an empty Path.
+    ///
+    /// This trait is used internally in the crate, after being added
+    /// to a [`Bluetooth`] instance where it is not empty (but isn't visible).
+    ///
+    /// [`Bluetooth`]: ../struct.Bluetooth.html
     fn path(&self) -> &Path {
         &self.path
     }
@@ -114,39 +107,37 @@ pub struct LocalService<'a> {
 }
 
 impl<'a, 'b: 'a, 'c: 'a, 'd: 'a> Service<'a> for LocalService<'b> {
-    type CharType = LocalCharactersitic<'a, 'b>;
-    fn uuid(&self) -> &UUID {
-        &self.uuid
-    }
-    fn char_uuids(&self) -> Vec<UUID> {
-        let service = self.get_service_base();
-        service.chars.keys().map(|k| k.clone()).collect()
-    }
     fn primary(&self) -> bool {
         let service = self.get_service_base();
         service.primary
     }
-    fn get_char<T: ToUUID>(&'a mut self, uuid: T) -> Option<Self::CharType> {
+    fn includes(&self) -> &[&Path] {
+        unimplemented!()
+    }
+}
+impl<'a, 'b: 'a> HasChildren<'a> for LocalService<'b> {
+    type Child = LocalChar<'a, 'b>;
+    fn get_child<T: ToUUID>(&'a mut self, uuid: T) -> Option<Self::Child> {
         let service = self.get_service_base_mut();
         let uuid = uuid.to_uuid();
         if service.chars.contains_key(&uuid) {
             drop(service);
-            Some(LocalCharactersitic::new(self, uuid))
+            Some(LocalChar::new(self, uuid))
         } else {
             None
         }
     }
-    fn device(&self) -> &Path {
-        unimplemented!()
+    fn get_children(&self) -> Vec<UUID> {
+        let service = self.get_service_base();
+        service.chars.keys().map(|k| k.clone()).collect()
     }
-    fn includes(&self) -> &[&Path] {
-        unimplemented!()
+}
+impl AttObject for LocalService<'_> {
+    fn path(&self) -> &Path {
+        self.get_service_base().path()
     }
-    fn handle(&self) -> u16 {
-        unimplemented!()
-    }
-    fn get_path(&self) -> &Path {
-        &self.get_service_base().path
+    fn uuid(&self) -> &UUID {
+        self.get_service_base().uuid()
     }
 }
 
@@ -163,6 +154,10 @@ impl<'a> LocalService<'a> {
             Some(ret) => ret,
             None => panic!("Failed to find: {}", self.uuid),
         }
+    }
+    pub fn handle(&self) -> u16 {
+        let base = self.get_service_base();
+        base.handle
     }
 }
 
@@ -226,7 +221,7 @@ impl Introspectable for LocalServiceBase {
 ///
 /// This structure is public because it is used as a type for `std::collections::hash_map::Keys`,
 /// for the [`Device::get_services()`] functions.
-pub struct RemoteServiceBase {
+pub(crate) struct RemoteServiceBase {
     pub(crate) uuid: UUID,
     primary: bool,
     path: PathBuf,
@@ -315,6 +310,8 @@ impl TryFrom<&Message<'_, '_>> for RemoteServiceBase {
     }
 }
 /// Return type for [`RemoteDevice::get_service()`]. It represents a service on another device.
+///
+/// [`RemoteDevice::get_service()`]: ../struct.RemoteDevice.html#method.get_service
 pub struct RemoteService<'a, 'b> {
     pub(crate) uuid: UUID,
     pub(crate) dev: &'a mut RemoteDevice<'b>,
@@ -322,14 +319,14 @@ pub struct RemoteService<'a, 'b> {
     pub(crate) ptr: *mut RemoteServiceBase,
 }
 impl RemoteService<'_, '_> {
-    fn get_service(&self) -> &RemoteServiceBase {
+    pub(super) fn get_service_base(&self) -> &RemoteServiceBase {
         #[cfg(feature = "unsafe-opt")]
         unsafe {
             return &*self.ptr;
         }
         &self.dev.blue.devices[&self.dev.mac].services[&self.uuid]
     }
-    fn get_service_mut(&mut self) -> &mut RemoteServiceBase {
+    pub(super) fn get_service_base_mut(&mut self) -> &mut RemoteServiceBase {
         #[cfg(feature = "unsafe-opt")]
         unsafe {
             return &mut *self.ptr;
@@ -346,82 +343,37 @@ impl RemoteService<'_, '_> {
 }
 
 impl<'a, 'b: 'a, 'c: 'a> Service<'a> for RemoteService<'b, 'c> {
-    type CharType = RemoteChar<'a, 'b, 'c>;
-    fn uuid(&self) -> &UUID {
-        &self.get_service().uuid
-    }
     fn primary(&self) -> bool {
-        self.get_service().primary
-    }
-    fn device(&self) -> &Path {
-        self.get_service().path.parent().unwrap()
+        self.get_service_base().primary
     }
     /// **unimplemented**
     fn includes(&self) -> &[&Path] {
         unimplemented!()
     }
-    /// **unimplemented**
-    fn handle(&self) -> u16 {
-        unimplemented!()
+}
+impl AttObject for RemoteService<'_, '_> {
+    fn path(&self) -> &Path {
+        self.get_service_base().path()
     }
-    fn char_uuids(&self) -> Vec<UUID> {
-        self.get_service().chars.keys().map(|k| k.clone()).collect()
+    fn uuid(&self) -> &UUID {
+        self.get_service_base().uuid()
     }
-    fn get_char<T: ToUUID>(&'a mut self, uuid: T) -> Option<Self::CharType> {
+}
+impl<'a, 'b: 'a, 'c: 'b> HasChildren<'a> for RemoteService<'b, 'c> {
+    type Child = RemoteChar<'a, 'b, 'c>;
+    fn get_child<T: ToUUID>(&'a mut self, uuid: T) -> Option<Self::Child> {
+        let base = self.get_service_base_mut();
         let uuid = uuid.to_uuid();
-        if let Some(_character) = self.get_service_mut().chars.get_mut(&uuid) {
+        if base.chars.contains_key(&uuid) {
             Some(RemoteChar {
-                service: self,
                 uuid,
-                #[cfg(feature = "unsafe-opt")]
-                ptr: _character,
+                service: self,
             })
         } else {
             None
         }
     }
-    fn get_path(&self) -> &Path {
-        &self.get_service().path
+    fn get_children(&self) -> Vec<UUID> {
+        self.get_service_base().get_children()
     }
 }
-impl AttObject for RemoteService<'_, '_> {
-    fn path(&self) -> &Path {
-        self.get_service().path()
-    }
-    fn uuid(&self) -> &UUID {
-        self.get_service().uuid()
-    }
-}
-
-/*
-pub(crate) fn match_service<'a, T, U, V, W>(device: &'a mut W, msg_path: &Path, msg: &DynamicHeader) -> Option<DbusObject<'a>>
-        where T: AttObject + 'a , // descriptor
-              U: AttObject + for<'b>HasChildren<'b, Child=T> + 'a, // character
-              V: AttObject + for<'b>HasChildren<'b, Child=U> + 'a, // service
-              W: HasChildren<'a, Child=V> // device
-
-{
-        // eprintln!("Checking for service for match");
-        let mut components = msg_path.components().take(2);
-        if let Component::Normal(path) = components.next().unwrap() {
-            let path = path.to_str()?;
-            if !path.starts_with("service") {
-                return None;
-            }
-            for uuid in device.get_children() {
-                let mut service = device.get_child(&uuid).unwrap();
-                let service_str = service.path().file_name().unwrap();
-                if let Ok(path) = msg_path.strip_prefix(&service_str) {
-                    if let Some(_) = path.components().next() { // check to see if there is more to this
-                        return match_chars(&mut service, path, msg);
-                    } else {
-                        return Some(DbusObject::Serv(service.uuid().clone()));
-                    }
-                }
-            }
-            None
-        } else {
-            None
-        }
-}
-*/

@@ -6,21 +6,7 @@ use std::cell::Cell;
 use std::fmt::Write;
 use std::path::{Path, PathBuf};
 
-/// Describes the methods avaliable on local and remote GATT descriptors.
-pub trait Descriptor: AttObject {
-    /// Starts a read operation on the descriptor.
-    fn read(&mut self) -> Result<Pending<Result<AttValue, Error>, Rc<Cell<AttValue>>>, Error>;
-    /// Starts a read operations on the descriptor and waits for the result.
-    fn read_wait(&mut self) -> Result<AttValue, Error>;
-    /// Returns a previous value of the GATT descriptor. Check the individual
-    /// implementors, for a more precise definition.
-    fn read_cached(&mut self) -> Result<([u8; 512], usize), Error>;
-    /// Writes a value to a GATT descriptors.
-    fn write(&mut self, val: &[u8]) -> Result<(), Error>;
-    /// Get the flags present on the descritptors
-    fn flags(&self) -> DescFlags;
-}
-
+/// `LocalDescBase` is used to create GATT descriptors to be added to `LocalServiceBase`
 pub struct LocalDescBase {
     pub(crate) path: PathBuf,
     pub(crate) index: u16,
@@ -74,15 +60,15 @@ impl AttObject for LocalDescBase {
         &self.uuid
     }
 }
-
-pub struct LocalDescriptor<'a, 'b, 'c> {
+/// Represents a descriptor hosted by local instance of `Bluetooth`.
+pub struct LocalDesc<'a, 'b, 'c> {
     uuid: UUID,
-    character: &'a mut LocalCharactersitic<'b, 'c>,
+    character: &'a mut LocalChar<'b, 'c>,
 }
-impl<'a, 'b, 'c> LocalDescriptor<'a, 'b, 'c> {
-    pub(crate) fn new<T: ToUUID>(character: &'a mut LocalCharactersitic<'b, 'c>, uuid: T) -> Self {
+impl<'a, 'b, 'c> LocalDesc<'a, 'b, 'c> {
+    pub(crate) fn new<T: ToUUID>(character: &'a mut LocalChar<'b, 'c>, uuid: T) -> Self {
         let uuid = uuid.to_uuid();
-        LocalDescriptor { character, uuid }
+        LocalDesc { character, uuid }
     }
     fn get_desc_base(&self) -> &LocalDescBase {
         self.character
@@ -221,7 +207,9 @@ impl<'a, 'b, 'c> LocalDescriptor<'a, 'b, 'c> {
     }
 }
 
-/// Flags for GATT descriptors. What each flags does is detailed on
+/// Flags for GATT descriptors.
+///
+/// What each flags does is detailed on
 /// page 1552 (Table 3.5) and page 1554 (Table 3.8) of the [Core Specification (5.2)]
 ///
 /// [Core Specification (5.2)]: https://www.bluetooth.com/specifications/bluetooth-core-specification/
@@ -347,7 +335,7 @@ impl Introspectable for LocalDescBase {
     }
 }
 
-impl AttObject for LocalDescriptor<'_, '_, '_> {
+impl AttObject for LocalDesc<'_, '_, '_> {
     fn path(&self) -> &Path {
         self.get_desc_base().path()
     }
@@ -356,25 +344,13 @@ impl AttObject for LocalDescriptor<'_, '_, '_> {
     }
 }
 
-impl Descriptor for LocalDescriptor<'_, '_, '_> {
-    fn read(&mut self) -> Result<Pending<Result<AttValue, Error>, Rc<Cell<AttValue>>>, Error> {
-        unimplemented!()
-    }
-    fn read_wait(&mut self) -> Result<AttValue, Error> {
-        unimplemented!()
-    }
-    fn read_cached(&mut self) -> Result<([u8; 512], usize), Error> {
-        unimplemented!()
-    }
-    fn write(&mut self, val: &[u8]) -> Result<(), Error> {
-        unimplemented!()
-    }
-    fn flags(&self) -> DescFlags {
-        unimplemented!()
+impl FlaggedAtt for LocalDesc<'_, '_, '_> {
+    type Flags = DescFlags;
+    fn flags(&self) -> Self::Flags {
+        self.get_desc_base().flags
     }
 }
-
-pub struct RemoteDescBase {
+pub(crate) struct RemoteDescBase {
     uuid: UUID,
     value: Rc<Cell<AttValue>>,
     path: PathBuf,
@@ -426,59 +402,27 @@ impl AttObject for RemoteDescBase {
         &self.uuid
     }
 }
-/*
-pub(super) fn match_descs<'a, T,  V,  U: ToUUID> (
-        character: &'a mut V,
-        msg_path: &Path,
-        header: &DynamicHeader,
-        serv_uuid: U
-    ) -> Option<DbusObject<'a>>
-    where T: AttObject,
-          for<'b> V: AttObject + HasChildren<'b, Child=T>
-{
-        let path = msg_path.to_str().unwrap();
-        if !path.starts_with("desc") || path.len() != 8 {
-            return None;
-        }
-        let uuid = "";
-        let desc = character.get_child(uuid).unwrap();
-        let desc2 = character.get_child(uuid).unwrap();
-        let char_uuid = character.uuid().clone();
-        for uuid in character.get_children() {
-            let desc = character.get_child(uuid).unwrap();
-            let desc_name = desc.path().file_name().unwrap().to_str().unwrap();
-            if desc_name == path {
-                //return Some(DbusObject::Desc(serv_uuid.to_uuid(), char_uuid, desc.uuid().clone()));
-                return None;
-            }
-        }
-        None
-}
-*/
 
-pub struct RemoteDescriptor {}
-impl AttObject for RemoteDescriptor {
+/// Represents a descriptor present on a remote device.
+pub struct RemoteDesc<'a, 'b, 'c, 'd> {
+    pub(super) character: &'a mut RemoteChar<'b, 'c, 'd>,
+    pub(super) uuid: UUID,
+}
+impl RemoteDesc<'_, '_, '_, '_> {
+    fn get_desc_base(&self) -> &RemoteDescBase {
+        self.character
+            .get_char_base()
+            .descs
+            .get(&self.uuid)
+            .unwrap()
+    }
+}
+impl AttObject for RemoteDesc<'_, '_, '_, '_> {
     fn path(&self) -> &Path {
-        unimplemented!()
+        let base = self.get_desc_base();
+        base.path()
     }
     fn uuid(&self) -> &UUID {
-        unimplemented!()
-    }
-}
-impl Descriptor for RemoteDescriptor {
-    fn read(&mut self) -> Result<Pending<Result<AttValue, Error>, Rc<Cell<AttValue>>>, Error> {
-        unimplemented!()
-    }
-    fn read_wait(&mut self) -> Result<AttValue, Error> {
-        unimplemented!()
-    }
-    fn read_cached(&mut self) -> Result<([u8; 512], usize), Error> {
-        unimplemented!()
-    }
-    fn write(&mut self, val: &[u8]) -> Result<(), Error> {
-        unimplemented!()
-    }
-    fn flags(&self) -> DescFlags {
-        unimplemented!()
+        &self.uuid
     }
 }

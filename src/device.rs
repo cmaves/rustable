@@ -18,7 +18,7 @@ pub trait Device<'a>: HasChildren<'a> {
     fn address_type(&mut self) -> AddrType;
     fn name(&mut self) -> String;
 }
-pub struct RemoteDeviceBase {
+pub(crate) struct RemoteDeviceBase {
     pub(crate) mac: MAC,
     pub(crate) path: PathBuf,
     pub(crate) services: HashMap<MAC, RemoteServiceBase>,

@@ -16,6 +16,7 @@
 //! - Write-without-response via sockets from remote devices (AcquireWrite).
 //! - Notifying/Indicating local characteristics with sockets (AcquireNotify).
 //! - Reading local descriptors from remote devices.
+//!
 //!  **To Do:**
 //! - Writable descriptors.
 //! ### GATT Client
@@ -24,6 +25,7 @@
 //! - Writing to remote characteristics.
 //! - Write-without-response via sockets to remote devices (AcquireWrite).
 //! - Receiving remote notification/indications with sockets.
+//!
 //!  **To Do:**
 //! - Descriptors as a client.
 //! ## Development status
@@ -68,13 +70,19 @@ enum PendingType<T: 'static, U: 'static> {
 ///
 /// Many methods in this library return `Pending` (usually wrapped in `Result`).
 /// These methods are performed issuing a DBus Method-call to the Bluez daemon.
-/// This struct represents a pending response, that can be resolved using [`Bluetooth::resolve()`]/['try_resolve()`]
+/// This struct represents a pending response, that can be resolved using [`Bluetooth::resolve()`]/[`try_resolve()`]
 /// This allows for multiple DBus requests to be issued at onces allow for more concurrent processing,
 /// such as reading multiple characteristics at once.
 /// ## Notes
 /// - If using multiple [`Bluetooth`] instances in one application, the `Pending` must be resolved with the `Bluetooth` instance
 /// that created it.
 /// - `Pending` implements [`Drop`], that will cause it to be resolved automatically by its parent `Bluetooth`.
+///
+///
+/// [`Bluetooth`]: ./struct.Bluetooth.html
+/// [`Bluetooth::resolve()`]: ./struct.Bluetooth.html#method.resolve
+/// [`try_resolve()`]: ./struct.Bluetooth.html#method.try_resolve
+/// [`Drop`]: ./struct.Pending.html#impl-Drop
 pub struct Pending<T: 'static, U: 'static> {
     dbus_res: u32,
     typ: Option<PendingType<T, U>>,
@@ -932,9 +940,9 @@ impl Bluetooth {
                                         DESC_IF_STR => {
                                             let mut serv = LocalService::new(self, serv_uuid);
                                             let mut character =
-                                                LocalCharactersitic::new(&mut serv, char_uuid);
+                                                LocalChar::new(&mut serv, char_uuid);
                                             let mut desc =
-                                                LocalDescriptor::new(&mut character, desc_uuid);
+                                                LocalDesc::new(&mut character, desc_uuid);
                                             desc.desc_call(call)
                                         }
                                         INTRO_IF_STR => desc_base.introspectable(call),
@@ -948,7 +956,7 @@ impl Bluetooth {
                                         CHAR_IF_STR => {
                                             let mut serv = LocalService::new(self, serv_uuid);
                                             let mut character =
-                                                LocalCharactersitic::new(&mut serv, char_uuid);
+                                                LocalChar::new(&mut serv, char_uuid);
                                             character.char_call(call)
                                         }
                                         INTRO_IF_STR => char_base.introspectable(call),
