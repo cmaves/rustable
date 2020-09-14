@@ -30,4 +30,7 @@ It currently allows the creation of advertisements/broadcasts as a Bluetooth per
 This library is unstable in *alpha*. There are planned functions
 in the API that have yet to be implemented. Unimplemented function are noted.
 The API is subject to breaking changes.
-//!
+## Documentation
+Documentation for the master branch can be found [here](https://rustable.maves.io/).
+
+Documentation for the current release can be found [here](https://docs.rs/rustable/0.1.1/rustable)
