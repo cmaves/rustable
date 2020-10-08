@@ -11,5 +11,6 @@ repository = "https://github.com/cmaves/rustable"
 
 [dependencies]
 # rustbus = "0.6.0"
-rustbus = { git = "https://github.com/cmaves/rustbus.git", branch="rustable_dev" }
+# rustbus = { git = "https://github.com/cmaves/rustbus.git", branch="master" }
+rustbus = { path = "/home/cmaves/rustbus" }
 nix = "0.18.0"

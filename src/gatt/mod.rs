@@ -4,7 +4,7 @@ use crate::{Error, Pending, ToUUID, UUID};
 use rustbus::wire::marshal::traits::{Marshal, Signature};
 use rustbus::wire::unmarshal;
 use rustbus::wire::unmarshal::traits::Unmarshal;
-use rustbus::{dbus_variant, ByteOrder};
+use rustbus::{dbus_variant_var, ByteOrder};
 use std::borrow::Borrow;
 use std::cell::Cell;
 use std::fmt::{Debug, Formatter};
@@ -23,7 +23,7 @@ pub use characteristic::*;
 pub use descriptor::*;
 pub use service::*;
 
-dbus_variant!(CharVar, U16 => u16; String => String);
+dbus_variant_var!(CharVar, U16 => u16; String => String);
 
 /// Types implementing this trait represent Bluetooth ATT (services/characteristics,descriptors),
 /// and their associated DBus path.
