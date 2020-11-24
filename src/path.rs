@@ -2,7 +2,7 @@ use rustbus::signature::{Base, Type};
 use rustbus::wire::marshal::traits::Signature;
 use rustbus::wire::unmarshal::traits::Unmarshal;
 use rustbus::wire::unmarshal::Error as UnmarshalError;
-use rustbus::wire::unmarshal::UnmarshalResult;
+use rustbus::wire::unmarshal::{UnmarshalResult, UnmarshalContext};
 use rustbus::ByteOrder;
 use std::borrow::{Borrow, ToOwned};
 use std::convert::TryFrom;
@@ -128,9 +128,9 @@ impl Signature for &ObjectPath {
     }
 }
 
-impl<'r, 'buf: 'r> Unmarshal<'r, 'buf> for &'r ObjectPath {
-    fn unmarshal(byteorder: ByteOrder, buf: &'buf [u8], offset: usize) -> UnmarshalResult<Self> {
-        let (bytes, val) = <&str>::unmarshal(byteorder, buf, offset)?;
+impl<'r, 'buf: 'r, 'fds> Unmarshal<'r, 'buf, 'fds> for &'r ObjectPath {
+    fn unmarshal(ctx: &mut UnmarshalContext<'fds, 'buf>) -> UnmarshalResult<Self> {
+        let (bytes, val) = <&str>::unmarshal(ctx)?;
         let path = ObjectPath::new(val).map_err(|_| {
             UnmarshalError::Validation(rustbus::params::validation::Error::InvalidObjectPath)
         })?;
@@ -145,9 +145,9 @@ impl Signature for ObjectPathBuf {
         <&ObjectPath>::alignment()
     }
 }
-impl<'r, 'buf: 'r> Unmarshal<'r, 'buf> for ObjectPathBuf {
-    fn unmarshal(byteorder: ByteOrder, buf: &'buf [u8], offset: usize) -> UnmarshalResult<Self> {
-        <&ObjectPath>::unmarshal(byteorder, buf, offset).map(|(size, op)| (size, op.to_owned()))
+impl<'r, 'buf: 'r, 'fds> Unmarshal<'r, 'buf, 'fds> for ObjectPathBuf {
+    fn unmarshal(ctx: &mut UnmarshalContext<'fds, 'buf>) -> UnmarshalResult<Self> {
+        <&ObjectPath>::unmarshal(ctx).map(|(size, op)| (size, op.to_owned()))
     }
 }
 

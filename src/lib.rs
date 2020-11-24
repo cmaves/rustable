@@ -45,7 +45,7 @@ use rustbus::signature;
 use rustbus::standard_messages;
 use rustbus::wire::marshal::traits::{Marshal, Signature};
 use rustbus::wire::unmarshal;
-use rustbus::wire::unmarshal::traits::Unmarshal;
+use rustbus::wire::unmarshal::traits::Variant;
 use rustbus::wire::unmarshal::Error as UnmarshalError;
 use rustbus::{get_system_bus_path, ByteOrder};
 use std::cell::{Cell, RefCell};
@@ -1001,9 +1001,6 @@ impl Bluetooth {
             }
             */
             self.rpc_con.send_message(&mut reply, Timeout::Infinite)?;
-            for fd in reply.raw_fds {
-                close(fd).ok();
-            }
         }
         while let Some(sig) = self.rpc_con.try_get_signal() {
             match sig.dynheader.interface.as_ref().unwrap().as_str() {
@@ -1850,18 +1847,18 @@ pub fn validate_uuid(uuid: &str) -> bool {
         false
     }
 }
-
+/*
 struct Variant<'buf> {
     sig: signature::Type,
     byteorder: ByteOrder,
     offset: usize,
     buf: &'buf [u8],
 }
-impl<'r, 'buf: 'r> Variant<'buf> {
+impl<'r, 'buf: 'r, 'fd> Variant<'buf> {
     pub fn get_value_sig(&self) -> &signature::Type {
         &self.sig
     }
-    pub fn get<T: Unmarshal<'r, 'buf>>(&self) -> Result<T, UnmarshalError> {
+    pub fn get<T: Unmarshal<'r, 'buf, 'fd>>(&self) -> Result<T, UnmarshalError> {
         if self.sig != T::signature() {
             return Err(UnmarshalError::WrongSignature);
         }
@@ -1876,7 +1873,7 @@ impl Signature for Variant<'_> {
         Variant::signature().get_alignment()
     }
 }
-impl<'r, 'buf: 'r> Unmarshal<'r, 'buf> for Variant<'buf> {
+impl<'r, 'buf: 'r, 'fd> Unmarshal<'r, 'buf, 'fd> for Variant<'buf> {
     fn unmarshal(
         byteorder: ByteOrder,
         buf: &'buf [u8],
@@ -1928,3 +1925,4 @@ impl Marshal for Variant<'_> {
         Ok(())
     }
 }
+*/

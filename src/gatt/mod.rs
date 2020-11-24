@@ -2,9 +2,11 @@
 //! GATT services/characteristics/descriptors and creating local GATT services.
 use crate::{Error, Pending, ToUUID, UUID};
 use rustbus::wire::marshal::traits::{Marshal, Signature};
-use rustbus::wire::unmarshal;
+use rustbus::wire::unmarshal::{UnmarshalContext, UnmarshalResult};
 use rustbus::wire::unmarshal::traits::Unmarshal;
+use rustbus::wire::unmarshal;
 use rustbus::{dbus_variant_var, ByteOrder};
+use rustbus::wire::marshal::MarshalContext;
 use std::borrow::Borrow;
 use std::cell::Cell;
 use std::fmt::{Debug, Formatter};
@@ -398,13 +400,9 @@ impl Signature for AttValue {
         <[u8]>::alignment()
     }
 }
-impl<'r, 'buf: 'r> Unmarshal<'r, 'buf> for AttValue {
-    fn unmarshal(
-        byteorder: ByteOrder,
-        buf: &'buf [u8],
-        offset: usize,
-    ) -> unmarshal::UnmarshalResult<Self> {
-        let (used, buf): (usize, &'r [u8]) = <&'r [u8]>::unmarshal(byteorder, buf, offset)?;
+impl<'r, 'buf: 'r, 'fds> Unmarshal<'r, 'buf, 'fds> for AttValue {
+    fn unmarshal(ctx: &mut UnmarshalContext<'fds, 'buf>) -> UnmarshalResult<Self> {
+        let (used, buf): (usize, &'r [u8]) = <&'r [u8]>::unmarshal(ctx)?;
         if buf.len() > 512 {
             Err(unmarshal::Error::InvalidType)
         } else {
@@ -413,8 +411,8 @@ impl<'r, 'buf: 'r> Unmarshal<'r, 'buf> for AttValue {
     }
 }
 impl Marshal for AttValue {
-    fn marshal(&self, byteorder: ByteOrder, buf: &mut Vec<u8>) -> Result<(), rustbus::Error> {
-        self.as_slice().marshal(byteorder, buf)
+    fn marshal(&self, ctx: &mut MarshalContext) -> Result<(), rustbus::Error> {
+        self.as_slice().marshal(ctx)
     }
 }
 

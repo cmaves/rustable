@@ -9,7 +9,9 @@ use nix::sys::time::{TimeVal, TimeValLike};
 use nix::sys::uio::IoVec;
 use nix::unistd::close;
 use rustbus::params::{Base, Container, Param};
-use rustbus::wire::marshal::traits::UnixFd;
+// use rustbus::wire::marshal::traits::UnixFd;
+use rustbus::wire::UnixFd;
+use rustbus::wire::unmarshal::traits::Variant;
 use std::cell::Cell;
 use std::convert::TryFrom;
 use std::fmt::Debug;
@@ -415,9 +417,8 @@ impl<'c, 'd> LocalChar<'c, 'd> {
                                 }
                             }
                             let mut res = call.make_response();
-                            res.raw_fds.push(sock1);
                             res.dynheader.num_fds = Some(1);
-                            res.body.push_param2(UnixFd(0), ret).unwrap();
+                            res.body.push_param2(UnixFd::new(sock1), ret).unwrap();
                             base.write = Some(sock2);
                             return res;
                         }
@@ -511,14 +512,8 @@ impl<'c, 'd> LocalChar<'c, 'd> {
                                 }
                             }
                             let mut res = call.make_response();
-                            res.body
-                                .push_old_params(&[
-                                    Param::Base(Base::UnixFd(0)),
-                                    Param::Base(Base::Uint16(ret)),
-                                ])
-                                .unwrap();
+                            res.body.push_param2(UnixFd::new(sock1), ret).unwrap();
                             res.dynheader.num_fds = Some(1);
-                            res.raw_fds.push(sock1);
                             base.notify = Some(Notify::Fd(sock2, ret));
                             res
                         }
@@ -1222,22 +1217,15 @@ impl<'a, 'b, 'c> RemoteChar<'a, 'b, 'c> {
         loop {
             blue.process_requests()?;
             if let Some(res) = blue.rpc_con.try_get_response(res_idx) {
-                let res = res.unmarshall_all().unwrap();
                 return match res.typ {
                     MessageType::Reply => {
-                        let fd = if let Some(Param::Base(Base::UnixFd(fd))) = res.params.get(0) {
-                            *fd
-                        } else {
-                            return Err(Error::DbusReqErr(
-                                "Response returned unexpected of parameter".to_string(),
-                            ));
-                        };
-                        let fd = res.raw_fds[fd as usize];
+                        let fd: UnixFd = res.body.parser().get()?;
+                        let fd = fd.take_raw_fd().unwrap();
                         let base = self.get_char_base_mut();
                         base.notify_fd = Some(fd);
                         Ok(fd)
                     }
-                    MessageType::Error => Err(Error::try_from(&res).unwrap()),
+                    MessageType::Error => Err(Error::DbusReqErr(format!("Acquire Notify failed: {:?}", res))),
                     _ => unreachable!(),
                 };
             }
@@ -1264,7 +1252,7 @@ impl<'a, 'b, 'c> RemoteChar<'a, 'b, 'c> {
                     .build();
                 let blue = self.get_blue_mut();
                 let leaking = Rc::downgrade(&blue.leaking);
-                let options: HashMap<String, Variant> = HashMap::new();
+                let options: HashMap<String, CharVar> = HashMap::new();
                 msg.body.push_param(options).unwrap();
                 let res_idx = blue.rpc_con.send_message(&mut msg, Timeout::Infinite)?;
                 Ok(Pending {
@@ -1557,8 +1545,7 @@ fn acquire_cb(res: MarshalledMessage, data: Weak<Cell<Option<(u16, RawFd)>>>) ->
     match data.upgrade() {
         Some(mtu_fd) => {
             let (fd, mtu): (UnixFd, u16) = res.body.parser().get2()?;
-            let fd = res.raw_fds[fd.0 as usize];
-            mtu_fd.set(Some((mtu, fd)));
+            mtu_fd.set(Some((mtu, fd.take_raw_fd().unwrap())));
             Ok(())
         }
         None => Ok(()),

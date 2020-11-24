@@ -3,6 +3,7 @@ use crate::introspect::*;
 use crate::*;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use rustbus::wire::unmarshal::traits::Variant;
 
 /// Describes the methods avaliable on remote and local GATT services
 pub trait Service<'a> {
