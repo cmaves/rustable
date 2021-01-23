@@ -128,6 +128,7 @@ pub trait Introspectable {
 }
 
 impl Introspectable for Bluetooth {
+    /// A custom implementation is used to know whether a parent of Bluetooth is used.
     fn introspectable<'a, 'b>(&self, call: MarshalledMessage) -> MarshalledMessage {
         let object: &Path = call.dynheader.object.as_ref().unwrap().as_ref();
         let path = self.get_path();

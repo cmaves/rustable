@@ -297,7 +297,7 @@ impl Properties for LocalDescBase {
                         },
                     )))
                 }
-                HANDLE_PROP => Some(base_param_to_variant(self.index.into())),
+                HANDLE_PROP => Some(base_param_to_variant(self.handle.into())),
                 _ => None,
             },
             PROP_IF_STR => None,

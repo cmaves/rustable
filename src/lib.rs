@@ -372,7 +372,7 @@ impl Bluetooth {
             BLUEZ_DEST,
             self.blue_path.to_str().unwrap()
         );
-        eprintln!("{}", match_str); // TODO remvoe
+        // eprintln!("{}", match_str); // TODO remvoe
         let mut msg = standard_messages::add_match(match_str);
         let res_idx = self.rpc_con.send_message(&mut msg, Timeout::Infinite)?;
         let res = self.rpc_con.wait_response(res_idx, Timeout::Infinite)?;
@@ -919,6 +919,8 @@ impl Bluetooth {
                 self.rpc_con.send_message(&mut msg, Timeout::Infinite)?;
                 continue;
             }
+            // eprintln!("{:?}", call.dynheader);
+            // eprintln!("\t{:?}", call.body);
             let mut reply = match self.match_root(&call.dynheader) {
                 DbusObject::Appl => match interface.as_ref() {
                     PROP_IF_STR => self.properties_call(call),
@@ -993,13 +995,12 @@ impl Bluetooth {
                 }
                 DbusObject::None => standard_messages::unknown_method(&call.dynheader),
             };
-            /*
-            // eprintln!("replying: {:?}", reply);
+            /* eprintln!("replying: {:?}", reply.dynheader);
             match reply.body.parser().get_param() {
-                // Ok(param) => eprintln!("reply body: first param: {:#?}", param),
-                // Err(_) => eprintln!("reply body: no params"),
+                Ok(param) => eprintln!("\treply body: first param: {:#?}", param),
+                Err(_) => eprintln!("reply body: no params"),
             }
-            */
+            eprintln!("\n"); */
             self.rpc_con.send_message(&mut reply, Timeout::Infinite)?;
         }
         while let Some(sig) = self.rpc_con.try_get_signal() {
@@ -1205,7 +1206,7 @@ impl Bluetooth {
     }
     fn match_advertisement(&self, path: &Path) -> Option<usize> {
         let r_str = path.to_str().unwrap();
-        if r_str.len() != 7 || &r_str[..4] != "adv" {
+        if r_str.len() != 7 || &r_str[..3] != "adv" {
             return None;
         }
         for (i, adv) in self.ads.iter().enumerate() {

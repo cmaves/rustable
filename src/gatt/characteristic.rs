@@ -1063,7 +1063,7 @@ impl Properties for LocalCharBase {
     }
     fn set_inner(&mut self, interface: &str, prop: &str, val: Variant) -> Option<String> {
         match interface {
-            SERV_IF_STR => match prop {
+            CHAR_IF_STR => match prop {
                 HANDLE_PROP => match val.get() {
                     Ok(handle) => {
                         self.handle = handle;
