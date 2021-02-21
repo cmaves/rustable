@@ -10,8 +10,8 @@ use nix::sys::uio::IoVec;
 use nix::unistd::close;
 use rustbus::params::{Base, Container, Param};
 // use rustbus::wire::marshal::traits::UnixFd;
-use rustbus::wire::UnixFd;
 use rustbus::wire::unmarshal::traits::Variant;
+use rustbus::wire::UnixFd;
 use std::cell::Cell;
 use std::convert::TryFrom;
 use std::fmt::Debug;
@@ -138,13 +138,24 @@ impl LocalCharBase {
             notify_fd_buf: None,
         }
     }
-    /// Adds a local descritpor to the characteristic.
+    /// Adds a local descriptor to the characteristic.
     pub fn add_desc(&mut self, mut desc: LocalDescBase) {
         desc.index = self.desc_index;
         desc.char_uuid = self.uuid.clone();
         self.desc_index += 1;
         // eprintln!("Adding desc: {:?}\nto\n{:?}", desc, self);
         self.descs.insert(desc.uuid.clone(), desc);
+    }
+    /// Get the handle for the characteristic
+    pub fn handle(&self) -> u16 {
+        self.handle
+    }
+    /// Set the handle for the characteristic.
+    pub fn set_handle(&mut self, handle: u16) {
+        self.handle = handle;
+    }
+    pub fn write_val_or_fn(&mut self, vf: &mut ValOrFn) {
+        std::mem::swap(&mut self.vf, vf);
     }
 }
 impl AttObject for LocalCharBase {
@@ -334,7 +345,7 @@ impl<'c, 'd> LocalChar<'c, 'd> {
                                     }
                                     if notify {
                                         // TODO: is there a better way to handle this error?
-                                        if let Err(e) = self.notify() {
+                                        if let Err(e) = self.notify(None) {
                                             eprintln!(
                                                 "Failed to notify characteristic on change: {:?}",
                                                 e
@@ -571,11 +582,13 @@ impl<'c, 'd> LocalChar<'c, 'd> {
     }
     pub fn write_val_or_fn(&mut self, val: &mut ValOrFn) {
         let base = self.get_char_base_mut();
-        std::mem::swap(&mut base.vf, val);
+        base.write_val_or_fn(val);
     }
     pub fn check_write_fd(&mut self) -> Result<(), Error> {
+        // eprintln!("check_write_fd()");
         let mut base = self.get_char_base_mut();
         if let Some(write_fd) = base.write {
+            // eprintln!("\tcheck_write_fd(): has fd");
             let mut msg_buf = [0; 512];
             loop {
                 match socket::recvmsg(
@@ -608,7 +621,7 @@ impl<'c, 'd> LocalChar<'c, 'd> {
                                     }
                                     if notify {
                                         drop(base);
-                                        self.notify()?;
+                                        self.notify(None)?;
                                         base = self.get_char_base_mut();
                                     }
                                 }
@@ -632,10 +645,9 @@ impl<'c, 'd> LocalChar<'c, 'd> {
         }
         Ok(())
     }
-    fn signal_change(&mut self) -> Result<(), Error> {
-        let base = self.get_char_base_mut();
+    fn signal_change(&mut self, cv: &AttValue) -> Result<(), Error> {
+        //let base = self.get_char_base_mut();
         //let (v, l) = self.get_char_base_mut().vf.to_value();
-        let cv = base.vf.to_value();
         let mut params = Vec::with_capacity(3); // TODO: eliminate this allocations
         params.push(Param::Base(Base::String(CHAR_IF_STR.to_string())));
         let changed_vec: Vec<Param> = cv
@@ -665,7 +677,7 @@ impl<'c, 'd> LocalChar<'c, 'd> {
         };
         let empty = Param::Container(Container::Array(empty));
         params.push(empty);
-        let base = self.get_char_base_mut();
+        let base = self.get_char_base();
         let mut msg = MessageBuilder::new()
             .signal(
                 PROP_IF.0.to_string(),
@@ -703,14 +715,15 @@ impl<'c, 'd> LocalChar<'c, 'd> {
         let base = self.get_char_base();
         base.write
     }
-    pub fn notify(&mut self) -> Result<(), Error> {
+    pub fn notify(&mut self, vf: Option<&mut ValOrFn>) -> Result<(), Error> {
         let base = self.get_char_base_mut();
         if let Some(notify) = &mut base.notify {
-            let cv = base.vf.to_value();
+            let vf = vf.unwrap_or(&mut base.vf);
+            let cv = vf.to_value();
             match notify {
-                Notify::Signal => self.signal_change()?,
+                Notify::Signal => self.signal_change(&cv)?,
                 Notify::Fd(sock, _) => {
-                    if let Err(_) = socket::send(*sock, cv.as_slice(), socket::MsgFlags::MSG_EOR) {
+                    if let Err(_) = socket::send(*sock, cv.as_slice(), socket::MsgFlags::empty()) {
                         close(*sock).ok();
                         base.notify = None;
                     }
@@ -750,7 +763,10 @@ impl<'c, 'd> LocalChar<'c, 'd> {
         let base = self.get_char_base();
         base.notify.is_some()
     }
-
+    /// Get the handle for the characteristic
+    pub fn handle(&self) -> u16 {
+        self.get_char_base().handle()
+    }
     pub(super) fn get_char_base_mut(&mut self) -> &mut LocalCharBase {
         self.service
             .get_service_base_mut()
@@ -1225,7 +1241,10 @@ impl<'a, 'b, 'c> RemoteChar<'a, 'b, 'c> {
                         base.notify_fd = Some(fd);
                         Ok(fd)
                     }
-                    MessageType::Error => Err(Error::DbusReqErr(format!("Acquire Notify failed: {:?}", res))),
+                    MessageType::Error => Err(Error::DbusReqErr(format!(
+                        "Acquire Notify failed: {:?}",
+                        res
+                    ))),
                     _ => unreachable!(),
                 };
             }

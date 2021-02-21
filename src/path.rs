@@ -2,7 +2,7 @@ use rustbus::signature::{Base, Type};
 use rustbus::wire::marshal::traits::Signature;
 use rustbus::wire::unmarshal::traits::Unmarshal;
 use rustbus::wire::unmarshal::Error as UnmarshalError;
-use rustbus::wire::unmarshal::{UnmarshalResult, UnmarshalContext};
+use rustbus::wire::unmarshal::{UnmarshalContext, UnmarshalResult};
 use rustbus::ByteOrder;
 use std::borrow::{Borrow, ToOwned};
 use std::convert::TryFrom;

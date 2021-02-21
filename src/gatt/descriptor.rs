@@ -34,6 +34,14 @@ impl LocalDescBase {
             handle: 0,
         }
     }
+    /// Get the handle for the descriptor.
+    pub fn handle(&self) -> u16 {
+        self.handle
+    }
+    /// Set the handle for the descriptor.
+    pub fn set_handle(&mut self, handle: u16) {
+        self.handle = handle
+    }
     pub(super) fn update_path(&mut self, base: &Path) {
         self.path = base.to_owned();
         let mut name = String::with_capacity(8);
@@ -83,6 +91,10 @@ impl<'a, 'b, 'c> LocalDesc<'a, 'b, 'c> {
             .descs
             .get_mut(&self.uuid)
             .unwrap()
+    }
+    /// Get the handle for the descriptor.
+    pub fn handle(&self) -> u16 {
+        self.get_desc_base().handle()
     }
     pub(crate) fn desc_call(&mut self, call: MarshalledMessage) -> MarshalledMessage {
         let base = self.get_desc_base_mut();

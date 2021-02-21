@@ -1,9 +1,9 @@
 use crate::gatt::*;
 use crate::introspect::*;
 use crate::*;
+use rustbus::wire::unmarshal::traits::Variant;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use rustbus::wire::unmarshal::traits::Variant;
 
 /// Describes the methods avaliable on remote and local GATT services
 pub trait Service<'a> {
@@ -52,6 +52,15 @@ impl LocalServiceBase {
         self.char_index += 1;
         // eprintln!("Adding char: {:?}\nto\n{:?}", character, self.uuid);
         self.chars.insert(character.uuid.clone(), character);
+    }
+
+    /// Get the handle for the service.
+    pub fn handle(&self) -> u16 {
+        self.handle
+    }
+    /// Set the handle for the service.
+    pub fn set_handle(&mut self, handle: u16) {
+        self.handle = handle
     }
     /// Handle method calls on the local servic
     pub(crate) fn service_call<'a, 'b>(&mut self, _call: MarshalledMessage) -> MarshalledMessage {
@@ -157,8 +166,7 @@ impl<'a> LocalService<'a> {
         }
     }
     pub fn handle(&self) -> u16 {
-        let base = self.get_service_base();
-        base.handle
+        self.get_service_base().handle()
     }
 }
 

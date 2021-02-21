@@ -2,11 +2,11 @@
 //! GATT services/characteristics/descriptors and creating local GATT services.
 use crate::{Error, Pending, ToUUID, UUID};
 use rustbus::wire::marshal::traits::{Marshal, Signature};
-use rustbus::wire::unmarshal::{UnmarshalContext, UnmarshalResult};
-use rustbus::wire::unmarshal::traits::Unmarshal;
-use rustbus::wire::unmarshal;
-use rustbus::{dbus_variant_var, ByteOrder};
 use rustbus::wire::marshal::MarshalContext;
+use rustbus::wire::unmarshal;
+use rustbus::wire::unmarshal::traits::Unmarshal;
+use rustbus::wire::unmarshal::{UnmarshalContext, UnmarshalResult};
+use rustbus::{dbus_variant_var, ByteOrder};
 use std::borrow::Borrow;
 use std::cell::Cell;
 use std::fmt::{Debug, Formatter};
@@ -299,10 +299,10 @@ pub struct AttValue {
 impl Debug for AttValue {
     fn fmt(&self, f: &mut Formatter<'_>) -> Result<(), std::fmt::Error> {
         // TODO: use formmater helper functions
-        let slice = &self.buf[..self.len];
-        write!(f, "AttValue {{")?;
-        slice.fmt(f)?;
-        write!(f, "}}")
+        f.debug_struct("AttValue")
+            .field("len", &self.len)
+            .field("buf", &self.as_slice())
+            .finish()
     }
 }
 impl AttValue {

@@ -604,7 +604,7 @@ impl Bluetooth {
                     }
                     MessageType::Reply => {
                         if self.verbose >= 1 {
-                            eprintln!("Registered application with bluez.");
+                            eprintln!("Registered advertisement with bluez.");
                         };
                         self.ads.back_mut().unwrap().active = true;
                         Ok(())
