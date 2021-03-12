@@ -1,5 +1,5 @@
-use crate::Bluetooth;
-use rustbus::message_builder::MarshalledMessage;
+use crate::*;
+use rustbus_core::message_builder::MarshalledMessage;
 use std::fmt::Write;
 use std::path::Path;
 pub(crate) const INTROSPECT_FMT_P1: &'static str = "<!DOCTYPE node PUBLIC \"-//freedesktop//DTD D-BUS Object Introspection 1.0//EN\" \"http://www.freedesktop.org/standards/dbus/1.0/introspect.dtd\">
@@ -112,9 +112,9 @@ pub(crate) const MANGAGER_STR: &'static str = "\t<interface name=\"org.freedeskt
 \t\t\t<arg type=\"as\" name=\"interfaces\"/>
 \t\t</signal>
 \t</interface>\n";
-pub(crate) fn child_nodes(children: &[&str], dst: &mut String) {
+pub(crate) fn child_nodes<T: AsRef<str>>(children: &[T], dst: &mut String) {
     for child in children {
-        write!(dst, "\t<node name=\"{}\"/>\n", child).unwrap();
+        write!(dst, "\t<node name=\"{}\"/>\n", child.as_ref()).unwrap();
     }
 }
 pub trait Introspectable {
@@ -125,53 +125,4 @@ pub trait Introspectable {
         reply
     }
     fn introspectable_str(&self) -> String;
-}
-
-impl Introspectable for Bluetooth {
-    /// A custom implementation is used to know whether a parent of Bluetooth is used.
-    fn introspectable<'a, 'b>(&self, call: MarshalledMessage) -> MarshalledMessage {
-        let object: &Path = call.dynheader.object.as_ref().unwrap().as_ref();
-        let path = self.get_path();
-        let stripped = path.strip_prefix(object).unwrap();
-        let mut reply = call.dynheader.make_response();
-        // eprintln!("{:?}", stripped);
-        if let Some(child) = stripped.components().nth(0) {
-            // Handle if the introspection is for a parent of the Bluetooth dev
-            // eprintln!("{:?}", child);
-            let mut xml = String::new();
-            xml.push_str(&INTROSPECT_FMT_P1);
-            xml.push_str(object.as_os_str().to_str().unwrap());
-            xml.push_str(&INTROSPECT_FMT_P2);
-            child_nodes(&[child.as_os_str().to_str().unwrap()], &mut xml);
-            xml.push_str(&INTROSPECT_FMT_P3);
-            reply.body.push_param(xml).unwrap();
-            reply
-        } else {
-            // handle the normal case
-            reply.body.push_param(self.introspectable_str()).unwrap();
-            reply
-        }
-    }
-    fn introspectable_str(&self) -> String {
-        let mut ret = String::new();
-        let path = self.get_path();
-        ret.push_str(INTROSPECT_FMT_P1);
-        ret.push_str(path.to_str().unwrap());
-        ret.push_str(INTROSPECT_FMT_P2);
-        ret.push_str(MANGAGER_STR);
-        //ret.push_str(PROP_STR);
-        let mut children: Vec<&str> = self
-            .services
-            .values()
-            .map(|s| s.path.file_name().unwrap().to_str().unwrap())
-            .collect();
-        let ads = self
-            .ads
-            .iter()
-            .map(|s| s.path.file_name().unwrap().to_str().unwrap());
-        children.extend(ads);
-        child_nodes(&children, &mut ret);
-        ret.push_str(INTROSPECT_FMT_P3);
-        ret
-    }
 }

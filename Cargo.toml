@@ -10,5 +10,7 @@ repository = "https://github.com/cmaves/rustable"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-rustbus = "0.9.2"
-nix = "0.19.0"
+async-rustbus = { path = "/home/cmaves/async-rustbus" }
+async-std = "1.9"
+futures = "0.3"
+xml-rs = "0.8"

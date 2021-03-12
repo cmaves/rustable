@@ -1,14 +1,18 @@
-use rustbus::signature::{Base, Type};
-use rustbus::wire::marshal::traits::Signature;
-use rustbus::wire::unmarshal::traits::Unmarshal;
-use rustbus::wire::unmarshal::Error as UnmarshalError;
-use rustbus::wire::unmarshal::{UnmarshalContext, UnmarshalResult};
-use rustbus::ByteOrder;
+use async_rustbus::rustbus_core;
+use async_rustbus::RpcConn;
+use rustbus_core::message_builder::MessageBuilder;
+use rustbus_core::signature::{Base, Type};
+use rustbus_core::wire::marshal::traits::Signature;
+use rustbus_core::wire::unmarshal::traits::Unmarshal;
+use rustbus_core::wire::unmarshal::Error as UnmarshalError;
+use rustbus_core::wire::unmarshal::{UnmarshalContext, UnmarshalResult};
+use rustbus_core::ByteOrder;
+
 use std::borrow::{Borrow, ToOwned};
 use std::convert::TryFrom;
 use std::ffi::{OsStr, OsString};
 use std::ops::Deref;
-use std::os::unix::ffi::OsStrExt;
+use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::path::{Path, PathBuf, StripPrefixError};
 use std::str::FromStr;
 
@@ -59,6 +63,15 @@ impl ObjectPath {
     pub fn as_bytes(&self) -> &[u8] {
         self.inner.as_os_str().as_bytes()
     }
+    pub fn as_str(&self) -> &str {
+        let bytes = self.as_bytes();
+        #[cfg(debug)]
+        std::str::from_utf8(&bytes).expect(
+            "ObjectPath was not valid utf-8. There is a bug in ObjectPath's implementation!!!:",
+        );
+
+        unsafe { std::str::from_utf8_unchecked(bytes) }
+    }
     pub fn strip_prefix<P: AsRef<Path> + ?Sized>(
         &self,
         p: &P,
@@ -78,6 +91,14 @@ impl ObjectPath {
             let ret = OsStr::from_bytes(ret_bytes);
             Ok(ObjectPath::new_no_val(ret.as_ref()))
         }
+    }
+    pub fn file_name(&self) -> Option<&str> {
+        let bytes = self.inner.file_name()?.as_bytes();
+        #[cfg(debug)]
+        std::str::from_utf8(self.as_bytes()).expect(
+            "ObjectPath was not valid utf-8. There is a bug in ObjectPath's implementation!!!:",
+        );
+        unsafe { Some(std::str::from_utf8_unchecked(bytes)) }
     }
 }
 
@@ -107,6 +128,16 @@ impl AsRef<Path> for ObjectPath {
         self.deref()
     }
 }
+impl AsRef<ObjectPath> for ObjectPath {
+    fn as_ref(&self) -> &ObjectPath {
+        self
+    }
+}
+impl<'a> From<&'a ObjectPath> for &'a str {
+    fn from(path: &'a ObjectPath) -> Self {
+        path.as_str()
+    }
+}
 impl AsRef<str> for ObjectPath {
     fn as_ref(&self) -> &str {
         // If this assertion ever fails then we have an error in the ObjectPath implementation
@@ -131,14 +162,12 @@ impl Signature for &ObjectPath {
 impl<'r, 'buf: 'r, 'fds> Unmarshal<'r, 'buf, 'fds> for &'r ObjectPath {
     fn unmarshal(ctx: &mut UnmarshalContext<'fds, 'buf>) -> UnmarshalResult<Self> {
         let (bytes, val) = <&str>::unmarshal(ctx)?;
-        let path = ObjectPath::new(val).map_err(|_| {
-            UnmarshalError::Validation(rustbus::params::validation::Error::InvalidObjectPath)
-        })?;
+        let path = ObjectPath::new(val).map_err(|_| UnmarshalError::InvalidType)?;
         Ok((bytes, path))
     }
 }
 impl Signature for ObjectPathBuf {
-    fn signature() -> crate::signature::Type {
+    fn signature() -> Type {
         <&ObjectPath>::signature()
     }
     fn alignment() -> usize {
@@ -213,6 +242,16 @@ impl Borrow<ObjectPath> for ObjectPathBuf {
         self.deref()
     }
 }
+impl AsRef<ObjectPath> for ObjectPathBuf {
+    fn as_ref(&self) -> &ObjectPath {
+        self.deref()
+    }
+}
+impl AsRef<str> for ObjectPathBuf {
+    fn as_ref(&self) -> &str {
+        self.deref().as_ref()
+    }
+}
 impl FromStr for ObjectPathBuf {
     type Err = InvalidObjectPath;
     fn from_str(s: &str) -> Result<Self, Self::Err> {
@@ -226,6 +265,16 @@ impl From<ObjectPathBuf> for PathBuf {
         buf.inner
     }
 }
+impl From<ObjectPathBuf> for String {
+    fn from(path: ObjectPathBuf) -> Self {
+        let bytes = path.inner.into_os_string().into_vec();
+        #[cfg(debug)]
+        std::str::from_utf8(&bytes).expect("ObjectPathBuf was not valid utf-8. Invariant violated");
+
+        unsafe { std::string::String::from_utf8_unchecked(bytes) }
+    }
+}
+
 impl PartialEq<ObjectPath> for ObjectPathBuf {
     fn eq(&self, other: &ObjectPath) -> bool {
         self.deref().eq(other)
@@ -336,4 +385,42 @@ mod tests {
         assert!(!objpathbuf.starts_with(objpath2));
         assert_eq!(objpathbuf.strip_prefix(objpath).unwrap(), objpath2);
     }
+}
+
+pub struct Child {
+    path: ObjectPathBuf,
+    interface: Vec<String>,
+}
+impl Child {
+    pub fn path(&self) -> &ObjectPath {
+        &self.path
+    }
+    pub fn interfaces(&self) -> &[String] {
+        &self.interface[..]
+    }
+}
+impl From<Child> for ObjectPathBuf {
+    fn from(child: Child) -> Self {
+        child.path
+    }
+}
+
+pub async fn get_children<S: AsRef<str>, P: AsRef<ObjectPath>>(
+    conn: &RpcConn,
+    dest: S,
+    path: P,
+) -> std::io::Result<Vec<Child>> {
+    use xml::reader::EventReader;
+    let path: &str = path.as_ref().as_ref();
+    let call = MessageBuilder::new()
+        .call(String::from("Introspect"))
+        .with_interface(String::from("org.freedesktop.DBus.Introspectable"))
+        .on(path.to_string())
+        .at(dest.as_ref().to_string())
+        .build();
+    let res = conn.send_message(&call).await?.await?.unwrap();
+    let s: &str = res.body.parser().get().unwrap();
+    let mut reader = EventReader::from_str(s);
+    eprintln!("get_children: {:?}", reader.next());
+    unimplemented!()
 }

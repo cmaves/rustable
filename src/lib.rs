@@ -1,139 +1,45 @@
-//! # rustable
-//! rustable is yet another library for interfacing Bluez over DBus.
-//! Its objective is to be a comprehensive tool for creating Bluetooth Low Energy
-//! enabled applications in Rust on Linux. It will supports to interacting with remote
-//! devices as a GATT client, and creating local services as a GATT Server.
-//! It currently allows the creation of advertisements/broadcasts as a Bluetooth peripherial.
-//!
-//! ## Supported Features
-//! ### GAP Peripheral
-//! - Advertisements
-//! - Broadcasts
-//! ### GATT Server
-//! - Creating local services
-//! - Reading local characteristics from remote devices.
-//! - Writing to local characteristics from remote devices.
-//! - Write-without-response via sockets from remote devices (AcquireWrite).
-//! - Notifying/Indicating local characteristics with sockets (AcquireNotify).
-//! - Reading local descriptors from remote devices.
-//!
-//!  **To Do:**
-//! - Writable descriptors.
-//! ### GATT Client
-//! - Retreiving attribute metadata (Flags, UUIDs...).
-//! - Reading from remote characteristics.
-//! - Writing to remote characteristics.
-//! - Write-without-response via sockets to remote devices (AcquireWrite).
-//! - Receiving remote notification/indications with sockets.
-//!
-//!  **To Do:**
-//! - Descriptors as a client.
-//! ## Development status
-//! This library is unstable in *alpha*. There are planned functions
-//! in the API that have yet to be implemented. Unimplemented function are noted.
-//! The API is subject to breaking changes.
-//!
-use gatt::*;
-use nix::unistd::close;
-use rustbus::client_conn;
-use rustbus::client_conn::{Conn, RpcConn, Timeout};
-use rustbus::message_builder::{DynamicHeader, MarshalledMessage, MessageBuilder, MessageType};
-use rustbus::params;
-use rustbus::params::message::Message;
-use rustbus::params::{Base, Container, Param};
-use rustbus::signature;
-use rustbus::standard_messages;
-use rustbus::wire::marshal::traits::{Marshal, Signature};
-use rustbus::wire::unmarshal;
-use rustbus::wire::unmarshal::traits::Variant;
-use rustbus::wire::unmarshal::Error as UnmarshalError;
-use rustbus::{get_system_bus_path, ByteOrder};
-use std::cell::{Cell, RefCell};
-use std::collections::{HashMap, VecDeque};
 use std::convert::{TryFrom, TryInto};
-use std::ffi::OsString;
-use std::fmt::Write;
-use std::fmt::{Debug, Display, Formatter};
+use std::fmt::{Display, Formatter};
 use std::num::ParseIntError;
-use std::os::unix::prelude::{AsRawFd, RawFd};
-use std::path::{Component, Path, PathBuf};
-use std::rc::{Rc, Weak};
+use std::str::FromStr;
+use std::sync::Arc;
 
-mod bluetooth_cb;
-pub mod path;
+//use futures::future::{try_join_all, ready, join};
+use async_rustbus::rustbus_core;
+use async_rustbus::RpcConn;
+use async_std::channel::{RecvError, SendError};
+use futures::prelude::*;
+use futures::stream::FuturesUnordered;
 
-enum PendingType<T: 'static, U: 'static> {
-    MessageCb(&'static dyn Fn(MarshalledMessage, U) -> T),
-    PreResolved(T),
-}
-/// A struct representing pending Dbus Method-calls.
-///
-/// Many methods in this library return `Pending` (usually wrapped in `Result`).
-/// These methods are performed issuing a DBus Method-call to the Bluez daemon.
-/// This struct represents a pending response, that can be resolved using [`Bluetooth::resolve()`]/[`try_resolve()`]
-/// This allows for multiple DBus requests to be issued at onces allow for more concurrent processing,
-/// such as reading multiple characteristics at once.
-/// ## Notes
-/// - If using multiple [`Bluetooth`] instances in one application, the `Pending` must be resolved with the `Bluetooth` instance
-/// that created it.
-/// - `Pending` implements [`Drop`], that will cause it to be resolved automatically by its parent `Bluetooth`.
-///
-///
-/// [`Bluetooth`]: ./struct.Bluetooth.html
-/// [`Bluetooth::resolve()`]: ./struct.Bluetooth.html#method.resolve
-/// [`try_resolve()`]: ./struct.Bluetooth.html#method.try_resolve
-/// [`Drop`]: ./struct.Pending.html#impl-Drop
-pub struct Pending<T: 'static, U: 'static> {
-    dbus_res: u32,
-    typ: Option<PendingType<T, U>>,
-    data: Option<U>, // this option allows it to be take
-    leaking: Weak<RefCell<VecDeque<(u32, Box<dyn FnOnce(MarshalledMessage)>)>>>,
-}
+use rustbus_core::message_builder::{CallBuilder, MarshalledMessage, MessageBuilder, MessageType};
+use rustbus_core::wire::unmarshal::traits::Unmarshal;
 
-impl<T: 'static, U: 'static> Drop for Pending<T, U> {
-    fn drop(&mut self) {
-        if let Some(PendingType::MessageCb(cb)) = self.typ.take() {
-            if let Some(leaking) = self.leaking.upgrade() {
-                let data = self.data.take().unwrap();
-                let fo_cb = move |call: MarshalledMessage| {
-                    (cb)(call, data);
-                };
-                leaking
-                    .borrow_mut()
-                    .push_back((self.dbus_res, Box::new(fo_cb)));
-            }
-        }
-    }
-}
-
-/// Returned by [`Bluetooth::try_resolve()`] to distinguish between
-/// Errors, and results that didn't finish.
-pub enum ResolveError<T: 'static, U: 'static> {
-    StillPending(Pending<T, U>),
-    Error(Pending<T, U>, Error),
-}
-
-pub mod interfaces;
-
-mod advertisement;
-pub use advertisement::*;
-mod device;
-pub use device::*;
-
-use interfaces::*;
 pub mod gatt;
 
-mod introspect;
-use introspect::Introspectable;
+use gatt::client::Service as LocalService;
 
-#[cfg(test)]
-mod tests;
+pub(crate) mod introspect;
 
-pub type UUID = Rc<str>;
-pub type MAC = Rc<str>;
+mod path;
+pub use path::*;
 
-pub const MAX_APP_MTU: usize = 244;
+use interfaces::get_prop_call;
+
+#[derive(Debug, PartialEq, Eq, Copy, Clone, PartialOrd, Ord)]
+pub struct UUID(u128);
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+pub struct MAC(u32, u16);
+
 pub const MAX_CHAR_LEN: usize = 512;
+pub const MAX_APP_MTU: usize = 511;
+const BLUEZ_DEV_IF: &'static str = "org.bluez.Device1";
+const BLUEZ_SER_IF: &'static str = "org.bluez.Service1";
+const BLUEZ_CHR_IF: &'static str = "org.bluez.Characteristic1";
+const BLUEZ_DES_IF: &'static str = "org.bluez.Descriptor1";
+const BLUEZ_MGR_IF: &'static str = "org.bluez.GattManager1";
+const PROPS_IF: &'static str = "org.freedesktop.DBus.Properties";
+const INTRO_IF: &'static str = "org.freedesktop.DBus.Introspectable";
+const OBJMGR_IF: &'static str = "org.freedesktop.DBus.ObjectManager";
 
 /// This trait creates a UUID from the implementing Type.
 /// This trait can panic if the given type doesn't represent a valid uuid.
@@ -141,42 +47,103 @@ pub const MAX_CHAR_LEN: usize = 512;
 /// ## Note
 /// This trait exists because UUID and MAC will eventually be converted into
 /// their own structs rather than being aliases for `Rc<str>`
-pub trait ToUUID {
-    fn to_uuid(self) -> UUID;
+pub enum UUIDParseError {
+    InvalidLength,
+    InvalidDelimiter,
+    InvalidRadix
 }
-impl ToUUID for &str {
-    fn to_uuid(self) -> UUID {
-        assert!(validate_uuid(self));
-        self.into()
+impl From<ParseIntError> for UUIDParseError {
+    fn from(_: ParseIntError) -> Self {
+        UUIDParseError::InvalidRadix
     }
 }
-impl ToUUID for String {
-    fn to_uuid(self) -> UUID {
-        assert!(validate_uuid(&self));
-        self.into()
+impl FromStr for UUID {
+    type Err = UUIDParseError;
+    fn from_str(s: &str) -> Result<UUID, Self::Err> {
+        if s.len() != 36 {
+            return Err(UUIDParseError::InvalidLength);
+        }
+        let mut uuid_chars = s.chars();
+        if uuid_chars.nth(8).unwrap() != '-' {
+            return Err(UUIDParseError::InvalidDelimiter);
+        }
+        for _ in 0..3 {
+            if uuid_chars.nth(4).unwrap() != '-' {
+                return Err(UUIDParseError::InvalidDelimiter);
+            }
+        }
+        let first = u128::from_str_radix(&s[..8], 16)? << 96;
+        let second = u128::from_str_radix(&s[9..13], 16)? << 80;
+        let third = u128::from_str_radix(&s[13..18], 16)? << 64;
+        let fourth = u128::from_str_radix(&s[18..23], 16)? << 48;
+        let fifth = u128::from_str_radix(&s[24..36], 16)? << 0;
+        Ok(UUID(first | second | third | fourth | fifth))
+
     }
 }
-impl ToUUID for UUID {
-    fn to_uuid(self) -> UUID {
-        self
+impl From<u16> for UUID {
+    fn from(u: u16) -> Self {
+        unimplemented!()
     }
 }
-impl ToUUID for &UUID {
-    fn to_uuid(self) -> UUID {
-        self.clone()
+impl From<u128> for UUID {
+    fn from(u: u128) -> Self {
+        Self(u)
     }
 }
-impl ToUUID for u128 {
-    fn to_uuid(self) -> UUID {
+impl UUID {
+    fn chars(&self) -> [char; 32] {
+        unimplemented!();
+    }
+    fn short(&self) -> Option<[char; 4]> {
+        unimplemented!();
+    }
+}
+impl Display for UUID {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        unimplemented!()
+    }
+}
+impl MAC {
+    fn from_dev_str(child: &str) -> Option<Self> {
+        if !child.starts_with("dev") {
+            return None;
+        }
+        let addr_str = child.get(3..)?;
+        let mut mac = [0; 6];
+        for i in 0..6 {
+            let s = addr_str.get(i * 3 + 1..i * 3 + 3)?;
+            mac[i] = u8::from_str_radix(s, 16).ok()?;
+        }
+        let mac_0 = [mac[0], mac[1], mac[2], mac[3]];
+        let mac_1 = [mac[4], mac[5]];
+        Some(MAC(u32::from_be_bytes(mac_0), u16::from_be_bytes(mac_1)))
+    }
+    fn to_dev_str(&self) -> String {
+        let m0 = self.0.to_be_bytes();
+        let m1 = self.1.to_be_bytes();
         format!(
-            "{:08x}-{:04x}-{:04x}-{:04x}-{:012x}",
-            self >> 24,
-            (self >> 20) & 0xFFFF,
-            (self >> 16) & 0xFFFF,
-            (self >> 12) & 0xFFFF,
-            self & 0xFFFFFFFFFFFF
+            "dev_{:X}_{:X}_{:X}_{:X}_{:X}_{:X}",
+            m0[0], m0[1], m0[2], m0[3], m1[0], m1[1]
         )
-        .into()
+    }
+}
+impl FromStr for MAC {
+    type Err = ();
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        unimplemented!();
+    }
+}
+
+impl Display for MAC {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        let m0 = self.0.to_be_bytes();
+        let m1 = self.1.to_be_bytes();
+        write!(
+            f,
+            "{:X}:{:X}:{:X}:{:X}:{:X}:{:X}",
+            m0[0], m0[1], m0[2], m0[3], m1[0], m1[1]
+        )
     }
 }
 /// Checks if a string is valid MAC.
@@ -206,1352 +173,261 @@ fn validate_mac(mac: &str) -> bool {
     }
     true
 }
-pub trait ToMAC {
-    fn to_mac(self) -> MAC;
-}
-impl ToMAC for &str {
-    fn to_mac(self) -> MAC {
-        assert!(validate_mac(self));
-        self.into()
-    }
-}
-impl ToMAC for String {
-    fn to_mac(self) -> MAC {
-        assert!(validate_mac(&self));
-        self.into()
-    }
-}
-
-enum DbusObject {
-    Gatt(UUID, Option<(UUID, Option<UUID>)>),
-    Ad(usize),
-    Appl,
-    None,
-}
 
 #[derive(Debug)]
 pub enum Error {
-    DbusClient(client_conn::Error),
-    DbusReqErr(String),
     Bluez(String),
-    BadInput(String),
-    NoFd(String),
-    Unix(nix::Error),
-    Timeout,
+    Dbus(String),
+    ThreadClosed,
+    UnknownServ(UUID),
+    UnknownChar(UUID, UUID),
+    UnknownDesc(UUID, UUID, UUID),
+    Io(std::io::Error),
+}
+impl std::error::Error for Error {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Error::Bluez(_)
+            | Error::Dbus(_)
+            | Error::ThreadClosed
+            | Error::UnknownServ(_)
+            | Error::UnknownChar(_, _)
+            | Error::UnknownDesc(_, _, _) => None,
+            Error::Io(e) => Some(e),
+        }
+    }
+}
+impl<T> From<SendError<T>> for Error {
+    fn from(_err: SendError<T>) -> Self {
+        Error::ThreadClosed
+    }
+}
+impl From<RecvError> for Error {
+    fn from(_err: RecvError) -> Self {
+        Error::ThreadClosed
+    }
+}
+fn is_msg_err<'r, 'buf: 'r, T>(msg: &'buf MarshalledMessage) -> Result<T, Error>
+where
+    T: Unmarshal<'r, 'buf, 'buf>,
+{
+    match msg.typ {
+        MessageType::Reply => msg
+            .body
+            .parser()
+            .get()
+            .map_err(|e| Error::Dbus(format!("Failed to unmarshal: {:?}", e))),
+        MessageType::Error => {
+            let err_msg: String = msg
+                .body
+                .parser()
+                .get()
+                .map_err(|e| Error::Dbus(format!("Failed to unmarshal msg_err: {:?}", e)))?;
+            if err_msg.starts_with("org.bluez") {
+                return Err(Error::Bluez(err_msg));
+            }
+            Err(Error::Dbus(err_msg))
+        }
+        _ => unreachable!(),
+    }
 }
 
-impl From<nix::Error> for Error {
-    fn from(err: nix::Error) -> Self {
-        match err {
-            nix::Error::Sys(nix::errno::Errno::EAGAIN) => Error::Timeout,
-            err => Error::Unix(err),
+fn is_msg_err2<'r, 'buf: 'r, T, U>(msg: &'buf MarshalledMessage) -> Result<(T, U), Error>
+where
+    T: Unmarshal<'r, 'buf, 'buf>,
+    U: Unmarshal<'r, 'buf, 'buf>,
+{
+    match msg.typ {
+        MessageType::Reply => msg
+            .body
+            .parser()
+            .get2()
+            .map_err(|e| Error::Dbus(format!("Failed to unmarshal: {:?}", e))),
+        MessageType::Error => {
+            let err_msg: String = msg
+                .body
+                .parser()
+                .get()
+                .map_err(|e| Error::Dbus(format!("Failed to unmarshal msg_err: {:?}", e)))?;
+            if err_msg.starts_with("org.bluez") {
+                return Err(Error::Bluez(err_msg));
+            }
+            Err(Error::Dbus(err_msg))
         }
+        _ => unreachable!(),
+    }
+}
+
+fn is_msg_err_empty(msg: &MarshalledMessage) -> Result<(), Error> {
+    match msg.typ {
+        MessageType::Reply => Ok(()),
+        MessageType::Error => {
+            let err_msg: String = msg
+                .body
+                .parser()
+                .get()
+                .map_err(|e| Error::Dbus(format!("Failed to unmarshal msg_err: {:?}", e)))?;
+            if err_msg.starts_with("org.bluez") {
+                return Err(Error::Bluez(err_msg));
+            }
+            Err(Error::Dbus(err_msg))
+        }
+        _ => unreachable!(),
     }
 }
 impl Display for Error {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        Debug::fmt(&self, f)
+        unimplemented!()
     }
 }
-impl std::error::Error for Error {}
-impl From<client_conn::Error> for Error {
-    fn from(err: client_conn::Error) -> Self {
-        Error::DbusClient(err)
-    }
-}
-impl From<rustbus::wire::unmarshal::Error> for Error {
-    fn from(err: rustbus::wire::unmarshal::Error) -> Self {
-        Error::DbusReqErr(format!("Parameter failed to unmarshal: {:?}", err))
+impl From<std::io::Error> for Error {
+    fn from(err: std::io::Error) -> Self {
+        Error::Io(err)
     }
 }
 
-impl TryFrom<&'_ Message<'_, '_>> for Error {
-    type Error = &'static str;
-    fn try_from(msg: &Message) -> Result<Self, Self::Error> {
-        match msg.typ {
-            MessageType::Error => (),
-            _ => return Err("Message was not an error"),
-        }
-        let err_name = match &msg.dynheader.error_name {
-            Some(name) => name,
-            None => return Err("Message was missing error name"),
-        };
-        let err_text = if let Some(Param::Base(Base::String(err_text))) = msg.params.get(0) {
-            Some(err_text)
-        } else {
-            None
-        };
-        Ok(Error::DbusReqErr(format!(
-            "Dbus request error: {}, text: {:?}",
-            err_name, err_text
-        )))
+struct ServiceData {
+    conn: RpcConn,
+    service_dest: String,
+}
+impl ServiceData {
+    fn build_service_call(&self) -> CallBuilder {
+        MessageBuilder::new()
+            .call(String::new())
+            .at(self.service_dest.clone())
+            .on(String::from("/org/bluez"))
+    }
+    fn path_str(&self) -> &str {
+        self.service_dest.as_ref()
     }
 }
-
 /// `Bluetooth` is created to interact with Bluez over DBus and file descriptors.
-pub struct Bluetooth {
-    rpc_con: RpcConn,
-    blue_path: Rc<Path>,
-    name: String,
-    path: PathBuf,
-    pub verbose: u8,
-    /// Allows for verbose messages to be printed to stderr. Useful for debugging.
-    services: HashMap<UUID, LocalServiceBase>,
-    registered: bool,
-    filter_dest: Option<(String, Option<String>)>,
-    ads: VecDeque<Advertisement>,
-    service_index: u8,
-    ad_index: u16,
-    devices: HashMap<MAC, RemoteDeviceBase>,
-    comp_map: HashMap<OsString, MAC>,
-    powered: Rc<Cell<bool>>,
-    discoverable: Rc<Cell<bool>>,
-    leaking: Rc<RefCell<VecDeque<(u32, Box<dyn FnOnce(MarshalledMessage)>)>>>,
-    addr: MAC,
+pub struct BluetoothService {
+    inner: Arc<ServiceData>,
 }
 
-impl Bluetooth {
+impl BluetoothService {
     /// Creates a new `Bluetooth` and setup a DBus client to interact with Bluez.
-    pub fn new(dbus_name: String, blue_path: String) -> Result<Self, Error> {
-        let session_path = get_system_bus_path()?;
-        let conn = Conn::connect_to_bus(session_path, true)?;
-        let mut rpc_con = RpcConn::new(conn);
-        rpc_con.send_message(&mut standard_messages::hello(), Timeout::Infinite)?;
-        let namereq = rpc_con.send_message(
-            &mut standard_messages::request_name(dbus_name.clone(), 0),
-            Timeout::Infinite,
-        )?;
-        let res = rpc_con.wait_response(namereq, Timeout::Infinite)?;
-        if let Some(_) = &res.dynheader.error_name {
-            return Err(Error::DbusReqErr(format!(
-                "Error Dbus client name {:?}",
-                res
-            )));
-        }
-        let services = HashMap::new();
-        let mut path = String::new();
-        path.push('/');
-        path.push_str(&dbus_name.replace(".", "/"));
-        let path = PathBuf::from(path);
-
-        let blue_path: &Path = blue_path.as_ref();
-        let mut ret = Bluetooth {
-            rpc_con,
-            name: dbus_name,
-            verbose: 0,
-            services,
-            registered: false,
-            blue_path: blue_path.into(),
-            path,
-            filter_dest: None,
-            ads: VecDeque::new(),
-            service_index: 0,
-            ad_index: 0,
-            devices: HashMap::new(),
-            comp_map: HashMap::new(),
-            leaking: Rc::new(RefCell::new(VecDeque::new())),
-            powered: Rc::new(Cell::new(false)),
-            discoverable: Rc::new(Cell::new(false)),
-            addr: "00:00:00:00:00:00".into(),
+    pub async fn new() -> Result<Self, Error> {
+        let conn = RpcConn::system_conn(true).await?;
+        let ret = Self {
+            inner: Arc::new(ServiceData {
+                conn,
+                service_dest: String::from("org.bluez"),
+            }),
         };
-        ret.rpc_con.set_filter(Box::new(move |msg| match msg.typ {
-            MessageType::Call => true,
-            MessageType::Error => true,
-            MessageType::Reply => true,
-            MessageType::Invalid => false,
-            MessageType::Signal => true,
-        }));
-        ret.set_filter(Some(BLUEZ_DEST.to_string()))?;
-        ret.setup_match()?;
-        ret.update_adapter_props()?;
+        let path: &ObjectPath = ObjectPath::new("/org/bluez").unwrap();
+        ret.get_children(path).await?;
         Ok(ret)
     }
-    fn setup_match(&mut self) -> Result<(), Error> {
-        let match_str = format!(
-            "sender='{}',path_namespace='{}',type='signal',",
-            BLUEZ_DEST,
-            self.blue_path.to_str().unwrap()
-        );
-        // eprintln!("{}", match_str); // TODO remvoe
-        let mut msg = standard_messages::add_match(match_str);
-        let res_idx = self.rpc_con.send_message(&mut msg, Timeout::Infinite)?;
-        let res = self.rpc_con.wait_response(res_idx, Timeout::Infinite)?;
-        match res.typ {
-            MessageType::Reply => Ok(()),
-            MessageType::Error => Err(Error::DbusReqErr(format!(
-                "Error adding match: {}",
-                res.dynheader.error_name.unwrap()
-            ))),
-            _ => unreachable!(),
-        }
-    }
-    /// Forces an update of the local cached adapter state by reading the
-    /// properties using a Dbus message.
-    ///
-    /// Generally the locally cached state of the adapter is kept up to date,
-    /// by reading DBus signals coming from the Bluez daemon, so this method
-    /// doesn't typically need to be called.
-    pub fn update_adapter_props(&mut self) -> Result<(), Error> {
-        // TODO: should this return a Pending
-        // get properties of local adapter
-        let mut msg = MessageBuilder::new()
-            .call("GetAll".to_string())
-            .with_interface(PROP_IF_STR.to_string())
-            .on(self.blue_path.to_str().unwrap().to_string())
-            .at(BLUEZ_DEST.to_string())
-            .build();
-        msg.body.push_param(ADAPTER_IF_STR.to_string()).unwrap();
-        let res_idx = self.rpc_con.send_message(&mut msg, Timeout::Infinite)?;
-        let res = self.rpc_con.wait_response(res_idx, Timeout::Infinite)?;
-        match res.typ {
-            MessageType::Reply => {
-                let blue_props: HashMap<String, Variant> = res.body.parser().get()?;
-                self.update_from_props(blue_props)
-            }
-            MessageType::Error => Err(Error::DbusReqErr(format!(
-                "Error getting dbus adapter props: {:?}",
-                res
-            ))),
-            _ => unreachable!(),
-        }
-    }
-    fn update_from_props(&mut self, mut blue_props: HashMap<String, Variant>) -> Result<(), Error> {
-        let powered = match blue_props.remove("Powered") {
-            Some(var) => var.get()?,
-            None => {
-                return Err(Error::DbusReqErr(
-                    "No 'Powered' property was present on adapter!".to_string(),
-                ))
-            }
-        };
-        let addr = match blue_props.remove("Address") {
-            Some(var) => {
-                let addr_str: String = var.get()?;
-                if validate_mac(&addr_str) {
-                    addr_str.to_mac()
-                } else {
-                    return Err(Error::DbusReqErr(
-                        "'Address' property was in invalid format!".to_string(),
-                    ));
+    async fn get_children<P: AsRef<ObjectPath>>(&self, path: P) -> Result<Vec<u8>, Error> {
+        let ret = get_children(&self.inner.conn, &self.inner.service_dest, path)
+            .await?
+            .into_iter()
+            .filter_map(|child| {
+                let name = child.path().file_name()?;
+                if !name.starts_with("hci") {
+                    return None;
                 }
-            }
-            None => {
-                return Err(Error::DbusReqErr(
-                    "No 'Address' property was present on adapter!".to_string(),
-                ))
-            }
-        };
-        let discoverable = match blue_props.remove("Discoverable") {
-            Some(var) => var.get()?,
-            None => {
-                return Err(Error::DbusReqErr(
-                    "No 'Discoverable' property was present on adapter!".to_string(),
-                ))
-            }
-        };
-        self.powered.replace(powered);
-        self.discoverable.replace(discoverable);
-        self.addr = addr;
-        Ok(())
+                u8::from_str(name.get(3..)?).ok()
+            })
+            .collect();
+        Ok(ret)
     }
-    fn update_from_changed(&mut self, blue_props: HashMap<String, Variant>) -> Result<(), Error> {
-        for (prop, var) in blue_props {
-            match prop.as_str() {
-                "Powered" => self.powered.set(var.get()?),
-                "Address" => self.addr = var.get::<String>()?.to_uuid(),
-                "Discoverable" => self.discoverable.set(var.get()?),
-                _ => (),
-            }
-        }
-        Ok(())
+    async fn get_adapter(&self, idx: u8) -> Result<Adapter, Error> {
+        let path = format!("/org/bluez/hci{}", idx);
+        let ret = Adapter {
+            inner: self.inner.clone(),
+            path: path.try_into().unwrap(),
+        };
+        ret.addr().await?;
+        Ok(ret)
     }
+}
+pub struct Adapter {
+    inner: Arc<ServiceData>,
+    path: ObjectPathBuf,
+}
+impl Adapter {
     /// Get the `MAC` of the local adapter.
-    pub fn addr(&self) -> &MAC {
-        &self.addr
+    pub async fn addr(&self) -> Result<MAC, Error> {
+        unimplemented!()
     }
-    /// Allows for changing which messages sources are allowed or rejected.
-    ///
-    /// By default, `Bluetooth`'s filter is set to org.bluez, only allowing
-    /// it to receive messages from the bluetooth daemon.
-    /// This method allows this filter to be eliminated (`None`) or set to something else.
-    /// This can be useful for debugging.
-    pub fn set_filter(&mut self, filter: Option<String>) -> Result<(), Error> {
-        match filter {
-            Some(name) => {
-                let mut nameowner = MessageBuilder::new()
-                    .call("GetNameOwner".to_string())
-                    .with_interface("org.freedesktop.DBus".to_string())
-                    .at("org.freedesktop.DBus".to_string())
-                    .on("/org/freedesktop/DBus".to_string())
-                    .build();
-                nameowner.body.push_param(name.clone()).unwrap();
-                let res_idx = self
-                    .rpc_con
-                    .send_message(&mut nameowner, Timeout::Infinite)?;
-                let res = self.rpc_con.wait_response(res_idx, Timeout::Infinite)?;
-                match res.typ {
-                    MessageType::Reply => {
-                        let owner = res.body.parser().get()?;
-                        if owner == name {
-                            self.filter_dest = Some((name, None));
-                        } else {
-                            self.filter_dest = Some((name, Some(owner)));
-                        }
-                    }
-                    MessageType::Error => self.filter_dest = Some((name, None)),
-                    _ => unreachable!(),
-                }
-            }
-            None => self.filter_dest = None,
-        }
-        Ok(())
-    }
-    /// Gets the path of the DBus client
-    pub fn get_path(&self) -> &Path {
+    /// Gets the path of the adapter
+    fn path(&self) -> &ObjectPath {
         &self.path
     }
-    /// Adds a service to the `Bluetooth` instance. Once registered with [`register_application()`],
-    /// this service will be a local service that can be interacted with by remote devices.
-    ///
-    /// If `register_application()` has already called, the service will not be visible to
-    /// Bluez (or other devices) until the application in reregistered.
-    ///
-    /// [`register_application()`]: ./struct.Bluetooth.html#method.register_application
-    pub fn add_service(&mut self, mut service: LocalServiceBase) -> Result<(), Error> {
-        if self.services.len() >= 255 {
-            panic!("Cannot add more than 255 services");
-        }
-        service.index = self.service_index;
-        self.service_index += 1;
-        let path = self.path.to_owned();
-        service.update_path(path);
-        self.services.insert(service.uuid.clone(), service);
-        Ok(())
+    pub async fn get_devices(&self) -> Result<Vec<MAC>, Error> {
+        let ret = get_children(&self.inner.conn, &self.inner.service_dest[..], &self.path)
+            .await?
+            .into_iter()
+            .filter_map(|child| MAC::from_dev_str(child.path().as_ref()))
+            .collect();
+        Ok(ret)
     }
-    /// Access a service that has been added to the `Bluetooth` instance.
-    pub fn get_service<T: ToUUID>(&mut self, uuid: T) -> Option<LocalService<'_>> {
-        let uuid = uuid.to_uuid();
-        if self.services.contains_key(&uuid) {
-            Some(LocalService {
-                uuid: uuid.clone(),
-                bt: self,
-            })
-        } else {
-            None
+    pub async fn get_device(&self, mac: MAC) -> Result<Device, Error> {
+        let dev_str = mac.to_dev_str();
+        let path = format!("{}/{}", self.inner.path_str(), dev_str);
+        let call = get_prop_call(&path, "org.bluez", BLUEZ_DEV_IF, "Address");
+        let msg = self.inner.conn.send_message(&call).await?.await?.unwrap();
+        let res_addr: &str = is_msg_err(&msg)?;
+        let res_mac = MAC::from_str(res_addr)
+            .map_err(|_| Error::Bluez(format!("Invalid MAC received back: {}", res_addr)))?;
+        if res_mac != mac {
+            return Err(Error::Bluez(format!(
+                "Address returned {} did not match given ({})!",
+                res_mac, mac
+            )));
         }
-    }
-    /// Gets a remote device by `MAC`. The device must be discovered using `discover_devices()` from bluez,
-    /// before it can be gotten with this device.
-    pub fn get_device<'c>(&'c mut self, mac: &MAC) -> Option<RemoteDevice<'c>> {
-        let _base = self.devices.get_mut(mac)?;
-        Some(RemoteDevice {
-            blue: self,
-            mac: mac.clone(),
-            #[cfg(feature = "unsafe-opt")]
-            ptr: _base,
+        Ok(Device {
+            inner: self.inner.clone(),
+            path: ObjectPathBuf::try_from(path).unwrap(),
         })
     }
-    /// Gets a `HashSet` of known devices' `MAC` addresses.
-    pub fn devices(&self) -> Vec<MAC> {
-        self.devices.keys().map(|x| x.clone()).collect()
-    }
-    fn register_adv(&mut self, adv_loc: usize) -> Result<(), Error> {
-        let mut msg = MessageBuilder::new()
-            .call("RegisterAdvertisement".to_string())
-            .with_interface("org.bluez.LEAdvertisingManager1".to_string())
-            .on(self.blue_path.to_str().unwrap().to_string())
-            .at(BLUEZ_DEST.to_string())
-            .build();
-        let dict = params::Dict {
-            key_sig: signature::Base::String,
-            value_sig: signature::Type::Container(signature::Container::Variant),
-            map: HashMap::new(),
-        };
-        let adv_path_str = self.ads[adv_loc].path.to_str().unwrap().to_string();
-        msg.body
-            .push_old_params(&[
-                Param::Base(Base::ObjectPath(adv_path_str)),
-                Param::Container(Container::Dict(dict)),
-            ])
-            .unwrap();
-        let res_idx = self.rpc_con.send_message(&mut msg, Timeout::Infinite)?;
-        loop {
-            self.process_requests()?;
-            if let Some(res) = self.rpc_con.try_get_response(res_idx) {
-                return match res.typ {
-                    MessageType::Error => {
-                        let mut err = None;
-                        let res = res.unmarshall_all().unwrap();
-                        if let Some(err_str) = res.params.get(0) {
-                            if let Param::Base(Base::String(err_str)) = err_str {
-                                err = Some(err_str);
-                            }
-                        }
-                        let err_str = if let Some(err) = err {
-                            format!(
-                                "Failed to register application with bluez: {}: {:?}",
-                                res.dynheader.error_name.unwrap(),
-                                err
-                            )
-                        } else {
-                            format!(
-                                "Failed to register application with bluez: {}",
-                                res.dynheader.error_name.unwrap()
-                            )
-                        };
-                        // eprintln!("error: {}", err_str);
-                        Err(Error::Bluez(err_str))
-                    }
-                    MessageType::Reply => {
-                        if self.verbose >= 1 {
-                            eprintln!("Registered advertisement with bluez.");
-                        };
-                        self.ads.back_mut().unwrap().active = true;
-                        Ok(())
-                    }
-                    _ => unreachable!(),
-                };
-            }
-        }
-    }
-    /// Registers an advertisement with Bluez.
-    /// After a successful call, it will persist until the `remove_advertise()`/`remove_advertise_no_dbus()`
-    /// is called or Bluez releases the advertisement (this is typically done on device connect).
-    ///
-    /// **Calls process_requests()**
-    pub fn start_adv(&mut self, mut adv: Advertisement) -> Result<u16, (u16, Error)> {
-        let ad_loc = self.ads.len();
-        adv.index = self.ad_index;
-        let ret_idx = self.ad_index;
-        self.ad_index += 1;
-        let adv_path = self.path.join(format!("adv{:04x}", adv.index));
-        adv.path = adv_path;
-        self.ads.push_back(adv);
-        self.register_adv(ad_loc)
-            .map(|_| ret_idx as u16)
-            .map_err(|err| (ret_idx as u16, err))
-    }
-    /// Checks if an advertisement is still active, or if Bluez has signaled it has ended.
-    pub fn is_adv_active(&self, index: u16) -> Option<bool> {
-        let adv = self.ads.iter().find(|ad| ad.index == index)?;
-        Some(adv.active)
-    }
-    /// Restart an inactive advertisement.
-    ///
-    /// If the advertisement is already active this method,
-    /// does nothing and returns `false`. If an advertisement is not active it tries to
-    /// reregister the advertisement and returns `true` on success otherwise it returns and `Err`.
-    pub fn restart_adv(&mut self, index: u16) -> Result<bool, Error> {
-        let idx = match self.ads.iter().position(|ad| ad.index == index) {
-            Some(idx) => idx,
-            None => {
-                return Err(Error::BadInput(format!(
-                    "Advertisement index {} not found.",
-                    index
-                )))
-            }
-        };
-        if self.ads[idx].active {
-            Ok(false)
-        } else {
-            self.register_adv(idx).map(|_| true)
-        }
-    }
-    /// Unregisters an advertisement with Bluez. Returns the `Advertisement` if successful.
-    ///
-    /// **Calls process_requests()**
-    pub fn remove_adv(&mut self, index: u16) -> Result<Advertisement, Error> {
-        let idx = match self.ads.iter().position(|ad| ad.index == index) {
-            Some(idx) => idx,
-            None => {
-                return Err(Error::BadInput(format!(
-                    "Advertisement index {} not found.",
-                    index
-                )))
-            }
-        };
-        if !self.ads[idx].active {
-            return Ok(self.ads.remove(idx).unwrap());
-        }
-        let mut msg = MessageBuilder::new()
-            .call("UnregisterAdvertisement".to_string())
-            .with_interface("org.bluez.LEAdvertisingManager1".to_string())
-            .on(self.blue_path.to_str().unwrap().to_string())
-            .at(BLUEZ_DEST.to_string())
-            .build();
-        let path = self.ads[idx].path.to_str().unwrap().to_string();
-        msg.body
-            .push_old_param(&Param::Base(Base::ObjectPath(path)))
-            .unwrap();
-        let res_idx = self.rpc_con.send_message(&mut msg, Timeout::Infinite)?;
-        loop {
-            self.process_requests()?;
-            if let Some(res) = self.rpc_con.try_get_response(res_idx) {
-                match res.typ {
-                    MessageType::Reply => {
-                        let mut adv = self.ads.remove(idx).unwrap();
-                        adv.active = false;
-                        return Ok(adv);
-                    }
-                    MessageType::Error => {
-                        return Err(Error::DbusReqErr(format!(
-                            "UnregisterAdvertisement call failed: {:?}",
-                            res
-                        )))
-                    }
-                    _ => unreachable!(),
-                }
-            }
-        }
-    }
-    pub fn remove_all_adv(&mut self) -> Result<(), Error> {
-        while self.ads.len() > 0 {
-            self.remove_adv(self.ads[0].index)?;
-        }
-        Ok(())
-    }
-    /// Removes the advertisement from the `Bluetooth` instance but does not unregister the
-    /// advertisement with Bluez. It is recommended that this is not used.
-    pub fn remove_adv_no_dbus(&mut self, index: u16) -> Option<Advertisement> {
-        let idx = self.ads.iter().position(|ad| ad.index == index)?;
-        self.ads.remove(idx)
-    }
-    /// Set the Bluez controller power on (`true`) or off.
-    pub fn set_power(
-        &mut self,
-        on: bool,
-    ) -> Result<Pending<Result<(), Error>, (Rc<Cell<bool>>, bool, &'static str)>, Error> {
-        let mut msg = MessageBuilder::new()
-            .call("Set".to_string())
-            .on(self.blue_path.to_str().unwrap().to_string())
-            .with_interface(PROP_IF_STR.to_string())
-            .at(BLUEZ_DEST.to_string())
-            .build();
-        msg.body.push_param2(ADAPTER_IF_STR, "Powered").unwrap();
-        msg.body.push_variant(on).unwrap();
-        let dbus_res = self.rpc_con.send_message(&mut msg, Timeout::Infinite)?;
-        Ok(Pending {
-            typ: Some(PendingType::MessageCb(&bluetooth_cb::set_power_cb)),
-            dbus_res,
-            data: Some((self.powered.clone(), on, bluetooth_cb::POWER)),
-            leaking: Rc::downgrade(&self.leaking),
-        })
-    }
-    /// Set the Bluez controller power on (`true`) or off and waits for the response.
-    ///
-    /// **Calls process_requests()**
-    pub fn set_power_wait(&mut self, on: bool) -> Result<(), Error> {
-        let pend = self.set_discoverable(on)?;
-        self.wait_result_variant(pend)
-    }
-    /// Set whether the Bluez controller should be discoverable (`true`) or not.
-    pub fn set_discoverable(
-        &mut self,
-        on: bool,
-    ) -> Result<Pending<Result<(), Error>, (Rc<Cell<bool>>, bool, &'static str)>, Error> {
-        let mut msg = MessageBuilder::new()
-            .call("Set".to_string())
-            .on(self.blue_path.to_str().unwrap().to_string())
-            .with_interface(PROP_IF_STR.to_string())
-            .at(BLUEZ_DEST.to_string())
-            .build();
-        msg.body
-            .push_param2(ADAPTER_IF_STR, "Discoverable")
-            .unwrap();
-        msg.body.push_variant(on).unwrap();
-        let dbus_res = self.rpc_con.send_message(&mut msg, Timeout::Infinite)?;
-        Ok(Pending {
-            typ: Some(PendingType::MessageCb(&bluetooth_cb::set_power_cb)),
-            dbus_res,
-            data: Some((self.discoverable.clone(), on, bluetooth_cb::DISCOVERABLE)),
-            leaking: Rc::downgrade(&self.leaking),
-        })
-    }
-    /// Get whether the Bluez controller is currently discoverable.
-    pub fn discoverable(&self) -> bool {
-        self.discoverable.get()
-    }
-    /// Set whether the Bluez controller should be discoverable (`true`) or not and waits for the response.
-    ///
-    /// **Calls process_requests()**
-    pub fn set_discoverable_wait(&mut self, on: bool) -> Result<(), Error> {
-        let pend = self.set_discoverable(on)?;
-        self.wait_result_variant(pend)
-    }
-    fn wait_result_variant<O, U>(
-        &mut self,
-        pend: Pending<Result<O, Error>, U>,
-    ) -> Result<O, Error> {
-        match self.resolve(pend) {
-            Ok(res) => res,
-            Err((_pend, err)) => Err(err),
-        }
-    }
-    /// Get whether the Bluez controller is currently powered.
-    pub fn power(&mut self) -> bool {
-        self.powered.get()
-    }
-    /// Registers the local application's GATT services/characteristics/descriptors.
-    /// with the Bluez controller.
-    ///
-    /// **Calls process_requests()**
-    pub fn register_application(&mut self) -> Result<(), Error> {
-        let path = self.get_path();
-        let empty_dict = HashMap::new();
-        let dict = params::Dict {
-            key_sig: signature::Base::String,
-            value_sig: signature::Type::Container(signature::Container::Variant),
-            map: empty_dict,
-        };
-        let call_builder = MessageBuilder::new().call(REGISTER_CALL.to_string());
-        /*call_builder.add_param2(
-            Param::Base(Base::ObjectPath(
-                path.as_os_str().to_str().unwrap().to_string(),
-            )),
-            Param::Container(Container::Dict(dict)),
-        );*/
-        let mut msg = call_builder
-            .with_interface(MANAGER_IF_STR.to_string())
-            .on(self.blue_path.to_str().unwrap().to_string())
-            .at(BLUEZ_DEST.to_string())
-            .build();
+}
 
-        msg.body
-            .push_old_params(&[
-                Param::Base(Base::ObjectPath(
-                    path.as_os_str().to_str().unwrap().to_string(),
-                )),
-                Param::Container(Container::Dict(dict)),
-            ])
-            .unwrap();
+pub struct Device {
+    inner: Arc<ServiceData>,
+    path: ObjectPathBuf,
+}
+impl Device {
+    pub async fn get_services(&self) -> Result<Vec<LocalService>, Error> {
+        let services = self.get_services_stream().await?;
+        let fut = |s: Option<LocalService>| async move { Ok(s) };
+        let ret = services.try_filter_map(fut).try_collect().await?;
+        Ok(ret)
+    }
+    async fn get_services_stream(
+        &self,
+    ) -> Result<
+        FuturesUnordered<impl Future<Output = Result<Option<LocalService>, Error>> + '_>,
+        Error,
+    >
+//-> Result<impl TryStream<Ok=Option<LocalService>, Error=Error> +'_, Error>
+    {
+        let children: FuturesUnordered<_> =
+            get_children(&self.inner.conn, &self.inner.service_dest[..], &self.path)
+                .await?
+                .into_iter()
+                .map(|child| LocalService::get_service(&self.inner, child))
+                .collect();
 
-        // eprintln!("registration msg: {:#?}", msg);
-        let msg_idx = self.rpc_con.send_message(&mut msg, Timeout::Infinite)?;
-        // we expect there to be no response
-        loop {
-            self.process_requests()?;
-            if let Some(res) = self.rpc_con.try_get_response(msg_idx) {
-                return if let MessageType::Error = res.typ {
-                    let mut err = None;
-                    let res = res.unmarshall_all().unwrap();
-                    if let Some(err_str) = res.params.get(0) {
-                        if let Param::Base(Base::String(err_str)) = err_str {
-                            err = Some(err_str);
-                        }
-                    }
-                    let err_str = if let Some(err) = err {
-                        format!(
-                            "Failed to register application with bluez: {}: {:?}",
-                            res.dynheader.error_name.unwrap(),
-                            err
-                        )
-                    } else {
-                        format!(
-                            "Failed to register application with bluez: {}",
-                            res.dynheader.error_name.unwrap()
-                        )
-                    };
-                    // eprintln!("error: {}", err_str);
-                    Err(Error::Bluez(err_str))
-                } else {
-                    if self.verbose >= 1 {
-                        eprintln!("Registered application with bluez.");
-                    };
-                    Ok(())
-                };
-            }
-        }
+        Ok(children)
     }
-    /// **Unimplemented**
-    ///
-    /// Unregisters the local GATT services from the Bluez controller.
-    ///
-    /// **Calls process_requests()**
-    pub fn unregister_application(&mut self) -> Result<(), Error> {
-        unimplemented!();
-        self.registered = false;
-        Ok(())
-    }
-
-    fn check_incoming(&self, sender: &str) -> bool {
-        match &self.filter_dest {
-            Some(dest) => {
-                !(&dest.0 != sender && (dest.1 == None || dest.1.as_ref().unwrap() != sender))
-            }
-            None => true,
-        }
-    }
-    /// Process incoming DBus requests for the local application.
-    ///
-    /// When using `Bluetooth` this function should be called on a regular basis.
-    /// Bluez uses DBus to handle read/write requests to characteristics and descriptors, as wells
-    /// advertisement. Failure to call this method frequently enough could result in requests from
-    /// GATT clients to timeout. Some other functions are guaranteed to call this function at least
-    /// once while waiting for a responses from the Bluez controller. This property is noted in these
-    /// functions' descriptions.
-    ///
-    pub fn process_requests(&mut self) -> Result<(), Error> {
-        let responses = self.rpc_con.refill_all()?;
-        for mut response in responses {
-            self.rpc_con
-                .send_message(&mut response, Timeout::Infinite)?;
-        }
-        let mut leaking_bm = self.leaking.borrow_mut();
-        while leaking_bm.len() > 0 {
-            match self.rpc_con.try_get_response(leaking_bm[0].0) {
-                Some(call) => {
-                    let (_, cb) = leaking_bm.pop_front().unwrap();
-                    (cb)(call);
-                }
-                None => break,
-            }
-        }
-        drop(leaking_bm);
-        while let Some(call) = self.rpc_con.try_get_call() {
-            // eprintln!("received call {:?}", call);
-            let interface = (&call.dynheader.interface).as_ref().unwrap();
-            let sender = call.dynheader.sender.as_ref().unwrap();
-            if !self.check_incoming(sender) {
-                let mut msg = call.dynheader.make_error_response(
-                    BLUEZ_NOT_PERM.to_string(),
-                    Some("Sender is not allowed to perform this action.".to_string()),
-                );
-                self.rpc_con.send_message(&mut msg, Timeout::Infinite)?;
-                continue;
-            }
-            // eprintln!("{:?}", call.dynheader);
-            // eprintln!("\t{:?}", call.body);
-            let mut reply = match self.match_root(&call.dynheader) {
-                DbusObject::Appl => match interface.as_ref() {
-                    PROP_IF_STR => self.properties_call(call),
-                    OBJ_MANAGER_IF_STR => self.objectmanager_call(call),
-                    INTRO_IF_STR => self.introspectable(call),
-                    _ => standard_messages::unknown_method(&call.dynheader),
-                },
-                DbusObject::Gatt(serv_uuid, child_uuid) => {
-                    let serv_base = self.services.get_mut(&serv_uuid).unwrap();
-                    match child_uuid {
-                        Some((char_uuid, child_uuid)) => {
-                            let char_base = serv_base.chars.get_mut(&char_uuid).unwrap();
-                            match child_uuid {
-                                Some(desc_uuid) => {
-                                    // Descriptor
-                                    let desc_base = char_base.descs.get_mut(&desc_uuid).unwrap();
-                                    match interface.as_ref() {
-                                        PROP_IF_STR => desc_base.properties_call(call),
-                                        DESC_IF_STR => {
-                                            let mut serv = LocalService::new(self, serv_uuid);
-                                            let mut character =
-                                                LocalChar::new(&mut serv, char_uuid);
-                                            let mut desc =
-                                                LocalDesc::new(&mut character, desc_uuid);
-                                            desc.desc_call(call)
-                                        }
-                                        INTRO_IF_STR => desc_base.introspectable(call),
-                                        _ => standard_messages::unknown_method(&call.dynheader),
-                                    }
-                                }
-                                None => {
-                                    // Charactersitic
-                                    match interface.as_ref() {
-                                        PROP_IF_STR => char_base.properties_call(call),
-                                        CHAR_IF_STR => {
-                                            let mut serv = LocalService::new(self, serv_uuid);
-                                            let mut character =
-                                                LocalChar::new(&mut serv, char_uuid);
-                                            character.char_call(call)
-                                        }
-                                        INTRO_IF_STR => char_base.introspectable(call),
-                                        _ => standard_messages::unknown_method(&call.dynheader),
-                                    }
-                                }
-                            }
-                        }
-                        None => {
-                            // Service
-                            match interface.as_ref() {
-                                PROP_IF_STR => serv_base.properties_call(call),
-                                SERV_IF_STR => serv_base.service_call(call),
-                                INTRO_IF_STR => serv_base.introspectable(call),
-                                _ => standard_messages::unknown_method(&call.dynheader),
-                            }
-                        }
-                    }
-                }
-                DbusObject::Ad(ad_idx) => {
-                    let adv = &mut self.ads[ad_idx];
-                    match interface.as_ref() {
-                        PROP_IF_STR => adv.properties_call(call),
-                        LEAD_IF_STR => match call.dynheader.member.as_ref().unwrap().as_str() {
-                            "Release" => {
-                                adv.active = false;
-                                call.dynheader.make_response()
-                            }
-                            _ => standard_messages::unknown_method(&call.dynheader),
-                        },
-                        INTRO_IF_STR => adv.introspectable(call),
-                        _ => standard_messages::unknown_method(&call.dynheader),
-                    }
-                }
-                DbusObject::None => standard_messages::unknown_method(&call.dynheader),
-            };
-            /* eprintln!("replying: {:?}", reply.dynheader);
-            match reply.body.parser().get_param() {
-                Ok(param) => eprintln!("\treply body: first param: {:#?}", param),
-                Err(_) => eprintln!("reply body: no params"),
-            }
-            eprintln!("\n"); */
-            self.rpc_con.send_message(&mut reply, Timeout::Infinite)?;
-        }
-        while let Some(sig) = self.rpc_con.try_get_signal() {
-            match sig.dynheader.interface.as_ref().unwrap().as_str() {
-                OBJ_MANAGER_IF_STR => {
-                    if !self.check_incoming(sig.dynheader.sender.as_ref().unwrap()) {
-                        continue;
-                    }
-                    match sig.dynheader.member.as_ref().unwrap().as_str() {
-                        IF_ADDED_SIG => self.interface_added(sig)?,
-                        IF_REMOVED_SIG => self.interface_removed(sig)?,
-                        _ => (),
-                    }
-                }
-                DBUS_IF_STR => {
-                    if sig.dynheader.sender.unwrap() != "org.freedesktop.Dbus" {
-                        continue;
-                    }
-                    match sig.dynheader.member.as_ref().unwrap().as_str() {
-                        NAME_LOST_SIG => {
-                            if let Some(filter) = &mut self.filter_dest {
-                                let lost_name: &str = sig.body.parser().get()?;
-                                if filter.0 == lost_name {
-                                    filter.1 = None;
-                                    if self.verbose > 0 {
-                                        eprintln!(
-                                            "{} has disconnected for DBus?",
-                                            self.filter_dest.as_ref().unwrap().0
-                                        );
-                                    }
-                                    self.clear_devices();
-                                }
-                            }
-                        }
-                        NAME_OWNER_CHANGED => {}
-                        _ => (),
-                    }
-                }
-                PROP_IF_STR => {
-                    if !self.check_incoming(sig.dynheader.sender.as_ref().unwrap()) {
-                        continue;
-                    }
-                    match sig.dynheader.member.as_ref().unwrap().as_str() {
-                        PROP_CHANGED_SIG => self.properties_changed(sig)?,
-                        _ => (),
-                    }
-                }
-                _ => (),
-            }
-        }
-        Ok(())
-    }
-    fn properties_changed(&mut self, sig: MarshalledMessage) -> Result<(), Error> {
-        if let Some(child) = self.match_remote(&sig.dynheader) {
-            let mut parser = sig.body.parser();
-            let interface: &str = parser.get()?;
-            let changed = parser.get()?;
-            match child {
-                Some((dev_mac, child)) => {
-                    let dev = self.devices.get_mut(&dev_mac).unwrap();
-                    match child {
-                        Some((serv_uuid, child)) => {
-                            let serv = dev.get_child(&serv_uuid).unwrap();
-                            match child {
-                                Some((char_uuid, child)) => {
-                                    let mut character = serv.get_child(&char_uuid).unwrap();
-                                    match child {
-                                        Some(desc_uuid) => unimplemented!(),
-                                        None => {
-                                            if interface == CHAR_IF_STR {
-                                                character.update_from_changed(changed)?;
-                                            }
-                                        }
-                                    }
-                                }
-                                None => {
-                                    if interface == SERV_IF_STR {
-                                        serv.update_from_changed(changed)?;
-                                    }
-                                }
-                            }
-                        }
-                        None => {
-                            if interface == DEV_IF_STR {
-                                dev.update_from_changed(changed)?;
-                            }
-                        }
-                    }
-                }
-                None => {
-                    if interface == ADAPTER_IF_STR {
-                        self.update_from_changed(changed)?;
-                    }
+    pub async fn get_service(&self, uuid: UUID) -> Result<Option<gatt::client::Service>, Error> {
+        let mut services = self.get_services_stream().await?;
+        while let Some(res) = services.next().await {
+            if let Some(service) = res? {
+                if service.uuid() == uuid {
+                    return Ok(Some(service));
                 }
             }
         }
-        Ok(())
-        /*
-        Some(None) => {
-            let mut parser = sig.body.parser();
-        }
-        Some(Some((mac, None))) => {
-            let mut parser = sig.body.parser();
-            let interface: &str = parser.get()?;
-            if interface == DEV_IF_STR {
-            } else {
-                Ok(())
-            }
-
-        }
-        Some(Some((mac, Some((serv_uuid, child_uuid))))) => unimplemented!(),
-        _ => Ok(()),
-        */
-    }
-    fn interface_added(&mut self, sig: MarshalledMessage) -> Result<(), Error> {
-        match self.match_remote(&sig.dynheader) {
-            Some(Some((mac, Some((serv_uuid, child_uuid))))) => {
-                let dev = self.devices.get_mut(&mac).unwrap();
-                let serv = dev.services.get_mut(&serv_uuid).unwrap();
-                match child_uuid {
-                    Some((char_uuid, child_uuid)) => unimplemented!(),
-                    None => {
-                        let mut i_and_p: HashMap<String, HashMap<String, Variant>> =
-                            sig.body.parser().get()?;
-                        match i_and_p.remove("org.bluez.GattService1") {
-                            Some(props) => serv.update_all(props),
-                            None => Ok(()),
-                        }
-                    }
-                }
-            }
-            _ => Ok(()),
-        }
-    }
-    fn interface_removed(&mut self, sig: MarshalledMessage) -> Result<(), Error> {
-        match self.match_remote(&sig.dynheader) {
-            Some(Some((mac, child_uuid))) => match child_uuid {
-                Some((serv_uuid, child_uuid)) => unimplemented!(),
-                None => unimplemented!(),
-            },
-            Some(None) | None => Ok(()),
-        }
-    }
-    fn match_root(&mut self, dynheader: &DynamicHeader) -> DbusObject {
-        let path = self.get_path();
-        if let None = &dynheader.interface {
-            return DbusObject::None;
-        }
-        if let None = &dynheader.member {
-            return DbusObject::None;
-        }
-        // eprintln!("For path: {:?}, Checking msg for match", path);
-        let object = &dynheader.object.as_ref().unwrap();
-        let obj_path: &Path = object.as_ref();
-
-        if path.starts_with(obj_path) {
-            DbusObject::Appl
-        } else {
-            let serv_path = match obj_path.strip_prefix(path) {
-                Ok(path) => path,
-                Err(_) => return DbusObject::None,
-            };
-            if let Some(matc) = self.match_services(serv_path) {
-                return DbusObject::Gatt(matc.0, matc.1);
-            }
-            match self.match_advertisement(serv_path) {
-                Some(idx) => DbusObject::Ad(idx),
-                None => DbusObject::None,
-            }
-        }
-    }
-    fn match_remote(
-        &mut self,
-        header: &DynamicHeader,
-    ) -> Option<Option<(MAC, Option<(UUID, Option<(UUID, Option<UUID>)>)>)>> {
-        let path: &Path = header.object.as_ref().unwrap().as_ref();
-        let path = match path.strip_prefix(self.blue_path.as_ref()) {
-            Ok(p) => p,
-            Err(_) => return None,
-        };
-        let first_comp = match path.components().next() {
-            Some(Component::Normal(p)) => p.to_str().unwrap(),
-            None => return Some(None),
-            _ => return None,
-        };
-        let mac = devmac_to_mac(first_comp)?;
-        let dev = self.devices.get_mut(&mac)?;
-        let uuids = dev.match_dev(path.strip_prefix(&first_comp).unwrap())?;
-        Some(Some((mac, uuids)))
-    }
-    fn match_services(&mut self, path: &Path) -> Option<(UUID, Option<(UUID, Option<UUID>)>)> {
-        let r_str = path.to_str().unwrap();
-        if (r_str.len() != 9 && r_str.len() != 18 && r_str.len() != 27) || &r_str[..4] != "serv" {
-            return None;
-        }
-        for uuid in self.get_children() {
-            if let Some(matc) = match_serv(&mut self.get_child(&uuid).unwrap(), path) {
-                return Some((uuid, matc));
-                //return Some(Some((uuid, matc)));
-            }
-        }
-        None
-    }
-    fn match_advertisement(&self, path: &Path) -> Option<usize> {
-        let r_str = path.to_str().unwrap();
-        if r_str.len() != 7 || &r_str[..3] != "adv" {
-            return None;
-        }
-        for (i, adv) in self.ads.iter().enumerate() {
-            if adv.path.file_name().unwrap() == path {
-                return Some(i);
-            }
-        }
-        None
-    }
-    /// Clear the known the devices from the local application.
-    /// This function does *not* remove the devices from the controller.
-    /// It merely causes the local application to forget them.
-    pub fn clear_devices(&mut self) {
-        self.devices.clear()
-    }
-    /// Used to get devices devices known to Bluez. This function does *not* trigger scan/discovery
-    /// on the Bluez controller. Use `set_scan()` to initiate actual device discovery.
-    ///
-    /// **Calls process_requests()**
-    pub fn discover_devices(&mut self) -> Result<Vec<MAC>, Error> {
-        self.discover_devices_filter(self.blue_path.clone())
-    }
-
-    /*
-    /// **Unimplemented**
-    pub fn set_scan(&mut self, on: bool) -> Result<(), Error> {
-        let mut msg = MessageBuilder::new()
-            .call("Set".to_string())
-            .on(self.blue_path.to_str().unwrap().to_string())
-            .with_interface(PROP_IF_STR.to_string())
-            .at(BLUEZ_DEST.to_string())
-            .build();
-        msg.body.push_param2(ADAPTER_IF_STR, "Scan").unwrap();
-        let variant = Param::Container(Container::Variant(Box::new(params::Variant {
-            sig: rustbus::signature::Type::Base(rustbus::signature::Base::Boolean),
-            value: Param::Base(Base::Boolean(on)),
-        })));
-        msg.body.push_old_param(&variant).unwrap();
-        let res_idx = self.rpc_con.send_message(&mut msg, Timeout::Infinite)?;
-        loop {
-            self.process_requests()?;
-            if let Some(res) = self.rpc_con.try_get_response(res_idx) {
-                match res.typ {
-                    MessageType::Reply => return Ok(()),
-                    MessageType::Error => {
-                        return Err(Error::DbusReqErr(format!(
-                            "Set power call failed: {:?}",
-                            res
-                        )))
-                    }
-                    _ => unreachable!(),
-                }
-            }
-        }
-    }
-    */
-    /// Tries to resolve a `Pending`. If the `Pending` is not ready, or an
-    /// error occurs it will return an `Err(ResolveError)`
-    ///
-    /// **Sometimes Calls process_requests()**. If the `Pending` is fetching remote information
-    /// then this will call [`process_requests()`], but some `Pending` are already resolved when created,
-    /// such as reading a local characteristic. (These "PreResolved" `Pending`s exist to satisfy trait defitions.
-    pub fn try_resolve<T, V, U>(
-        &mut self,
-        mut pend: Pending<T, U>,
-    ) -> Result<T, ResolveError<T, U>> {
-        debug_assert_eq!(Rc::as_ptr(&self.leaking), pend.leaking.as_ptr());
-        match pend.typ.as_ref().unwrap() {
-            PendingType::PreResolved(_) => match pend.typ.take().unwrap() {
-                PendingType::PreResolved(t) => Ok(t),
-                _ => unreachable!(),
-            },
-            PendingType::MessageCb(cb) => {
-                if let Err(e) = self.process_requests() {
-                    return Err(ResolveError::Error(pend, e));
-                }
-                match self.rpc_con.try_get_response(pend.dbus_res) {
-                    Some(res) => {
-                        let data = pend.data.take().unwrap();
-                        let ret = (cb)(res, data);
-                        pend.typ.take();
-                        Ok(ret)
-                    }
-                    None => Err(ResolveError::StillPending(pend)),
-                }
-            }
-        }
-    }
-    /// Resolve a `Pending` by waiting for its response.
-    ///
-    /// **Sometimes Calls process_requests()**. If the `Pending` is fetching remote information
-    /// then this will call [`process_requests()`], but some `Pending` are already resolved when created,
-    /// such as reading a local characteristic. (These "PreResolved" `Pending`s exist to satisfy trait defitions.
-    pub fn resolve<T, U>(&mut self, mut pend: Pending<T, U>) -> Result<T, (Pending<T, U>, Error)> {
-        debug_assert_eq!(Rc::as_ptr(&self.leaking), pend.leaking.as_ptr());
-        match pend.typ.take().unwrap() {
-            PendingType::PreResolved(t) => Ok(t),
-            PendingType::MessageCb(cb) => loop {
-                if let Err(e) = self.process_requests() {
-                    break Err((pend, e));
-                }
-                if let Some(res) = self.rpc_con.try_get_response(pend.dbus_res) {
-                    let data = pend.data.take().unwrap();
-                    let ret = (cb)(res, data);
-                    break Ok(ret);
-                }
-            },
-        }
-    }
-
-    fn discover_devices_filter<'a, T: AsRef<Path>>(
-        &mut self,
-        filter_path: T,
-    ) -> Result<Vec<MAC>, Error> {
-        self.devices.clear();
-        let mut msg = MessageBuilder::new()
-            .call(MANGAGED_OBJ_CALL.to_string())
-            .at(BLUEZ_DEST.to_string())
-            .on("/".to_string())
-            .with_interface(OBJ_MANAGER_IF_STR.to_string())
-            .build();
-
-        let res_idx = self.rpc_con.send_message(&mut msg, Timeout::Infinite)?;
-        loop {
-            self.process_requests()?;
-            if let Some(res) = self.rpc_con.try_get_response(res_idx) {
-                if let MessageType::Error = res.typ {
-                    return Err(Error::DbusReqErr(format!(
-                        "Failed to discover device: {:?}",
-                        res
-                    )));
-                }
-                let filter_path = filter_path.as_ref();
-                let path_map: HashMap<
-                    path::ObjectPathBuf,
-                    HashMap<String, HashMap<String, Variant>>,
-                > = res.body.parser().get()?;
-                let mut pairs: Vec<(
-                    path::ObjectPathBuf,
-                    HashMap<String, HashMap<String, Variant>>,
-                )> = path_map
-                    .into_iter()
-                    .filter(|pair| pair.0.starts_with(filter_path))
-                    .collect();
-                pairs.sort_by(|a, b| a.0.cmp(&b.0));
-                let mut ret = Vec::new();
-                let mut device_base: Option<RemoteDeviceBase> = None;
-                let mut service_base: Option<RemoteServiceBase> = None;
-                let mut character_base: Option<RemoteCharBase> = None;
-                let mut descriptor_base: Option<RemoteDescBase> = None;
-                for (path, mut if_map) in pairs {
-                    if let Some(dev_base_props) = if_map.remove(DEV_IF_STR) {
-                        // handle adding remote device
-                        if let Some(mut dev) = device_base {
-                            if let Some(mut serv_base) = service_base.take() {
-                                if let Some(mut char_base) = character_base.take() {
-                                    if let Some(desc_base) = descriptor_base.take() {
-                                        char_base.descs.insert(desc_base.uuid().clone(), desc_base);
-                                    }
-                                    serv_base.chars.insert(char_base.uuid().clone(), char_base);
-                                }
-                                dev.services.insert(serv_base.uuid().clone(), serv_base);
-                            }
-                            ret.push(dev.uuid().clone());
-                            self.insert_device(dev);
-                        }
-                        device_base =
-                            Some(RemoteDeviceBase::from_props(dev_base_props, path.into())?);
-                    } else if let Some(dev_base) = &mut device_base {
-                        if let Some(serv_base_props) = if_map.remove(SERV_IF_STR) {
-                            // add remote service
-                            if !path.starts_with(&dev_base.path) {
-                                continue;
-                            }
-                            if let Some(mut serv_base) = service_base {
-                                if let Some(mut char_base) = character_base.take() {
-                                    if let Some(desc_base) = descriptor_base.take() {
-                                        char_base.descs.insert(desc_base.uuid().clone(), desc_base);
-                                    }
-                                    serv_base.chars.insert(char_base.uuid().clone(), char_base);
-                                }
-                                dev_base
-                                    .services
-                                    .insert(serv_base.uuid().clone(), serv_base);
-                            }
-                            service_base =
-                                Some(RemoteServiceBase::from_props(serv_base_props, path.into())?);
-                        } else if let Some(serv_base) = &mut service_base {
-                            if let Some(char_base_props) = if_map.remove(CHAR_IF_STR) {
-                                if !path.starts_with(serv_base.path()) {
-                                    continue;
-                                }
-                                if let Some(mut char_base) = character_base {
-                                    if let Some(desc_base) = descriptor_base.take() {
-                                        char_base.descs.insert(desc_base.uuid().clone(), desc_base);
-                                    }
-                                    serv_base.chars.insert(char_base.uuid().clone(), char_base);
-                                }
-                                character_base =
-                                    Some(RemoteCharBase::from_props(char_base_props, path.into())?);
-                            } else if let Some(char_base) = &mut character_base {
-                                if let Some(desc_base_props) = if_map.remove(DESC_IF_STR) {
-                                    if !path.starts_with(char_base.path()) {
-                                        continue;
-                                    }
-                                    if let Some(desc_base) = descriptor_base {
-                                        char_base.descs.insert(desc_base.uuid().clone(), desc_base);
-                                    }
-                                    descriptor_base = Some(RemoteDescBase::from_props(
-                                        desc_base_props,
-                                        path.into(),
-                                    )?);
-                                }
-                            }
-                        }
-                    }
-                }
-                // handle stragalers
-                if let Some(mut dev_base) = device_base {
-                    if let Some(mut serv_base) = service_base {
-                        if let Some(mut char_base) = character_base {
-                            if let Some(desc_base) = descriptor_base {
-                                char_base.descs.insert(desc_base.uuid().clone(), desc_base);
-                            }
-                            serv_base.chars.insert(char_base.uuid().clone(), char_base);
-                        }
-                        dev_base
-                            .services
-                            .insert(serv_base.uuid().clone(), serv_base);
-                    }
-                    self.devices.insert(dev_base.uuid().clone(), dev_base);
-                }
-                return Ok(ret);
-            }
-        }
-    }
-    fn insert_device(&mut self, device: RemoteDeviceBase) {
-        let devmac = device.mac.clone();
-        let comp = device.path.file_name().unwrap().to_os_string();
-        self.devices.insert(devmac.clone(), device);
-        self.comp_map.insert(comp, devmac);
-    }
-    /// Get a device from the Bluez controller.
-    ///
-    /// **Calls process_requests()**
-    pub fn discover_device(&mut self, mac: &MAC) -> Result<(), Error> {
-        let devmac: PathBuf = match mac_to_devmac(mac) {
-            Some(devmac) => devmac,
-            None => return Err(Error::BadInput("Invalid mac was given".to_string())),
-        }
-        .into();
-        self.discover_devices_filter(&self.blue_path.join(devmac))
-            .map(|_| ())
+        Ok(None)
     }
 }
 
-/// Gets the underlying `RawFd` used to talk to DBus.
-/// This can be useful for using `select`/`poll` to check
-/// if [`process_requests`] needs to be called.
-impl AsRawFd for Bluetooth {
-    fn as_raw_fd(&self) -> RawFd {
-        unsafe {
-            // SAFETY: This is safe because as_raw_fd() use an immutable receiver (&self)
-            // We need this unsafe code because conn_mut() is only accessible with a mutable reference
-            let rpc_con = &self.rpc_con as *const RpcConn as *mut RpcConn;
-            let rpc_con = &mut *rpc_con;
-            rpc_con.conn_mut().as_raw_fd()
-        }
-    }
-}
-pub fn mac_to_devmac(mac: &MAC) -> Option<String> {
-    if !validate_mac(mac) {
-        return None;
-    }
-    let mut ret = String::with_capacity(21);
-    ret.push_str("dev");
-    for i in 0..6 {
-        let tar = i * 3;
-        ret.push('_');
-        ret.push_str(&mac[tar..tar + 2]);
-    }
-    Some(ret)
-}
-pub fn validate_devmac(devmac: &str) -> bool {
-    if devmac.len() != 21 {
-        return false;
-    }
-    if !devmac.starts_with("dev") {
-        return false;
-    }
-    let devmac = &devmac[3..];
-    let mut chars = devmac.chars();
-    for _ in 0..6 {
-        if chars.next().unwrap() != '_' {
-            return false;
-        }
-        if chars.next().unwrap().is_lowercase() || chars.next().unwrap().is_lowercase() {
-            return false;
-        }
-    }
-    true
-}
-pub fn devmac_to_mac(devmac: &str) -> Option<MAC> {
-    if !validate_devmac(&devmac) {
-        return None;
-    }
-    let mut ret = String::with_capacity(17);
-    let devmac = &devmac[3..];
-    for i in 0..5 {
-        let tar = i * 3 + 1;
-        ret.push_str(&devmac[tar..tar + 2]);
-        ret.push(':');
-    }
-    ret.push_str(&devmac[16..18]);
-    Some(ret.into())
-}
 /*
-pub fn unknown_method<'a, 'b>(call: &Message<'_,'_>) -> Message<'a,'b> {
-    let text = format!(
-        "No calls to {}.{} are accepted for object {}",
-        call.interface.clone().unwrap_or_else(|| "".to_owned()),
-        call.member.clone().unwrap_or_else(|| "".to_owned()),
-        call.object.clone().unwrap_or_else(|| "".to_owned()),
-    );
-    let err_name = "org.freedesktop.DBus.Error.UnknownMethod".to_owned();
-    let mut err_resp = Message {
-            typ: MessageType::Reply,
-            interface: None,
-            member: None,
-            params: Vec::new(),
-            object: None,
-            destination: call.sender.clone(),
-            serial: None,
-            raw_fds: Vec::new(),
-            num_fds: None,
-            sender: None,
-            response_serial: call.serial,
-            dynheader.error_name: Some(err_name),
-            flags: 0,
-        };
-        err_resp.push_param(text);
-        err_resp
-
-}
-*/
 trait ObjectManager {
     fn objectmanager_call(&mut self, msg: MarshalledMessage) -> MarshalledMessage {
         match msg.dynheader.member.as_ref().unwrap().as_ref() {
@@ -1820,7 +696,7 @@ fn container_param_to_variant<'a, 'b>(c: Container<'a, 'b>) -> Param<'a, 'b> {
     };
     Param::Container(Container::Variant(Box::new(var)))
 }
-
+*/
 pub fn validate_uuid(uuid: &str) -> bool {
     if uuid.len() != 36 {
         return false;
@@ -1848,82 +724,24 @@ pub fn validate_uuid(uuid: &str) -> bool {
         false
     }
 }
+
+mod interfaces {
+    use super::*;
+    pub fn get_prop_call<P, D>(path: P, dest: D, interface: &str, prop: &str) -> MarshalledMessage
+    where
+        P: Into<String>,
+        D: Into<String>,
+    {
+        let mut call = MessageBuilder::new()
+            .call("Get".to_string())
+            .with_interface(PROPS_IF.to_string())
+            .on(path.into())
+            .at(dest.into())
+            .build();
+        call.body.push_param(interface).unwrap();
+        call.body.push_param(prop).unwrap();
+        call
+    }
+}
 /*
-struct Variant<'buf> {
-    sig: signature::Type,
-    byteorder: ByteOrder,
-    offset: usize,
-    buf: &'buf [u8],
-}
-impl<'r, 'buf: 'r, 'fd> Variant<'buf> {
-    pub fn get_value_sig(&self) -> &signature::Type {
-        &self.sig
-    }
-    pub fn get<T: Unmarshal<'r, 'buf, 'fd>>(&self) -> Result<T, UnmarshalError> {
-        if self.sig != T::signature() {
-            return Err(UnmarshalError::WrongSignature);
-        }
-        T::unmarshal(self.byteorder, self.buf, self.offset).map(|r| r.1)
-    }
-}
-impl Signature for Variant<'_> {
-    fn signature() -> signature::Type {
-        signature::Type::Container(signature::Container::Variant)
-    }
-    fn alignment() -> usize {
-        Variant::signature().get_alignment()
-    }
-}
-impl<'r, 'buf: 'r, 'fd> Unmarshal<'r, 'buf, 'fd> for Variant<'buf> {
-    fn unmarshal(
-        byteorder: ByteOrder,
-        buf: &'buf [u8],
-        offset: usize,
-    ) -> unmarshal::UnmarshalResult<Self> {
-        // let padding = rustbus::wire::util::align_offset(Self::get_alignment());
-        let (mut used, desc) = rustbus::wire::util::unmarshal_signature(&buf[offset..])?;
-        let mut sigs = match signature::Type::parse_description(desc) {
-            Ok(sigs) => sigs,
-            Err(_) => return Err(UnmarshalError::WrongSignature),
-        };
-        if sigs.len() != 1 {
-            return Err(UnmarshalError::WrongSignature);
-        }
-        let sig = sigs.remove(0);
-        used += rustbus::wire::util::align_offset(sig.get_alignment(), buf, offset + used)?;
-        let start_loc = offset + used;
-        used += rustbus::wire::validate_raw::validate_marshalled(byteorder, start_loc, buf, &sig)
-            .map_err(|e| e.1)?;
-        Ok((
-            used,
-            Variant {
-                sig,
-                buf: &buf[..offset + used],
-                offset: start_loc,
-                byteorder,
-            },
-        ))
-    }
-}
-impl Marshal for Variant<'_> {
-    fn marshal(&self, byteorder: ByteOrder, buf: &mut Vec<u8>) -> Result<(), rustbus::Error> {
-        if let ByteOrder::LittleEndian = byteorder {
-            if let ByteOrder::BigEndian = self.byteorder {
-                panic!("Byte order mismatch");
-            }
-        } else {
-            if let ByteOrder::LittleEndian = self.byteorder {
-                panic!("Byte order mismatch");
-            }
-        }
-        let mut sig_str = String::new();
-        self.sig.to_str(&mut sig_str);
-        debug_assert!(sig_str.len() <= 255);
-        buf.push(sig_str.len() as u8);
-        buf.extend_from_slice(sig_str.as_bytes());
-        rustbus::wire::util::pad_to_align(self.sig.get_alignment(), buf);
-        buf.extend_from_slice(&self.buf[self.offset..]);
-        Ok(())
-    }
-}
 */

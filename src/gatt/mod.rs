@@ -1,308 +1,32 @@
-//! Module containing structures and traits for interacting with remote
-//! GATT services/characteristics/descriptors and creating local GATT services.
-use crate::{Error, Pending, ToUUID, UUID};
-use rustbus::wire::marshal::traits::{Marshal, Signature};
-use rustbus::wire::marshal::MarshalContext;
-use rustbus::wire::unmarshal;
-use rustbus::wire::unmarshal::traits::Unmarshal;
-use rustbus::wire::unmarshal::{UnmarshalContext, UnmarshalResult};
-use rustbus::{dbus_variant_var, ByteOrder};
 use std::borrow::Borrow;
-use std::cell::Cell;
 use std::fmt::{Debug, Formatter};
 use std::mem::MaybeUninit;
 use std::ops::{Deref, DerefMut};
-use std::path::Path;
-use std::rc::Rc;
-use std::time::Duration;
 
-mod characteristic;
-mod descriptor;
-mod service;
+use async_rustbus::rustbus_core;
+use marshal::traits::{Marshal, Signature};
+use marshal::MarshalContext;
+use rustbus_core::signature;
+use rustbus_core::wire::{marshal, unmarshal};
+use unmarshal::traits::Unmarshal;
+use unmarshal::{UnmarshalContext, UnmarshalResult};
 
-//pub use characteristic::{Charactersitic, LocalCharBase, LocalCharactersitic, CharFlags};
-pub use characteristic::*;
-pub use descriptor::*;
-pub use service::*;
-
-dbus_variant_var!(CharVar, U16 => u16; String => String);
-
-/// Types implementing this trait represent Bluetooth ATT (services/characteristics,descriptors),
-/// and their associated DBus path.
-pub trait AttObject {
-    /// Get the DBus object path.
-    fn path(&self) -> &Path;
-    /// Get the 128-bit UUID of the object.
-    fn uuid(&self) -> &UUID;
-}
-impl<T: AttObject> AttObject for &T {
-    fn path(&self) -> &Path {
-        T::path(self)
-    }
-    fn uuid(&self) -> &UUID {
-        T::uuid(self)
-    }
-}
-impl<T: AttObject> AttObject for &mut T {
-    fn path(&self) -> &Path {
-        T::path(self)
-    }
-    fn uuid(&self) -> &UUID {
-        T::uuid(self)
-    }
-}
-pub trait FlaggedAtt: AttObject {
-    type Flags;
-    fn flags(&self) -> Self::Flags;
-}
-impl<T: FlaggedAtt> FlaggedAtt for &T {
-    type Flags = T::Flags;
-    fn flags(&self) -> Self::Flags {
-        T::flags(self)
-    }
-}
-impl<T: FlaggedAtt> FlaggedAtt for &mut T {
-    type Flags = T::Flags;
-    fn flags(&self) -> Self::Flags {
-        T::flags(self)
-    }
-}
-
-/// `AttObject`s implementing this type have 16-bit UUID assigned by the Bluetooth SIG.
-pub trait AssignedAtt: AttObject {
-    /// Get the 16-bit UUID of the object.
-    fn uuid_16(&self) -> u16;
-}
-
-/// `AttObject`s implementing this trait are readable, *if* flags allow for it.
-pub trait ReadableAtt: AttObject + FlaggedAtt {
-    /// Starts a read request of the attribute.
-    ///
-    /// The returned `Pending` can be resolved with [`Bluetooth::resolve()`] to get the result
-    /// when it is finished.
-    fn read(&mut self) -> Result<Pending<Result<AttValue, Error>, Rc<Cell<AttValue>>>, Error>;
-    /// Generally returns a previous value of the GATT characteristic. Check the individual implementors,
-    /// for a more precise definition.
-    fn read_cached(&mut self) -> AttValue;
-
-    /// Reads the value of a GATT characteristic, and waits for a response.
-    fn read_wait(&mut self) -> Result<AttValue, Error>;
-}
-impl<T: ReadableAtt> ReadableAtt for &mut T {
-    fn read(&mut self) -> Result<Pending<Result<AttValue, Error>, Rc<Cell<AttValue>>>, Error> {
-        T::read(self)
-    }
-    fn read_cached(&mut self) -> AttValue {
-        T::read_cached(self)
-    }
-    fn read_wait(&mut self) -> Result<AttValue, Error> {
-        T::read_wait(self)
-    }
-}
-/// `AttObject`s implementing this trait are writeable, *if* flags allow for it.
-pub trait WritableAtt: AttObject + FlaggedAtt {
-    /// Begin a write operation to a GATT characteristic.
-    fn write(
-        &mut self,
-        val: AttValue,
-        write_type: WriteType,
-    ) -> Result<Pending<Result<(), Error>, ()>, Error>;
-    /// Write a value to a GATT characteristic and wait for completion.
-    fn write_wait(&mut self, val: AttValue, write_type: WriteType) -> Result<(), Error>;
-    /// Checks if the characteristic's write fd from [`AcquireWrite`] has already been acquired.
-    /// Corresponds to reading [`WriteAcquired`] property.
-    ///
-    /// [`AcquireWrite`]: https://git.kernel.org/pub/scm/bluetooth/bluez.git/tree/doc/gatt-api.txt#n115
-    /// [`WriteAcquired`]: https://git.kernel.org/pub/scm/bluetooth/bluez.git/tree/doc/gatt-api.txt#n223
-    fn write_acquired(&self) -> bool;
-}
-impl<T: WritableAtt> WritableAtt for &mut T {
-    fn write(
-        &mut self,
-        val: AttValue,
-        write_type: WriteType,
-    ) -> Result<Pending<Result<(), Error>, ()>, Error> {
-        T::write(self, val, write_type)
-    }
-    fn write_wait(&mut self, val: AttValue, write_type: WriteType) -> Result<(), Error> {
-        T::write_wait(self, val, write_type)
-    }
-    fn write_acquired(&self) -> bool {
-        T::write_acquired(self)
-    }
-}
-fn match_char(gdo: &mut LocalCharBase, path: &Path) -> Option<Option<UUID>> {
-    match path.strip_prefix(gdo.path().file_name().unwrap()) {
-        Ok(remaining) => {
-            if remaining == Path::new("") {
-                Some(None)
-            } else {
-                let r_str = remaining.to_str().unwrap();
-                if r_str.len() != 8 || &r_str[..4] != "desc" {
-                    return None;
-                }
-                for uuid in gdo.get_children() {
-                    if match_object(&gdo.get_child(&uuid).unwrap(), remaining) {
-                        return Some(Some(uuid));
-                    }
-                }
-                None
-            }
-        }
-        Err(_) => None,
-    }
-}
-pub(crate) fn match_serv(
-    gdo: &mut LocalServiceBase,
-    path: &Path,
-) -> Option<Option<(UUID, Option<UUID>)>> {
-    match path.strip_prefix(gdo.path().file_name().unwrap()) {
-        Ok(remaining) => {
-            if remaining == Path::new("") {
-                Some(None)
-            } else {
-                let r_str = remaining.to_str().unwrap();
-                if (r_str.len() != 8 && r_str.len() != 17) || &r_str[..4] != "char" {
-                    return None;
-                }
-                for uuid in gdo.get_children() {
-                    if let Some(matc) = match_char(&mut gdo.get_child(&uuid).unwrap(), remaining) {
-                        return Some(Some((uuid, matc)));
-                    }
-                }
-                None
-            }
-        }
-        Err(_) => None,
-    }
-}
-fn match_remote_char(gdo: &mut RemoteCharBase, path: &Path) -> Option<Option<UUID>> {
-    match path.strip_prefix(gdo.path().file_name().unwrap()) {
-        Ok(remaining) => {
-            if remaining == Path::new("") {
-                Some(None)
-            } else {
-                for uuid in gdo.get_children() {
-                    if match_object(&gdo.get_child(&uuid).unwrap(), remaining) {
-                        return Some(Some(uuid));
-                    }
-                }
-                None
-            }
-        }
-        Err(_) => None,
-    }
-}
-pub(crate) fn match_remote_serv(
-    gdo: &mut RemoteServiceBase,
-    path: &Path,
-) -> Option<Option<(UUID, Option<UUID>)>>
-//U: HasChildren<'b> + AttObject
-{
-    match path.strip_prefix(gdo.path().file_name().unwrap()) {
-        Ok(remaining) => {
-            if remaining == Path::new("") {
-                Some(None)
-            } else {
-                for uuid in gdo.get_children() {
-                    if let Some(matc) =
-                        match_remote_char(&mut gdo.get_child(&uuid).unwrap(), remaining)
-                    {
-                        return Some(Some((uuid, matc)));
-                    }
-                }
-                None
-            }
-        }
-        Err(_) => None,
-    }
-}
-
-fn match_object<T: AttObject>(gdo: &T, path: &Path) -> bool {
-    gdo.path().file_name().unwrap() == path
-}
-
-/// Objects implementing this trait have child attributes.
-pub trait HasChildren<'a> {
-    type Child: AttObject;
-    fn get_children(&self) -> Vec<UUID>;
-    fn get_child<T: ToUUID>(&'a mut self, uuid: T) -> Option<Self::Child>;
-}
-/*
-pub trait HasChildrenMut<'a>: HasChildren<'a> {
-    fn get_child<T: ToUUID>(&'a mut self, uuid: T) -> Option<Self::Child>;
-
-}
-*/
-impl<'a, U: HasChildren<'a>> HasChildren<'a> for &mut U {
-    type Child = U::Child;
-    fn get_children(&self) -> Vec<UUID> {
-        U::get_children(self)
-    }
-    fn get_child<T: ToUUID>(&'a mut self, uuid: T) -> Option<Self::Child> {
-        U::get_child(self, uuid)
-    }
-}
-
-/// Use to set the value of a local characteristic or descriptor.
-/// The value can be an actual value or it can be callback that returns value.
-pub enum ValOrFn {
-    Value(AttValue),
-    Function(Box<dyn FnMut() -> AttValue>),
-}
-impl Default for ValOrFn {
-    fn default() -> Self {
-        ValOrFn::Value(AttValue::default())
-    }
-}
-impl AsRef<AttValue> for AttValue {
-    fn as_ref(&self) -> &AttValue {
-        self
-    }
-}
-impl<T: AsRef<AttValue>> From<T> for ValOrFn {
-    fn from(cv: T) -> Self {
-        ValOrFn::Value(*cv.as_ref())
-    }
-}
-
-impl Debug for ValOrFn {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        if let ValOrFn::Value(cv) = self {
-            write!(f, "ValOrFn {{ Value: {:?} }}", cv)
-        } else {
-            write!(f, "ValOrFn {{ Fn  }}")
-        }
-    }
-}
-
-impl ValOrFn {
-    #[inline]
-    pub fn to_value(&mut self) -> AttValue {
-        match self {
-            ValOrFn::Value(cv) => (*cv),
-            ValOrFn::Function(f) => f(),
-        }
-    }
-    pub fn from_slice(slice: &[u8]) -> Self {
-        ValOrFn::Value(slice.into())
-    }
-}
+pub mod client;
+pub mod server;
 
 /// Represents the value of a characteristic or descriptor.
-#[derive(Copy)]
 pub struct AttValue {
     //buf: [u8; 512],
     buf: [MaybeUninit<u8>; 512],
     len: usize,
 }
 impl Debug for AttValue {
-    fn fmt(&self, f: &mut Formatter<'_>) -> Result<(), std::fmt::Error> {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         // TODO: use formmater helper functions
-        f.debug_struct("AttValue")
-            .field("len", &self.len)
-            .field("buf", &self.as_slice())
-            .finish()
+        let slice = &self.buf[..self.len];
+        write!(f, "AttValue {{")?;
+        slice.fmt(f)?;
+        write!(f, "}}")
     }
 }
 impl AttValue {
@@ -393,7 +117,7 @@ impl DerefMut for AttValue {
     }
 }
 impl Signature for AttValue {
-    fn signature() -> crate::signature::Type {
+    fn signature() -> signature::Type {
         <[u8]>::signature()
     }
     fn alignment() -> usize {
@@ -411,68 +135,156 @@ impl<'r, 'buf: 'r, 'fds> Unmarshal<'r, 'buf, 'fds> for AttValue {
     }
 }
 impl Marshal for AttValue {
-    fn marshal(&self, ctx: &mut MarshalContext) -> Result<(), rustbus::Error> {
+    fn marshal(&self, ctx: &mut MarshalContext) -> Result<(), rustbus_core::Error> {
         self.as_slice().marshal(ctx)
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use crate::gatt::{match_char, match_serv};
-    use crate::gatt::{CharFlags, DescFlags, LocalCharBase, LocalDescBase, LocalServiceBase};
-    use crate::ToUUID;
-    use std::path::{Path, PathBuf};
-    #[test]
-    fn test_match_char() {
-        let desc1_uuid = "00000000-0000-0000-0000-000000000001".to_uuid();
-        let mut desc1 = LocalDescBase::new(&desc1_uuid, DescFlags::default());
-        desc1.path = PathBuf::from("char0001/desc0001");
-
-        let char1_uuid = "00000000-0000-0000-0001-000000000000".to_uuid();
-        let mut char1 = LocalCharBase::new(&char1_uuid, CharFlags::default());
-        char1.path = PathBuf::from("char0001");
-        char1.add_desc(desc1);
-
-        assert_eq!(match_char(&mut char1, Path::new("char0001")), Some(None));
-        assert_eq!(
-            match_char(&mut char1, Path::new("char0001/desc0001")),
-            Some(Some(desc1_uuid))
-        );
-        assert_eq!(match_char(&mut char1, Path::new("char0002")), None);
-        assert_eq!(match_char(&mut char1, Path::new("char0001/desc0002")), None);
+/// Flags for GATT characteristics.
+///
+/// What each flags does is detailed on
+/// page 1552 (Table 3.5) and page 1554 (Table 3.8) of the [Core Specification (5.2)]
+///
+/// [Core Specification (5.2)]: https://www.bluetooth.com/specifications/bluetooth-core-specification/
+#[derive(Clone, Copy, Default, Debug)]
+pub struct CharFlags {
+    pub broadcast: bool,
+    pub read: bool,
+    pub write_wo_response: bool,
+    pub write: bool,
+    pub notify: bool,
+    pub indicate: bool,
+    pub auth_signed_writes: bool,
+    pub extended_properties: bool,
+    pub reliable_write: bool,
+    pub writable_auxiliaries: bool,
+    pub encrypt_read: bool,
+    pub encrypt_write: bool,
+    pub encrypt_auth_read: bool,
+    pub encrypt_auth_write: bool,
+    pub secure_read: bool,
+    pub secure_write: bool,
+    pub authorize: bool,
+}
+impl CharFlags {
+    fn to_strings(&self) -> Vec<&'static str> {
+        let mut ret = Vec::new();
+        if self.broadcast {
+            ret.push("broadcast");
+        }
+        if self.read {
+            ret.push("read");
+        }
+        if self.write {
+            ret.push("write")
+        }
+        if self.write_wo_response {
+            ret.push("write-without-response");
+        }
+        if self.notify {
+            ret.push("notify");
+        }
+        if self.indicate {
+            ret.push("indicate");
+        }
+        if self.auth_signed_writes {
+            unimplemented!();
+            ret.push("authenticated-signed-writes");
+        }
+        if self.extended_properties {
+            ret.push("extended-properties");
+        }
+        if self.reliable_write {
+            ret.push("reliable-write");
+        }
+        if self.writable_auxiliaries {
+            unimplemented!();
+            ret.push("writable-auxiliaries");
+        }
+        if self.encrypt_read {
+            ret.push("encrypt-read");
+        }
+        if self.encrypt_write {
+            ret.push("encrypt-write");
+        }
+        if self.encrypt_auth_read {
+            ret.push("encrypt-authenticated-read");
+        }
+        if self.encrypt_auth_write {
+            ret.push("encrypt-authenticated-write");
+        }
+        if self.secure_write {
+            ret.push("secure-write");
+        }
+        if self.secure_read {
+            ret.push("secure-read");
+        }
+        if self.authorize {
+            unimplemented!();
+            ret.push("authorize");
+        }
+        ret
     }
-    #[test]
-    fn test_match_serv() {
-        let desc1_uuid = "00000000-0000-0000-0000-000000000001".to_uuid();
-        let mut desc1 = LocalDescBase::new(&desc1_uuid, DescFlags::default());
-        desc1.path = PathBuf::from("serv0001/char0001/desc0001");
+    fn from_strings<'a, I>(flags: I) -> CharFlags
+    where
+        I: IntoIterator<Item = &'a str>,
+    {
+        let mut ret = CharFlags::default();
+        for flag in flags {
+            match flag {
+                "broadcast" => ret.broadcast = true,
+                "read" => ret.read = true,
+                "write" => ret.write = true,
+                "write-without-response" => ret.write_wo_response = true,
+                "notify" => ret.notify = true,
+                "indicate" => ret.indicate = true,
+                "authenticated-signed-writes" => ret.auth_signed_writes = true,
+                "extended-properties" => ret.extended_properties = true,
+                "reliable-write" => ret.reliable_write = true,
+                "writable-auxiliaries" => ret.writable_auxiliaries = true,
+                "encrypt-read" => ret.encrypt_read = true,
+                "encrypt-write" => ret.encrypt_write = true,
+                "encrypt-authenticated-read" => ret.encrypt_auth_read = true,
+                "encrypt-authenticated-write" => ret.encrypt_auth_write = true,
+                "secure-write" => ret.secure_write = true,
+                "secure-read" => ret.secure_read = true,
+                "authorize" => ret.authorize = true,
+                _ => unreachable!(),
+            }
+        }
+        ret
+    }
+}
+/// Use to set the value of a local characteristic or descriptor.
+/// The value can be an actual value or it can be callback that returns value.
+pub enum ValOrFn {
+    Value(AttValue),
+    Function(Box<dyn FnMut() -> AttValue + Send + 'static>),
+}
+impl Default for ValOrFn {
+    fn default() -> Self {
+        ValOrFn::Value(AttValue::default())
+    }
+}
+impl Debug for ValOrFn {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        if let ValOrFn::Value(cv) = self {
+            write!(f, "ValOrFn {{ Value: {:?} }}", cv)
+        } else {
+            write!(f, "ValOrFn {{ Fn  }}")
+        }
+    }
+}
 
-        let char1_uuid = "00000000-0000-0000-0001-000000000000".to_uuid();
-        let mut char1 = LocalCharBase::new(&char1_uuid, CharFlags::default());
-        char1.path = PathBuf::from("serv0001/char0001");
-        char1.add_desc(desc1);
-
-        let serv1_uuid = "00000000-0000-0001-0000-000000000000".to_uuid();
-        let mut serv1 = LocalServiceBase::new(&serv1_uuid, true);
-        serv1.path = PathBuf::from("serv0001");
-        serv1.add_char(char1);
-        assert_eq!(match_serv(&mut serv1, Path::new("serv0001")), Some(None));
-        assert_eq!(match_serv(&mut serv1, Path::new("char0001")), None);
-        assert_eq!(
-            match_serv(&mut serv1, Path::new("serv0001/char0001")),
-            Some(Some((char1_uuid.clone(), None)))
-        );
-        assert_eq!(
-            match_serv(&mut serv1, Path::new("serv000001/char0002")),
-            None
-        );
-        assert_eq!(
-            match_serv(&mut serv1, Path::new("serv0001/char0001/desc0001")),
-            Some(Some((char1_uuid.clone(), Some(desc1_uuid))))
-        );
-        assert_eq!(
-            match_serv(&mut serv1, Path::new("serv0001/char0001/desc0002")),
-            None
-        );
+impl ValOrFn {
+    #[inline]
+    pub fn to_value(&mut self) -> AttValue {
+        match self {
+            ValOrFn::Value(cv) => cv.clone(),
+            ValOrFn::Function(f) => f(),
+        }
+    }
+    pub fn from_slice(slice: &[u8]) -> Self {
+        ValOrFn::Value(slice.into())
     }
 }
