@@ -1,10 +1,8 @@
 use crate::*;
 use rustbus_core::message_builder::MarshalledMessage;
 use std::fmt::Write;
-use std::path::Path;
 pub(crate) const INTROSPECT_FMT_P1: &'static str = "<!DOCTYPE node PUBLIC \"-//freedesktop//DTD D-BUS Object Introspection 1.0//EN\" \"http://www.freedesktop.org/standards/dbus/1.0/introspect.dtd\">
- <node name=\"";
-pub(crate) const INTROSPECT_FMT_P2: &'static str = "\">
+ <node>
 \t<interface name=\"org.freedesktop.DBus.Introspectable\">
 \t\t<method name=\"Introspect\">
 \t\t\t<arg name=\"xml_data\" type=\"s\" direction=\"out\"/>
@@ -112,7 +110,7 @@ pub(crate) const MANGAGER_STR: &'static str = "\t<interface name=\"org.freedeskt
 \t\t\t<arg type=\"as\" name=\"interfaces\"/>
 \t\t</signal>
 \t</interface>\n";
-pub(crate) fn child_nodes<T: AsRef<str>>(children: &[T], dst: &mut String) {
+pub(crate) fn child_nodes<S: AsRef<str>, T: IntoIterator<Item = S>>(children: T, dst: &mut String) {
     for child in children {
         write!(dst, "\t<node name=\"{}\"/>\n", child.as_ref()).unwrap();
     }

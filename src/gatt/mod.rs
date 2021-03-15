@@ -14,6 +14,17 @@ use unmarshal::{UnmarshalContext, UnmarshalResult};
 pub mod client;
 pub mod server;
 
+const UUID_STR: &'static str = "UUID";
+const PRY_STR: &'static str = "Primary";
+const HANDLE_STR: &'static str = "Handle";
+const SERV_STR: &'static str = "Service";
+const CHAR_STR: &'static str = "Characteristic";
+const NO_STR: &'static str = "Notifying";
+const NA_STR: &'static str = "NotifyAcquired";
+const VAL_STR: &'static str = "Value";
+const WA_STR: &'static str = "WriteAcquired";
+const FLAG_STR: &'static str = "Flags";
+
 /// Represents the value of a characteristic or descriptor.
 pub struct AttValue {
     //buf: [u8; 512],
@@ -53,11 +64,11 @@ impl AttValue {
         self.len = new_len;
     }
     pub fn as_slice(&self) -> &[u8] {
-        // SAFETY: MaybeUninit<u8> has same layout as u8
+        // SAFETY: MaybeUninit<u8> has same layout as u8 as as been init up to self.len
         unsafe { std::mem::transmute(&self.buf[..self.len]) }
     }
     pub fn as_mut_slice(&mut self) -> &mut [u8] {
-        // SAFETY: MaybeUninit<u8> has same layout as u8
+        // SAFETY: MaybeUninit<u8> has same layout as u8 as as been init up to self.len
         unsafe { std::mem::transmute(&mut self.buf[..self.len]) }
     }
     pub fn update(&mut self, slice: &[u8], offset: usize) {
@@ -71,6 +82,9 @@ impl AttValue {
     pub fn extend_from_slice(&mut self, slice: &[u8]) {
         let mut iter = slice.iter().map(|x| *x);
         self.resize_with(self.len + slice.len(), || iter.next().unwrap());
+    }
+    pub fn remaining(&self) -> usize {
+        512 - self.len()
     }
 }
 impl Default for AttValue {
@@ -259,7 +273,7 @@ impl CharFlags {
 /// The value can be an actual value or it can be callback that returns value.
 pub enum ValOrFn {
     Value(AttValue),
-    Function(Box<dyn FnMut() -> AttValue + Send + 'static>),
+    Function(Box<dyn FnMut() -> AttValue + Send + Sync + 'static>),
 }
 impl Default for ValOrFn {
     fn default() -> Self {
@@ -286,5 +300,51 @@ impl ValOrFn {
     }
     pub fn from_slice(slice: &[u8]) -> Self {
         ValOrFn::Value(slice.into())
+    }
+}
+#[derive(Default, Clone, Copy)]
+pub struct DescFlags {
+    pub read: bool,
+    pub write: bool,
+    pub encrypt_read: bool,
+    pub encrypt_write: bool,
+    pub encrypt_auth_read: bool,
+    pub encrypt_auth_write: bool,
+    pub secure_read: bool,
+    pub secure_write: bool,
+    pub authorize: bool,
+}
+impl DescFlags {
+    pub fn to_strings(&self) -> Vec<&'static str> {
+        let mut ret = Vec::new();
+        if self.read {
+            ret.push("read");
+        }
+        if self.write {
+            ret.push("write")
+        }
+        if self.encrypt_read {
+            ret.push("encrypt-read");
+        }
+        if self.encrypt_write {
+            ret.push("encrypt-write");
+        }
+        if self.encrypt_auth_read {
+            ret.push("encrypt-authenticated-read");
+        }
+        if self.encrypt_auth_write {
+            ret.push("encrypt-authenticated-write");
+        }
+        if self.secure_write {
+            ret.push("secure-write");
+        }
+        if self.secure_read {
+            ret.push("secure-read");
+        }
+        if self.authorize {
+            unimplemented!();
+            ret.push("authorize");
+        }
+        ret
     }
 }

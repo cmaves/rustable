@@ -6,13 +6,9 @@ use super::{AttValue, CharFlags};
 use crate::interfaces::get_prop_call;
 use crate::*;
 
-use rustbus_core::dbus_variant_var;
 use rustbus_core::wire::unixfd::UnixFd;
-use rustbus_core::wire::unmarshal::Error as UnmarshalError;
 
 use async_std::os::unix::net::UnixDatagram;
-
-dbus_variant_var!(BluezOptions, U16 => u16; Str => &'buf str);
 
 pub struct Service {
     inner: Arc<ServiceData>,

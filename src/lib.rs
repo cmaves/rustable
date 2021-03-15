@@ -11,6 +11,7 @@ use async_std::channel::{RecvError, SendError};
 use futures::prelude::*;
 use futures::stream::FuturesUnordered;
 
+use rustbus_core::dbus_variant_var;
 use rustbus_core::message_builder::{CallBuilder, MarshalledMessage, MessageBuilder, MessageType};
 use rustbus_core::wire::unmarshal::traits::Unmarshal;
 
@@ -19,27 +20,30 @@ pub mod gatt;
 use gatt::client::Service as LocalService;
 
 pub(crate) mod introspect;
+pub(crate) mod properties;
 
 mod path;
 pub use path::*;
 
 use interfaces::get_prop_call;
 
+dbus_variant_var!(BluezOptions, Bool => bool; U16 => u16; Str => &'buf str; OwnedStr => String; Path => &'buf ObjectPath; OwnedPath => ObjectPathBuf; Buf => &'buf [u8]; OwnedBuf => Vec<u8>; Flags => Vec<&'buf str>);
 #[derive(Debug, PartialEq, Eq, Copy, Clone, PartialOrd, Ord)]
-pub struct UUID(u128);
+pub struct UUID(pub u128);
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub struct MAC(u32, u16);
 
 pub const MAX_CHAR_LEN: usize = 512;
 pub const MAX_APP_MTU: usize = 511;
 const BLUEZ_DEV_IF: &'static str = "org.bluez.Device1";
-const BLUEZ_SER_IF: &'static str = "org.bluez.Service1";
-const BLUEZ_CHR_IF: &'static str = "org.bluez.Characteristic1";
-const BLUEZ_DES_IF: &'static str = "org.bluez.Descriptor1";
+const BLUEZ_SER_IF: &'static str = "org.bluez.GattService1";
+const BLUEZ_CHR_IF: &'static str = "org.bluez.GattCharacteristic1";
+const BLUEZ_DES_IF: &'static str = "org.bluez.GattDescriptor1";
 const BLUEZ_MGR_IF: &'static str = "org.bluez.GattManager1";
 const PROPS_IF: &'static str = "org.freedesktop.DBus.Properties";
 const INTRO_IF: &'static str = "org.freedesktop.DBus.Introspectable";
 const OBJMGR_IF: &'static str = "org.freedesktop.DBus.ObjectManager";
+const BT_BASE_UUID: UUID = UUID(0x0000000000001000800000805F9B34FB);
 
 /// This trait creates a UUID from the implementing Type.
 /// This trait can panic if the given type doesn't represent a valid uuid.
@@ -47,29 +51,29 @@ const OBJMGR_IF: &'static str = "org.freedesktop.DBus.ObjectManager";
 /// ## Note
 /// This trait exists because UUID and MAC will eventually be converted into
 /// their own structs rather than being aliases for `Rc<str>`
-pub enum UUIDParseError {
+pub enum IDParseError {
     InvalidLength,
     InvalidDelimiter,
-    InvalidRadix
+    InvalidRadix,
 }
-impl From<ParseIntError> for UUIDParseError {
+impl From<ParseIntError> for IDParseError {
     fn from(_: ParseIntError) -> Self {
-        UUIDParseError::InvalidRadix
+        IDParseError::InvalidRadix
     }
 }
 impl FromStr for UUID {
-    type Err = UUIDParseError;
+    type Err = IDParseError;
     fn from_str(s: &str) -> Result<UUID, Self::Err> {
         if s.len() != 36 {
-            return Err(UUIDParseError::InvalidLength);
+            return Err(IDParseError::InvalidLength);
         }
         let mut uuid_chars = s.chars();
         if uuid_chars.nth(8).unwrap() != '-' {
-            return Err(UUIDParseError::InvalidDelimiter);
+            return Err(IDParseError::InvalidDelimiter);
         }
         for _ in 0..3 {
             if uuid_chars.nth(4).unwrap() != '-' {
-                return Err(UUIDParseError::InvalidDelimiter);
+                return Err(IDParseError::InvalidDelimiter);
             }
         }
         let first = u128::from_str_radix(&s[..8], 16)? << 96;
@@ -78,12 +82,21 @@ impl FromStr for UUID {
         let fourth = u128::from_str_radix(&s[18..23], 16)? << 48;
         let fifth = u128::from_str_radix(&s[24..36], 16)? << 0;
         Ok(UUID(first | second | third | fourth | fifth))
-
     }
 }
 impl From<u16> for UUID {
     fn from(u: u16) -> Self {
-        unimplemented!()
+        Self::from(u as u32)
+    }
+}
+impl From<u32> for UUID {
+    fn from(u: u32) -> Self {
+        UUID(((u as u128) << 96) | BT_BASE_UUID.0)
+    }
+}
+impl From<UUID> for u128 {
+    fn from(u: UUID) -> Self {
+        u.0
     }
 }
 impl From<u128> for UUID {
@@ -91,20 +104,85 @@ impl From<u128> for UUID {
         Self(u)
     }
 }
-impl UUID {
-    fn chars(&self) -> [char; 32] {
-        unimplemented!();
+pub struct OutOfRange;
+
+impl TryFrom<UUID> for u16 {
+    type Error = OutOfRange;
+    fn try_from(uuid: UUID) -> Result<Self, Self::Error> {
+        uuid.short().ok_or(OutOfRange)
     }
-    fn short(&self) -> Option<[char; 4]> {
-        unimplemented!();
+}
+impl TryFrom<UUID> for u32 {
+    type Error = OutOfRange;
+    fn try_from(uuid: UUID) -> Result<Self, Self::Error> {
+        uuid.uint().ok_or(OutOfRange)
+    }
+}
+impl UUID {
+    pub const fn short(&self) -> Option<u16> {
+        const U16_MAX_UUID: u128 = BT_BASE_UUID.0 | ((std::u16::MAX as u128) << 112);
+        if (self.0 & !U16_MAX_UUID) == 0 {
+            Some((self.0 >> 96) as u16)
+        } else {
+            None
+        }
+    }
+    pub const fn uint(&self) -> Option<u32> {
+        const U32_MAX_UUID: u128 = BT_BASE_UUID.0 | ((std::u32::MAX as u128) << 96);
+        if (self.0 & !U32_MAX_UUID) == 0 {
+            Some((self.0 >> 96) as u32)
+        } else {
+            None
+        }
     }
 }
 impl Display for UUID {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        unimplemented!()
+        let first = (self.0 >> 96) as u32;
+        let second = (self.0 >> 80) as u16;
+        let third = (self.0 >> 64) as u16;
+        let fourth = (self.0 >> 48) as u16;
+        let fifth = self.0 as u64 & 0xFFFFFFFFFFFF;
+        write!(
+            f,
+            "{:08x}-{:04x}-{:04x}-{:04x}-{:012x}",
+            first, second, third, fourth, fifth
+        )
+    }
+}
+impl FromStr for MAC {
+    type Err = IDParseError;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        if s.len() != 17 {
+            return Err(IDParseError::InvalidLength);
+        }
+        for c in s.chars().skip(2).step_by(3) {
+            if c != ':' {
+                return Err(IDParseError::InvalidDelimiter);
+            }
+        }
+        let zero = [
+            u8::from_str_radix(&s[0..2], 16)?,
+            u8::from_str_radix(&s[3..5], 16)?,
+            u8::from_str_radix(&s[6..8], 16)?,
+            u8::from_str_radix(&s[9..11], 16)?,
+        ];
+
+        let one = [
+            u8::from_str_radix(&s[12..14], 16)?,
+            u8::from_str_radix(&s[15..17], 16)?,
+        ];
+        Ok(MAC(u32::from_be_bytes(zero), u16::from_be_bytes(one)))
     }
 }
 impl MAC {
+    pub const fn new(mac: u64) -> Self {
+        //assert!(mac < 0xFFFF000000000000);
+        let a = [0];
+        // hacky way to panic if the value is out of range in const_fn
+        a[((0xFFFF000000000000 & mac) >> 32) as usize];
+        Self((mac >> 16) as u32, mac as u16)
+    }
     fn from_dev_str(child: &str) -> Option<Self> {
         if !child.starts_with("dev") {
             return None;
@@ -128,12 +206,6 @@ impl MAC {
         )
     }
 }
-impl FromStr for MAC {
-    type Err = ();
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        unimplemented!();
-    }
-}
 
 impl Display for MAC {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
@@ -145,33 +217,6 @@ impl Display for MAC {
             m0[0], m0[1], m0[2], m0[3], m1[0], m1[1]
         )
     }
-}
-/// Checks if a string is valid MAC.
-/// Currently MAC address must be uppercase and use ':' as the seperator.
-/// These former requirement will be removed in the future, and '_' will also be accepted as a seperator.
-fn validate_mac(mac: &str) -> bool {
-    if mac.len() != 17 {
-        return false;
-    }
-    let mut char_iter = mac.chars();
-    for _ in 0..5 {
-        if char_iter.next().unwrap().is_lowercase() {
-            return false;
-        }
-        if char_iter.next().unwrap().is_lowercase() {
-            return false;
-        }
-        if char_iter.next().unwrap() != ':' {
-            return false;
-        }
-    }
-    for i in 0..6 {
-        let tar = i * 3;
-        if u8::from_str_radix(&mac[tar..tar + 2], 16).is_err() {
-            return false;
-        }
-    }
-    true
 }
 
 #[derive(Debug)]

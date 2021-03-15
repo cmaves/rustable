@@ -27,30 +27,20 @@ impl<T> Drop for OneSender<T> {
         }
     }
 }
-/*
 pub struct OneReceiver<T> {
-    inner: Arc<(Mutex<Option<T>>, Condvar)>
+    inner: Arc<(Mutex<Option<T>>, Condvar)>,
 }
-
-impl<T> Future for OneReceiver<T> {
-    type Output = Result<(), RecvError>;
-    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        unimplemented!();
-    }
+pub enum TryRecvError<T> {
+    Closed,
+    WouldBlock(OneReceiver<T>),
+    Empty(OneReceiver<T>)
 }
-*/
-
-pub fn one_time_channel<T>() -> (OneSender<T>, impl Future<Output = Result<T, RecvError>>) {
-    let inner = Arc::new((Mutex::new(None), Condvar::new()));
-
-    let sender = OneSender {
-        inner: Arc::downgrade(&inner),
-    };
-    let recv = async move {
-        let mut val = inner.0.lock().await;
+impl<T> OneReceiver<T> {
+    pub async fn recv(self) -> Result<T, RecvError> {
+        let mut val = self.inner.0.lock().await;
         while val.is_none() {
-            let val_fut = inner.1.wait(val);
-            if Arc::weak_count(&inner) == 0 {
+            let val_fut = self.inner.1.wait(val);
+            if Arc::weak_count(&self.inner) == 0 {
                 return val_fut
                     .now_or_never()
                     .ok_or(RecvError)?
@@ -59,7 +49,39 @@ pub fn one_time_channel<T>() -> (OneSender<T>, impl Future<Output = Result<T, Re
             }
             val = val_fut.await;
         }
-        Ok(val.take().unwrap())
+        Ok(val.take().unwrap())   
+    }
+    pub fn try_recv(self) -> Result<T, TryRecvError<T>> {
+        // TODO is it possible to eliminate this clone
+        let mut res = self.inner.0.try_lock();
+        let guard = match &mut res {
+            Some(l) => l,
+            None => {
+                drop(res);
+                return Err(TryRecvError::WouldBlock(self))
+            }
+        };
+        if let Some(ret) = guard.take() {
+            return Ok(ret);
+        }
+        if Arc::weak_count(&self.inner) == 0 {
+            Err(TryRecvError::Closed)
+        } else {
+            //Err(TryRecvError::Closed)
+            drop(res);
+            Err(TryRecvError::WouldBlock(self))
+        }
+    }
+}
+
+pub fn one_time_channel<T>() -> (OneSender<T>, OneReceiver<T>) {
+    let inner = Arc::new((Mutex::new(None), Condvar::new()));
+
+    let sender = OneSender {
+        inner: Arc::downgrade(&inner),
+    };
+    let recv = OneReceiver {
+        inner
     };
     (sender, recv)
 }

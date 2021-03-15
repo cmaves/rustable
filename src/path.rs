@@ -2,7 +2,8 @@ use async_rustbus::rustbus_core;
 use async_rustbus::RpcConn;
 use rustbus_core::message_builder::MessageBuilder;
 use rustbus_core::signature::{Base, Type};
-use rustbus_core::wire::marshal::traits::Signature;
+use rustbus_core::wire::marshal::traits::{Marshal, Signature};
+use rustbus_core::wire::marshal::MarshalContext;
 use rustbus_core::wire::unmarshal::traits::Unmarshal;
 use rustbus_core::wire::unmarshal::Error as UnmarshalError;
 use rustbus_core::wire::unmarshal::{UnmarshalContext, UnmarshalResult};
@@ -11,6 +12,7 @@ use rustbus_core::ByteOrder;
 use std::borrow::{Borrow, ToOwned};
 use std::convert::TryFrom;
 use std::ffi::{OsStr, OsString};
+use std::fmt::{Display, Formatter};
 use std::ops::Deref;
 use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::path::{Path, PathBuf, StripPrefixError};
@@ -55,10 +57,10 @@ impl ObjectPath {
     pub fn new<P: AsRef<Path> + ?Sized>(p: &P) -> Result<&ObjectPath, InvalidObjectPath> {
         let path = p.as_ref();
         Self::validate(path)?;
-        Ok(Self::new_no_val(path))
+        Ok(unsafe { Self::new_no_val(path) })
     }
-    fn new_no_val(p: &Path) -> &ObjectPath {
-        unsafe { &*(p as *const Path as *const ObjectPath) }
+    unsafe fn new_no_val(p: &Path) -> &ObjectPath {
+        &*(p as *const Path as *const ObjectPath)
     }
     pub fn as_bytes(&self) -> &[u8] {
         self.inner.as_os_str().as_bytes()
@@ -78,7 +80,7 @@ impl ObjectPath {
     ) -> Result<&ObjectPath, StripPrefixError> {
         let stripped = self.inner.strip_prefix(p.as_ref())?;
         if stripped == Path::new("") {
-            Ok(ObjectPath::new_no_val("/".as_ref()))
+            Ok(unsafe { ObjectPath::new_no_val("/".as_ref()) })
         } else {
             // Get a stripped path that includes the leading seperator.
             // This leading seperator is exists because ObjectPath.inner must be absolute;
@@ -89,8 +91,12 @@ impl ObjectPath {
 
             // convert bytes to ObjectPath
             let ret = OsStr::from_bytes(ret_bytes);
-            Ok(ObjectPath::new_no_val(ret.as_ref()))
+            Ok(unsafe { ObjectPath::new_no_val(ret.as_ref()) })
         }
+    }
+    pub fn parent(&self) -> Option<&ObjectPath> {
+        let pp = self.inner.parent()?;
+        Some(unsafe { Self::new_no_val(pp) })
     }
     pub fn file_name(&self) -> Option<&str> {
         let bytes = self.inner.file_name()?.as_bytes();
@@ -99,6 +105,26 @@ impl ObjectPath {
             "ObjectPath was not valid utf-8. There is a bug in ObjectPath's implementation!!!:",
         );
         unsafe { Some(std::str::from_utf8_unchecked(bytes)) }
+    }
+}
+impl Display for ObjectPath {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.as_str())
+    }
+}
+impl Display for ObjectPathBuf {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        self.deref().fmt(f)
+    }
+}
+impl Marshal for &ObjectPath {
+    fn marshal(&self, ctx: &mut MarshalContext) -> Result<(), async_rustbus::rustbus_core::Error> {
+        self.as_str().marshal(ctx)
+    }
+}
+impl Marshal for ObjectPathBuf {
+    fn marshal(&self, ctx: &mut MarshalContext) -> Result<(), async_rustbus::rustbus_core::Error> {
+        self.deref().marshal(ctx)
     }
 }
 
@@ -133,11 +159,6 @@ impl AsRef<ObjectPath> for ObjectPath {
         self
     }
 }
-impl<'a> From<&'a ObjectPath> for &'a str {
-    fn from(path: &'a ObjectPath) -> Self {
-        path.as_str()
-    }
-}
 impl AsRef<str> for ObjectPath {
     fn as_ref(&self) -> &str {
         // If this assertion ever fails then we have an error in the ObjectPath implementation
@@ -147,6 +168,17 @@ impl AsRef<str> for ObjectPath {
         );
         // SAFETY: ObjectPath only allows utf8 characters. As long as this invariant is met
         unsafe { std::str::from_utf8_unchecked(self.as_bytes()) }
+    }
+}
+impl AsRef<OsStr> for ObjectPath {
+    fn as_ref(&self) -> &OsStr {
+        self.inner.as_ref()
+    }
+}
+
+impl<'a> From<&'a ObjectPath> for &'a str {
+    fn from(path: &'a ObjectPath) -> Self {
+        path.as_str()
     }
 }
 
@@ -234,7 +266,7 @@ impl TryFrom<String> for ObjectPathBuf {
 impl Deref for ObjectPathBuf {
     type Target = ObjectPath;
     fn deref(&self) -> &Self::Target {
-        ObjectPath::new_no_val(&self.inner)
+        unsafe { ObjectPath::new_no_val(&self.inner) }
     }
 }
 impl Borrow<ObjectPath> for ObjectPathBuf {
@@ -272,6 +304,13 @@ impl From<ObjectPathBuf> for String {
         std::str::from_utf8(&bytes).expect("ObjectPathBuf was not valid utf-8. Invariant violated");
 
         unsafe { std::string::String::from_utf8_unchecked(bytes) }
+    }
+}
+impl From<&ObjectPath> for ObjectPathBuf {
+    fn from(path: &ObjectPath) -> Self {
+        Self {
+            inner: PathBuf::from(path),
+        }
     }
 }
 

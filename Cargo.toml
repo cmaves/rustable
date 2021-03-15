@@ -13,4 +13,5 @@ repository = "https://github.com/cmaves/rustable"
 async-rustbus = { path = "/home/cmaves/async-rustbus" }
 async-std = "1.9"
 futures = "0.3"
+futures-enum = "0.1.16"
 xml-rs = "0.8"
