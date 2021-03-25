@@ -1,19 +1,10 @@
 use async_std::channel::{bounded, Sender};
-use async_std::os::unix::net::UnixDatagram;
 use async_std::task::{spawn, JoinHandle};
 use futures::future::{select, Either};
-use futures::pin_mut;
-use futures::prelude::*;
 use std::collections::HashMap;
-use std::num::NonZeroU16;
-use std::os::unix::ffi::OsStrExt;
-use std::os::unix::io::{AsRawFd, IntoRawFd};
-use std::path::Components;
 
 use super::*;
 use crate::properties::{PropError, Properties};
-use crate::*;
-use async_rustbus::rustbus_core::message_builder::MessageBuilder;
 use async_rustbus::RpcConn;
 
 pub struct Descriptor {
@@ -46,14 +37,79 @@ impl Descriptor {
         match &**interface {
             PROPS_IF => self.properties_call(call),
             INTRO_IF => self.handle_intro(call),
-            BLUEZ_DES_IF => unimplemented!(),
+            BLUEZ_DES_IF => {
+                let member = call.dynheader.member.as_ref().unwrap();
+                match &**member {
+                    "ReadValue" => {
+                        if !(self.flags.read
+                            || self.flags.secure_read
+                            || self.flags.encrypt_read
+                            || self.flags.encrypt_auth_read)
+                        {
+                            return call
+                                .dynheader
+                                .make_error_response("PermissionDenied".to_string(), None);
+                        }
+                        let options: HashMap<&str, BluezOptions> = match call.body.parser().get() {
+                            Ok(o) => o,
+                            Err(_) => {
+                                return call
+                                    .dynheader
+                                    .make_error_response("UnknownType".to_string(), None);
+                            }
+                        };
+                        let mut offset = 0;
+                        if let Some(BluezOptions::U16(off)) = options.get("offset") {
+                            offset = *off as usize;
+                        }
+                        let att_val = self.value.to_value();
+                        let val = att_val.get(offset..).unwrap_or(&[]);
+                        let mut reply = call.dynheader.make_response();
+                        reply.body.push_param(val).unwrap();
+                        reply
+                    }
+                    "WriteValue" => {
+                        if !(self.flags.write
+                            || self.flags.encrypt_write
+                            || self.flags.encrypt_auth_write)
+                        {
+                            return call
+                                .dynheader
+                                .make_error_response("PermissionDenied".to_string(), None);
+                        }
+                        let (mut att_val, options): (AttValue, HashMap<&str, BluezOptions>) =
+                            match call.body.parser().get() {
+                                Ok(o) => o,
+                                Err(_) => {
+                                    return call
+                                        .dynheader
+                                        .make_error_response("UnknownType".to_string(), None);
+                                }
+                            };
+                        let mut offset = 0;
+                        if let Some(BluezOptions::U16(off)) = options.get("offset") {
+                            offset = *off as usize;
+                        }
+                        if offset != 0 {
+                            let mut old = self.value.to_value();
+                            old.update(&att_val, offset);
+                            att_val = old;
+                        }
+                        self.value = ValOrFn::Value(att_val);
+                        call.dynheader.make_response()
+                    }
+                    _ => call
+                        .dynheader
+                        .make_error_response("UnknownMethod".to_string(), None),
+                }
+            }
             _ => unreachable!(),
         }
     }
     fn handle_intro(&self, call: &MarshalledMessage) -> MarshalledMessage {
         let mut s = String::from(introspect::INTROSPECT_FMT_P1);
         s.push_str(introspect::PROP_STR);
-        s.push_str(introspect::SERVICE_STR);
+        s.push_str(introspect::DESC_STR);
         s.push_str(introspect::INTROSPECT_FMT_P3);
         let mut reply = call.dynheader.make_response();
         reply.body.push_param(s).unwrap();
@@ -71,6 +127,7 @@ impl Properties for Descriptor {
         interface: &str,
         prop: &str,
     ) -> Result<BluezOptions<'static, 'static>, PropError> {
+        eprintln!("Descriptor::get_inner(): interface: {}", interface);
         if !matches!(interface, BLUEZ_DES_IF) {
             return Err(PropError::InterfaceNotFound);
         }
@@ -108,11 +165,15 @@ impl Properties for Descriptor {
 }
 pub enum DescMsg {
     Shutdown,
-    DbusCall(MarshalledMessage),
     Update(ValOrFn),
     Get(OneSender<AttValue>),
     GetHandle(OneSender<NonZeroU16>),
-    ObjMgr(OneSender<(ObjectPathBuf, HashMap<&'static str, HashMap<&'static str, BluezOptions<'static, 'static>>>)>)
+    ObjMgr(
+        OneSender<(
+            ObjectPathBuf,
+            HashMap<&'static str, HashMap<&'static str, BluezOptions<'static, 'static>>>,
+        )>,
+    ),
 }
 pub struct DescWorker {
     worker: JoinHandle<Result<Descriptor, Error>>,
@@ -121,43 +182,59 @@ pub struct DescWorker {
 }
 impl DescWorker {
     pub fn new(mut desc: Descriptor, conn: &Arc<RpcConn>, path: ObjectPathBuf) -> Self {
-        let (sender, recv) = bounded(8);
+        let (sender, msg_recv) = bounded(8);
         let conn = conn.clone();
         let uuid = desc.uuid;
         let worker = spawn(async move {
+            let call_recv = conn.get_call_recv(&path).await.unwrap();
+            let mut call_fut = call_recv.recv();
+            let mut msg_fut = msg_recv.recv();
             loop {
-                let msg = recv.recv().await?;
-                match msg {
-                    DescMsg::Shutdown => break,
-                    DescMsg::DbusCall(call) => {
-                        let res = desc.handle_call(&call);
-                        conn.send_message(&res).await?.await?;
+                match select(msg_fut, call_fut).await {
+                    Either::Left((msg, call_f)) => {
+                        match msg? {
+                            DescMsg::Shutdown => break,
+                            DescMsg::Update(vf) => {
+                                desc.value = vf;
+                            }
+                            DescMsg::Get(sender) => {
+                                sender.send(desc.value.to_value())?;
+                            }
+                            DescMsg::GetHandle(sender) => {
+                                sender.send(NonZeroU16::new(desc.handle).unwrap())?;
+                            }
+                            DescMsg::ObjMgr(sender) => {
+                                sender.send((path.clone(), desc.get_all_interfaces(&path)))?;
+                            }
+                        }
+                        call_fut = call_f;
+                        msg_fut = msg_recv.recv();
                     }
-                    DescMsg::Update(vf) => {
-                        desc.value = vf;
+                    Either::Right((call, msg_f)) => {
+                        let res = desc.handle_call(&call?);
+                        conn.send_message(&res).await?;
+                        msg_fut = msg_f;
+                        call_fut = call_recv.recv();
                     }
-                    DescMsg::Get(sender) => {
-                        sender.send(desc.value.to_value()).await?;
-                    }
-                    DescMsg::GetHandle(sender) => {
-                        sender.send(NonZeroU16::new(desc.handle).unwrap()).await?;
-                    }
-                    DescMsg::ObjMgr(sender) => {
-                        sender.send((path.clone(), desc.get_all_interfaces(&path))).await?;
-                    }
-                };
+                }
             }
             Ok(desc)
         });
         DescWorker {
             worker,
             sender,
-            uuid
+            uuid,
         }
     }
-    pub fn uuid(&self) -> UUID { self.uuid }
+    pub fn uuid(&self) -> UUID {
+        self.uuid
+    }
     pub async fn send(&self, msg: DescMsg) -> Result<(), Error> {
         self.sender.send(msg).await?;
         Ok(())
+    }
+    pub async fn shutdown(self) -> Result<Descriptor, Error> {
+        self.sender.send(DescMsg::Shutdown).await?;
+        self.worker.await
     }
 }

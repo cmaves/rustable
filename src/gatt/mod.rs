@@ -34,10 +34,9 @@ pub struct AttValue {
 impl Debug for AttValue {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         // TODO: use formmater helper functions
-        let slice = &self.buf[..self.len];
-        write!(f, "AttValue {{")?;
-        slice.fmt(f)?;
-        write!(f, "}}")
+        let mut tup = f.debug_tuple("AttValue");
+        tup.field(&self.as_slice());
+        tup.finish()
     }
 }
 impl AttValue {
@@ -202,7 +201,6 @@ impl CharFlags {
             ret.push("indicate");
         }
         if self.auth_signed_writes {
-            unimplemented!();
             ret.push("authenticated-signed-writes");
         }
         if self.extended_properties {
@@ -212,7 +210,6 @@ impl CharFlags {
             ret.push("reliable-write");
         }
         if self.writable_auxiliaries {
-            unimplemented!();
             ret.push("writable-auxiliaries");
         }
         if self.encrypt_read {
@@ -234,7 +231,6 @@ impl CharFlags {
             ret.push("secure-read");
         }
         if self.authorize {
-            unimplemented!();
             ret.push("authorize");
         }
         ret
@@ -342,7 +338,6 @@ impl DescFlags {
             ret.push("secure-read");
         }
         if self.authorize {
-            unimplemented!();
             ret.push("authorize");
         }
         ret

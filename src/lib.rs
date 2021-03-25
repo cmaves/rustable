@@ -1,5 +1,6 @@
+use std::collections::HashMap;
 use std::convert::{TryFrom, TryInto};
-use std::fmt::{Display, Formatter};
+use std::fmt::{Debug, Display, Formatter};
 use std::num::ParseIntError;
 use std::str::FromStr;
 use std::sync::Arc;
@@ -12,9 +13,14 @@ use futures::prelude::*;
 use futures::stream::FuturesUnordered;
 
 use rustbus_core::dbus_variant_var;
-use rustbus_core::message_builder::{CallBuilder, MarshalledMessage, MessageBuilder, MessageType};
-use rustbus_core::wire::unmarshal::traits::Unmarshal;
+use rustbus_core::message_builder::{MarshalledMessage, MessageBuilder, MessageType};
+use rustbus_core::wire::marshal::traits::{Marshal, Signature};
+use rustbus_core::wire::marshal::MarshalContext;
+use rustbus_core::wire::unmarshal;
+use unmarshal::traits::Unmarshal;
+use unmarshal::{UnmarshalContext, UnmarshalResult};
 
+pub mod advertising;
 pub mod gatt;
 
 use gatt::client::Service as LocalService;
@@ -25,12 +31,24 @@ pub(crate) mod properties;
 mod path;
 pub use path::*;
 
-use interfaces::get_prop_call;
+use interfaces::{get_prop_call, set_prop_call};
 
-dbus_variant_var!(BluezOptions, Bool => bool; U16 => u16; Str => &'buf str; OwnedStr => String; Path => &'buf ObjectPath; OwnedPath => ObjectPathBuf; Buf => &'buf [u8]; OwnedBuf => Vec<u8>; Flags => Vec<&'buf str>);
-#[derive(Debug, PartialEq, Eq, Copy, Clone, PartialOrd, Ord)]
+dbus_variant_var!(BluezOptions, Bool => bool;
+                                U16 => u16;
+                                Str => &'buf str;
+                                OwnedStr => String;
+                                Path => &'buf ObjectPath;
+                                OwnedPath => ObjectPathBuf;
+                                Buf => &'buf [u8];
+                                OwnedBuf => Vec<u8>;
+                                Flags => Vec<&'buf str>;
+                                UUIDs => Vec<UUID>;
+                                DataMap => HashMap<String, Vec<u8>>;
+                                UUIDMap => HashMap<UUID, Vec<u8>>
+);
+#[derive(Debug, PartialEq, Eq, Copy, Clone, PartialOrd, Ord, Hash)]
 pub struct UUID(pub u128);
-#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+#[derive(Debug, PartialEq, Eq, Clone, Copy, Hash)]
 pub struct MAC(u32, u16);
 
 pub const MAX_CHAR_LEN: usize = 512;
@@ -40,9 +58,12 @@ const BLUEZ_SER_IF: &'static str = "org.bluez.GattService1";
 const BLUEZ_CHR_IF: &'static str = "org.bluez.GattCharacteristic1";
 const BLUEZ_DES_IF: &'static str = "org.bluez.GattDescriptor1";
 const BLUEZ_MGR_IF: &'static str = "org.bluez.GattManager1";
+const BLUEZ_ADV_IF: &'static str = "org.bluez.LEAdvertisement1";
+const BLUEZ_ADP_IF: &'static str = "org.bluez.Adapter1";
 const PROPS_IF: &'static str = "org.freedesktop.DBus.Properties";
 const INTRO_IF: &'static str = "org.freedesktop.DBus.Introspectable";
 const OBJMGR_IF: &'static str = "org.freedesktop.DBus.ObjectManager";
+const BLUEZ_DEST: &'static str = "org.bluez";
 const BT_BASE_UUID: UUID = UUID(0x0000000000001000800000805F9B34FB);
 
 /// This trait creates a UUID from the implementing Type.
@@ -51,6 +72,7 @@ const BT_BASE_UUID: UUID = UUID(0x0000000000001000800000805F9B34FB);
 /// ## Note
 /// This trait exists because UUID and MAC will eventually be converted into
 /// their own structs rather than being aliases for `Rc<str>`
+#[derive(Debug)]
 pub enum IDParseError {
     InvalidLength,
     InvalidDelimiter,
@@ -173,6 +195,27 @@ impl FromStr for MAC {
             u8::from_str_radix(&s[15..17], 16)?,
         ];
         Ok(MAC(u32::from_be_bytes(zero), u16::from_be_bytes(one)))
+    }
+}
+impl Signature for UUID {
+    fn signature() -> rustbus_core::signature::Type {
+        String::signature()
+    }
+    fn alignment() -> usize {
+        String::alignment()
+    }
+}
+impl Marshal for UUID {
+    fn marshal(&self, ctx: &mut MarshalContext) -> Result<(), rustbus_core::Error> {
+        let s = self.to_string();
+        String::marshal(&s, ctx)
+    }
+}
+impl<'r> Unmarshal<'r, 'r, '_> for UUID {
+    fn unmarshal(ctx: &mut UnmarshalContext<'_, 'r>) -> UnmarshalResult<Self> {
+        let (used, s): (usize, &str) = Unmarshal::unmarshal(ctx)?;
+        let uuid = UUID::from_str(s).map_err(|_| unmarshal::Error::InvalidType)?;
+        Ok((used, uuid))
     }
 }
 impl MAC {
@@ -322,7 +365,7 @@ fn is_msg_err_empty(msg: &MarshalledMessage) -> Result<(), Error> {
 }
 impl Display for Error {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        unimplemented!()
+        <Self as Debug>::fmt(self, f)
     }
 }
 impl From<std::io::Error> for Error {
@@ -331,42 +374,25 @@ impl From<std::io::Error> for Error {
     }
 }
 
-struct ServiceData {
-    conn: RpcConn,
-    service_dest: String,
-}
-impl ServiceData {
-    fn build_service_call(&self) -> CallBuilder {
-        MessageBuilder::new()
-            .call(String::new())
-            .at(self.service_dest.clone())
-            .on(String::from("/org/bluez"))
-    }
-    fn path_str(&self) -> &str {
-        self.service_dest.as_ref()
-    }
-}
 /// `Bluetooth` is created to interact with Bluez over DBus and file descriptors.
 pub struct BluetoothService {
-    inner: Arc<ServiceData>,
+    conn: Arc<RpcConn>,
 }
 
 impl BluetoothService {
+    pub async fn from_conn(conn: Arc<RpcConn>) -> Result<Self, Error> {
+        let ret = Self { conn };
+        let path: &ObjectPath = ObjectPath::new("/org/bluez").unwrap();
+        ret.get_children(path).await?; // validate that function is working
+        Ok(ret)
+    }
     /// Creates a new `Bluetooth` and setup a DBus client to interact with Bluez.
     pub async fn new() -> Result<Self, Error> {
         let conn = RpcConn::system_conn(true).await?;
-        let ret = Self {
-            inner: Arc::new(ServiceData {
-                conn,
-                service_dest: String::from("org.bluez"),
-            }),
-        };
-        let path: &ObjectPath = ObjectPath::new("/org/bluez").unwrap();
-        ret.get_children(path).await?;
-        Ok(ret)
+        Self::from_conn(Arc::new(conn)).await
     }
     async fn get_children<P: AsRef<ObjectPath>>(&self, path: P) -> Result<Vec<u8>, Error> {
-        let ret = get_children(&self.inner.conn, &self.inner.service_dest, path)
+        let ret = get_children(&self.conn, BLUEZ_DEST, path)
             .await?
             .into_iter()
             .filter_map(|child| {
@@ -379,31 +405,63 @@ impl BluetoothService {
             .collect();
         Ok(ret)
     }
-    async fn get_adapter(&self, idx: u8) -> Result<Adapter, Error> {
+    pub async fn get_adapter(&self, idx: u8) -> Result<Adapter, Error> {
+        Adapter::from_conn(self.conn.clone(), idx).await
+    }
+    pub fn get_conn(&self) -> &Arc<RpcConn> {
+        &self.conn
+    }
+}
+pub struct Adapter {
+    conn: Arc<RpcConn>,
+    path: ObjectPathBuf,
+}
+impl Adapter {
+    pub async fn from_conn(conn: Arc<RpcConn>, idx: u8) -> Result<Adapter, Error> {
         let path = format!("/org/bluez/hci{}", idx);
         let ret = Adapter {
-            inner: self.inner.clone(),
             path: path.try_into().unwrap(),
+            conn,
         };
         ret.addr().await?;
         Ok(ret)
     }
-}
-pub struct Adapter {
-    inner: Arc<ServiceData>,
-    path: ObjectPathBuf,
-}
-impl Adapter {
+    pub async fn new(idx: u8) -> Result<Adapter, Error> {
+        let conn = RpcConn::system_conn(true).await?;
+        Self::from_conn(Arc::new(conn), idx).await
+    }
     /// Get the `MAC` of the local adapter.
     pub async fn addr(&self) -> Result<MAC, Error> {
-        unimplemented!()
+        let call = get_prop_call(self.path.clone(), BLUEZ_DEST, BLUEZ_ADP_IF, "Address");
+        let res = self.conn.send_msg_with_reply(&call).await?.await?;
+        let var: BluezOptions = is_msg_err(&res)?;
+        let addr_str = match var {
+            BluezOptions::Str(s) => s,
+            _ => {
+                return Err(Error::Bluez(
+                    "Received invalid type for address!".to_string(),
+                ))
+            }
+        };
+        MAC::from_str(addr_str)
+            .map_err(|e| Error::Bluez(format!("Invalid address received: {} ({:?})", addr_str, e)))
     }
-    /// Gets the path of the adapter
-    fn path(&self) -> &ObjectPath {
+    pub async fn set_powered(&self, powered: bool) -> Result<(), Error> {
+        let call = set_prop_call(
+            self.path.clone(),
+            BLUEZ_DEST,
+            BLUEZ_ADP_IF,
+            "Powered",
+            BluezOptions::Bool(powered),
+        );
+        let res = self.conn.send_msg_with_reply(&call).await?.await?;
+        is_msg_err_empty(&res)
+    }
+    pub fn path(&self) -> &ObjectPath {
         &self.path
     }
     pub async fn get_devices(&self) -> Result<Vec<MAC>, Error> {
-        let ret = get_children(&self.inner.conn, &self.inner.service_dest[..], &self.path)
+        let ret = get_children(&self.conn, BLUEZ_DEST, &self.path)
             .await?
             .into_iter()
             .filter_map(|child| MAC::from_dev_str(child.path().as_ref()))
@@ -412,9 +470,9 @@ impl Adapter {
     }
     pub async fn get_device(&self, mac: MAC) -> Result<Device, Error> {
         let dev_str = mac.to_dev_str();
-        let path = format!("{}/{}", self.inner.path_str(), dev_str);
+        let path = format!("{}/{}", self.path, dev_str);
         let call = get_prop_call(&path, "org.bluez", BLUEZ_DEV_IF, "Address");
-        let msg = self.inner.conn.send_message(&call).await?.await?.unwrap();
+        let msg = self.conn.send_msg_with_reply(&call).await?.await?;
         let res_addr: &str = is_msg_err(&msg)?;
         let res_mac = MAC::from_str(res_addr)
             .map_err(|_| Error::Bluez(format!("Invalid MAC received back: {}", res_addr)))?;
@@ -425,14 +483,17 @@ impl Adapter {
             )));
         }
         Ok(Device {
-            inner: self.inner.clone(),
+            conn: self.conn.clone(),
             path: ObjectPathBuf::try_from(path).unwrap(),
         })
+    }
+    pub fn conn(&self) -> &Arc<RpcConn> {
+        &self.conn
     }
 }
 
 pub struct Device {
-    inner: Arc<ServiceData>,
+    conn: Arc<RpcConn>,
     path: ObjectPathBuf,
 }
 impl Device {
@@ -450,12 +511,11 @@ impl Device {
     >
 //-> Result<impl TryStream<Ok=Option<LocalService>, Error=Error> +'_, Error>
     {
-        let children: FuturesUnordered<_> =
-            get_children(&self.inner.conn, &self.inner.service_dest[..], &self.path)
-                .await?
-                .into_iter()
-                .map(|child| LocalService::get_service(&self.inner, child))
-                .collect();
+        let children: FuturesUnordered<_> = get_children(&self.conn, BLUEZ_DEST, &self.path)
+            .await?
+            .into_iter()
+            .map(|child| LocalService::get_service(self.conn.clone(), child))
+            .collect();
 
         Ok(children)
     }
@@ -772,13 +832,9 @@ pub fn validate_uuid(uuid: &str) -> bool {
 
 mod interfaces {
     use super::*;
-    pub fn get_prop_call<P, D>(path: P, dest: D, interface: &str, prop: &str) -> MarshalledMessage
-    where
-        P: Into<String>,
-        D: Into<String>,
-    {
+    fn prop_if_call(path: String, dest: String, interface: &str, prop: &str) -> MarshalledMessage {
         let mut call = MessageBuilder::new()
-            .call("Get".to_string())
+            .call(String::new())
             .with_interface(PROPS_IF.to_string())
             .on(path.into())
             .at(dest.into())
@@ -786,6 +842,31 @@ mod interfaces {
         call.body.push_param(interface).unwrap();
         call.body.push_param(prop).unwrap();
         call
+    }
+    pub fn set_prop_call<P, D>(
+        path: P,
+        dest: D,
+        interface: &str,
+        prop: &str,
+        val: BluezOptions<'_, '_>,
+    ) -> MarshalledMessage
+    where
+        P: Into<String>,
+        D: Into<String>,
+    {
+        let mut msg = prop_if_call(path.into(), dest.into(), interface, prop);
+        msg.dynheader.member = Some("Set".to_string());
+        msg.body.push_param(val).unwrap();
+        msg
+    }
+    pub fn get_prop_call<P, D>(path: P, dest: D, interface: &str, prop: &str) -> MarshalledMessage
+    where
+        P: Into<String>,
+        D: Into<String>,
+    {
+        let mut msg = prop_if_call(path.into(), dest.into(), interface, prop);
+        msg.dynheader.member = Some("Get".to_string());
+        msg
     }
 }
 /*

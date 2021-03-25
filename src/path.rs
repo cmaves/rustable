@@ -7,7 +7,6 @@ use rustbus_core::wire::marshal::MarshalContext;
 use rustbus_core::wire::unmarshal::traits::Unmarshal;
 use rustbus_core::wire::unmarshal::Error as UnmarshalError;
 use rustbus_core::wire::unmarshal::{UnmarshalContext, UnmarshalResult};
-use rustbus_core::ByteOrder;
 
 use std::borrow::{Borrow, ToOwned};
 use std::convert::TryFrom;
@@ -457,7 +456,7 @@ pub async fn get_children<S: AsRef<str>, P: AsRef<ObjectPath>>(
         .on(path.to_string())
         .at(dest.as_ref().to_string())
         .build();
-    let res = conn.send_message(&call).await?.await?.unwrap();
+    let res = conn.send_msg_with_reply(&call).await?.await?;
     let s: &str = res.body.parser().get().unwrap();
     let mut reader = EventReader::from_str(s);
     eprintln!("get_children: {:?}", reader.next());

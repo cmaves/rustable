@@ -11,7 +11,7 @@ use rustbus_core::wire::unixfd::UnixFd;
 use async_std::os::unix::net::UnixDatagram;
 
 pub struct Service {
-    inner: Arc<ServiceData>,
+    conn: Arc<RpcConn>,
     path: ObjectPathBuf,
     uuid: UUID,
 }
@@ -21,7 +21,7 @@ impl Service {
         self.uuid
     }
     pub(crate) async fn get_service(
-        inner: &Arc<ServiceData>,
+        conn: Arc<RpcConn>,
         child: Child,
     ) -> Result<Option<Self>, Error> {
         if let None = child
@@ -37,8 +37,8 @@ impl Service {
         }
         let path = ObjectPathBuf::from(child);
         let path_str: &str = path.as_ref();
-        let call = get_prop_call(path_str, &inner.service_dest, BLUEZ_SER_IF, "UUID");
-        let res = inner.conn.send_message(&call).await?.await?.unwrap();
+        let call = get_prop_call(path_str, BLUEZ_DEST, BLUEZ_SER_IF, "UUID");
+        let res = conn.send_msg_with_reply(&call).await?.await?;
         let uuid_str: &str = match is_msg_err(&res) {
             Ok(s) => s,
             Err(_) => return Ok(None),
@@ -47,11 +47,7 @@ impl Service {
             Ok(u) => u,
             Err(_) => return Ok(None),
         };
-        Ok(Some(Self {
-            inner: inner.clone(),
-            path,
-            uuid,
-        }))
+        Ok(Some(Self { conn, path, uuid }))
     }
     pub async fn get_characteristics(&self) -> Result<Vec<Characteristic>, Error> {
         let services = self.get_chars_stream().await?;
@@ -67,12 +63,11 @@ impl Service {
     >
 //-> Result<impl TryStream<Ok=Option<LocalService>, Error=Error> +'_, Error>
     {
-        let children: FuturesUnordered<_> =
-            get_children(&self.inner.conn, &self.inner.service_dest[..], &self.path)
-                .await?
-                .into_iter()
-                .map(|child| Characteristic::get_char(&self.inner, child))
-                .collect();
+        let children: FuturesUnordered<_> = get_children(&self.conn, BLUEZ_DEST, &self.path)
+            .await?
+            .into_iter()
+            .map(|child| Characteristic::get_char(self.conn.clone(), child))
+            .collect();
 
         Ok(children)
     }
@@ -90,7 +85,7 @@ impl Service {
 }
 
 pub struct Characteristic {
-    inner: Arc<ServiceData>,
+    conn: Arc<RpcConn>,
     uuid: UUID,
     path: ObjectPathBuf,
 }
@@ -98,7 +93,7 @@ impl Characteristic {
     pub fn uuid(&self) -> UUID {
         self.uuid
     }
-    async fn get_char(inner: &Arc<ServiceData>, child: Child) -> Result<Option<Self>, Error> {
+    async fn get_char(conn: Arc<RpcConn>, child: Child) -> Result<Option<Self>, Error> {
         if let None = child
             .interfaces()
             .into_iter()
@@ -112,8 +107,8 @@ impl Characteristic {
         }
         let path = ObjectPathBuf::from(child);
         let path_str: &str = path.as_ref();
-        let call = get_prop_call(path_str, &inner.service_dest, BLUEZ_CHR_IF, "UUID");
-        let res = inner.conn.send_message(&call).await?.await?.unwrap();
+        let call = get_prop_call(path_str, BLUEZ_DEST, BLUEZ_CHR_IF, "UUID");
+        let res = conn.send_msg_with_reply(&call).await?.await?;
         let uuid_str: &str = match is_msg_err(&res) {
             Ok(s) => s,
             Err(_) => return Ok(None),
@@ -122,11 +117,7 @@ impl Characteristic {
             Ok(u) => u,
             Err(_) => return Ok(None),
         };
-        Ok(Some(Self {
-            inner: inner.clone(),
-            path,
-            uuid,
-        }))
+        Ok(Some(Self { conn, path, uuid }))
     }
 
     pub async fn get_descriptors(&self) -> Result<Vec<Descriptor>, Error> {
@@ -140,12 +131,11 @@ impl Characteristic {
     ) -> Result<FuturesUnordered<impl Future<Output = Result<Option<Descriptor>, Error>> + '_>, Error>
 //-> Result<impl TryStream<Ok=Option<LocalService>, Error=Error> +'_, Error>
     {
-        let children: FuturesUnordered<_> =
-            get_children(&self.inner.conn, &self.inner.service_dest[..], &self.path)
-                .await?
-                .into_iter()
-                .map(|child| Descriptor::get_desc(&self.inner, child))
-                .collect();
+        let children: FuturesUnordered<_> = get_children(&self.conn, BLUEZ_DEST, &self.path)
+            .await?
+            .into_iter()
+            .map(|child| Descriptor::get_desc(self.conn.clone(), child))
+            .collect();
 
         Ok(children)
     }
@@ -164,7 +154,7 @@ impl Characteristic {
         MessageBuilder::new()
             .call(String::new())
             .with_interface(String::from(BLUEZ_CHR_IF))
-            .at(self.inner.service_dest.clone())
+            .at(BLUEZ_DEST.to_string())
             .on(self.path.clone().into())
             .build()
     }
@@ -177,9 +167,9 @@ impl Characteristic {
         let mut options = HashMap::new();
         options.insert("offset", BluezOptions::U16(offset));
         call.body.push_param(options).unwrap();
-        let res_fut = self.inner.conn.send_message(&call).await?;
+        let res_fut = self.conn.send_msg_with_reply(&call).await?;
         Ok(async {
-            let res = res_fut.await?.unwrap();
+            let res = res_fut.await?;
             let value: &[u8] = is_msg_err(&res)?;
             if value.len() > 512 {
                 return Err(Error::Bluez(String::from(
@@ -198,9 +188,9 @@ impl Characteristic {
         call.dynheader.member = Some(String::from("WriteValue"));
         call.body.push_param(value).unwrap();
         call.body.push_param(&options).unwrap();
-        let res_fut = self.inner.conn.send_message(&call).await?;
+        let res_fut = self.conn.send_msg_with_reply(&call).await?;
         Ok(async {
-            let res = res_fut.await?.unwrap();
+            let res = res_fut.await?;
             is_msg_err_empty(&res)
         })
     }
@@ -231,9 +221,9 @@ impl Characteristic {
         call.dynheader.member = Some(String::from("AcquireNotify"));
         let options: HashMap<&str, BluezOptions> = HashMap::new();
         call.body.push_param(&options).unwrap();
-        let res_fut = self.inner.conn.send_message(&call).await?;
+        let res_fut = self.conn.send_msg_with_reply(&call).await?;
         Ok(async {
-            let res = res_fut.await?.unwrap();
+            let res = res_fut.await?;
             let (fd, mtu): (UnixFd, u16) = is_msg_err2(&res)?;
             let sock = unsafe { UnixDatagram::from_raw_fd(fd.take_raw_fd().unwrap()) };
             Ok(NotifySocket {
@@ -246,15 +236,10 @@ impl Characteristic {
     pub async fn flags(
         &self,
     ) -> Result<impl Future<Output = Result<CharFlags, Error>> + '_, Error> {
-        let call = get_prop_call(
-            self.path.clone(),
-            &self.inner.service_dest,
-            BLUEZ_CHR_IF,
-            "Flags",
-        );
-        let res_fut = self.inner.conn.send_message(&call).await?;
+        let call = get_prop_call(self.path.clone(), BLUEZ_DEST, BLUEZ_CHR_IF, "Flags");
+        let res_fut = self.conn.send_msg_with_reply(&call).await?;
         Ok(async {
-            let res = res_fut.await?.unwrap();
+            let res = res_fut.await?;
             let props: Vec<&str> = is_msg_err(&res)?;
             Ok(CharFlags::from_strings(props))
         })
@@ -276,7 +261,7 @@ impl NotifySocket {
     }
 }
 pub struct Descriptor {
-    inner: Arc<ServiceData>,
+    conn: Arc<RpcConn>,
     path: ObjectPathBuf,
     uuid: UUID,
 }
@@ -285,7 +270,36 @@ impl Descriptor {
     pub fn uuid(&self) -> UUID {
         self.uuid
     }
-    async fn get_desc(inner: &Arc<ServiceData>, child: Child) -> Result<Option<Self>, Error> {
+    pub async fn read_value(
+        &self,
+        offset: u16,
+    ) -> Result<impl Future<Output = Result<AttValue, Error>> + '_, Error> {
+        let mut call = self.build_call();
+        call.dynheader.member = Some(String::from("ReadValue"));
+        let mut options = HashMap::new();
+        options.insert("offset", BluezOptions::U16(offset));
+        call.body.push_param(options).unwrap();
+        let res_fut = self.conn.send_msg_with_reply(&call).await?;
+        Ok(async {
+            let res = res_fut.await?;
+            let value: &[u8] = is_msg_err(&res)?;
+            if value.len() > 512 {
+                return Err(Error::Bluez(String::from(
+                    "AttValue received was too long!",
+                )));
+            }
+            Ok(AttValue::from(value))
+        })
+    }
+    fn build_call(&self) -> MarshalledMessage {
+        MessageBuilder::new()
+            .call(String::new())
+            .with_interface(String::from(BLUEZ_DES_IF))
+            .at(BLUEZ_DEST.to_string())
+            .on(self.path.clone().into())
+            .build()
+    }
+    async fn get_desc(conn: Arc<RpcConn>, child: Child) -> Result<Option<Self>, Error> {
         if let None = child
             .interfaces()
             .into_iter()
@@ -299,8 +313,8 @@ impl Descriptor {
         }
         let path = ObjectPathBuf::from(child);
         let path_str: &str = path.as_ref();
-        let call = get_prop_call(path_str, &inner.service_dest, BLUEZ_DES_IF, "UUID");
-        let res = inner.conn.send_message(&call).await?.await?.unwrap();
+        let call = get_prop_call(path_str, BLUEZ_DEST, BLUEZ_DES_IF, "UUID");
+        let res = conn.send_msg_with_reply(&call).await?.await?;
         let uuid_str: &str = match is_msg_err(&res) {
             Ok(s) => s,
             Err(_) => return Ok(None),
@@ -309,10 +323,6 @@ impl Descriptor {
             Ok(u) => u,
             Err(_) => return Ok(None),
         };
-        Ok(Some(Self {
-            inner: inner.clone(),
-            path,
-            uuid,
-        }))
+        Ok(Some(Self { conn, path, uuid }))
     }
 }
