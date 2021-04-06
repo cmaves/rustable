@@ -15,7 +15,7 @@ use std::fmt::{Display, Formatter};
 use std::hash::{Hash, Hasher};
 use std::ops::Deref;
 use std::os::unix::ffi::{OsStrExt, OsStringExt};
-use std::path::{Path, PathBuf, StripPrefixError};
+use std::path::{Path, PathBuf, StripPrefixError, Component};
 use std::str::FromStr;
 
 #[derive(Debug)]
@@ -111,6 +111,13 @@ impl ObjectPath {
     }
     pub fn root_path() -> &'static Self {
         unsafe { ObjectPath::new_no_val("/".as_ref()) }
+    }
+    pub fn components(&self) -> impl Iterator<Item=&str> {
+        self.debug_assert_validitity();
+        self.inner.components().skip(1).map(|c| match c {
+            Component::Normal(os) => unsafe { std::str::from_utf8_unchecked(os.as_bytes()) },
+            _ => unreachable!("All the components of a ObjectPath are normal!")
+        })
     }
 }
 impl Display for ObjectPath {
