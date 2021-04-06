@@ -12,6 +12,7 @@ use std::borrow::{Borrow, ToOwned};
 use std::convert::TryFrom;
 use std::ffi::{OsStr, OsString};
 use std::fmt::{Display, Formatter};
+use std::hash::{Hash, Hasher};
 use std::ops::Deref;
 use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::path::{Path, PathBuf, StripPrefixError};
@@ -29,7 +30,8 @@ pub struct ObjectPath {
     inner: Path,
 }
 impl ObjectPath {
-    fn validate(path: &Path) -> Result<(), InvalidObjectPath> {
+    fn validate<P: AsRef<Path>>(path: P) -> Result<(), InvalidObjectPath> {
+        let path = path.as_ref();
         if !path.has_root() {
             return Err(InvalidObjectPath::NoRoot);
         }
@@ -53,6 +55,10 @@ impl ObjectPath {
         }
         Ok(())
     }
+    fn debug_assert_validitity(&self) {
+        #[cfg(debug_assertions)]
+        Self::validate(self).expect("Failed to validate the object path!");
+    }
     pub fn new<P: AsRef<Path> + ?Sized>(p: &P) -> Result<&ObjectPath, InvalidObjectPath> {
         let path = p.as_ref();
         Self::validate(path)?;
@@ -65,12 +71,9 @@ impl ObjectPath {
         self.inner.as_os_str().as_bytes()
     }
     pub fn as_str(&self) -> &str {
-        let bytes = self.as_bytes();
-        #[cfg(debug)]
-        std::str::from_utf8(&bytes).expect(
-            "ObjectPath was not valid utf-8. There is a bug in ObjectPath's implementation!!!:",
-        );
+        self.debug_assert_validitity();
 
+        let bytes = self.as_bytes();
         unsafe { std::str::from_utf8_unchecked(bytes) }
     }
     pub fn strip_prefix<P: AsRef<Path> + ?Sized>(
@@ -90,20 +93,24 @@ impl ObjectPath {
 
             // convert bytes to ObjectPath
             let ret = OsStr::from_bytes(ret_bytes);
-            Ok(unsafe { ObjectPath::new_no_val(ret.as_ref()) })
+            let ret = unsafe { ObjectPath::new_no_val(ret.as_ref()) };
+            ret.debug_assert_validitity();
+            Ok(ret)
         }
     }
     pub fn parent(&self) -> Option<&ObjectPath> {
         let pp = self.inner.parent()?;
-        Some(unsafe { Self::new_no_val(pp) })
+        let ret = unsafe { Self::new_no_val(pp) };
+        ret.debug_assert_validitity();
+        Some(ret)
     }
     pub fn file_name(&self) -> Option<&str> {
         let bytes = self.inner.file_name()?.as_bytes();
-        #[cfg(debug)]
-        std::str::from_utf8(self.as_bytes()).expect(
-            "ObjectPath was not valid utf-8. There is a bug in ObjectPath's implementation!!!:",
-        );
+        self.debug_assert_validitity();
         unsafe { Some(std::str::from_utf8_unchecked(bytes)) }
+    }
+    pub fn root_path() -> &'static Self {
+        unsafe { ObjectPath::new_no_val("/".as_ref()) }
     }
 }
 impl Display for ObjectPath {
@@ -137,9 +144,7 @@ impl Deref for ObjectPath {
 impl ToOwned for ObjectPath {
     type Owned = ObjectPathBuf;
     fn to_owned(&self) -> Self::Owned {
-        ObjectPathBuf {
-            inner: self.inner.to_owned(),
-        }
+        ObjectPathBuf::from(self)
     }
 }
 
@@ -160,13 +165,7 @@ impl AsRef<ObjectPath> for ObjectPath {
 }
 impl AsRef<str> for ObjectPath {
     fn as_ref(&self) -> &str {
-        // If this assertion ever fails then we have an error in the ObjectPath implementation
-        #[cfg(debug)]
-        return std::str::from_utf8(self.as_bytes()).expect(
-            "ObjectPath was not valid utf-8. There is a bug in ObjectPath's implementation!!!:",
-        );
-        // SAFETY: ObjectPath only allows utf8 characters. As long as this invariant is met
-        unsafe { std::str::from_utf8_unchecked(self.as_bytes()) }
+        self.as_str()
     }
 }
 impl AsRef<OsStr> for ObjectPath {
@@ -190,7 +189,7 @@ impl Signature for &ObjectPath {
     }
 }
 
-impl<'r, 'buf: 'r, 'fds> Unmarshal<'r, 'buf, 'fds> for &'r ObjectPath {
+impl<'buf, 'fds> Unmarshal<'buf, 'fds> for &'buf ObjectPath {
     fn unmarshal(ctx: &mut UnmarshalContext<'fds, 'buf>) -> UnmarshalResult<Self> {
         let (bytes, val) = <&str>::unmarshal(ctx)?;
         let path = ObjectPath::new(val).map_err(|_| UnmarshalError::InvalidType)?;
@@ -205,55 +204,93 @@ impl Signature for ObjectPathBuf {
         <&ObjectPath>::alignment()
     }
 }
-impl<'r, 'buf: 'r, 'fds> Unmarshal<'r, 'buf, 'fds> for ObjectPathBuf {
+impl<'buf, 'fds> Unmarshal<'buf, 'fds> for ObjectPathBuf {
     fn unmarshal(ctx: &mut UnmarshalContext<'fds, 'buf>) -> UnmarshalResult<Self> {
         <&ObjectPath>::unmarshal(ctx).map(|(size, op)| (size, op.to_owned()))
     }
 }
 
-#[derive(PartialEq, Eq, Hash, PartialOrd, Ord, Clone, Debug)]
+#[derive(PartialEq, Eq, PartialOrd, Ord, Clone, Debug)]
 pub struct ObjectPathBuf {
-    inner: PathBuf,
+    inner: Option<PathBuf>,
+}
+impl Hash for ObjectPathBuf {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.deref().hash(state);
+    }
 }
 impl ObjectPathBuf {
     pub fn new() -> ObjectPathBuf {
-        ObjectPathBuf {
-            inner: PathBuf::from("/"),
-        }
+        ObjectPathBuf { inner: None }
     }
     pub fn with_capacity(capacity: usize) -> ObjectPathBuf {
-        ObjectPathBuf {
-            inner: PathBuf::with_capacity(capacity),
-        }
+        let inner = if capacity == 0 {
+            None
+        } else {
+            let mut pb = PathBuf::with_capacity(capacity);
+            pb.push("/");
+            Some(pb)
+        };
+        ObjectPathBuf { inner }
     }
     pub fn as_object_path(&self) -> &ObjectPath {
         self.deref()
     }
+    unsafe fn from_path_buf(pb: PathBuf) -> Self {
+        Self { inner: Some(pb) }
+    }
     pub fn clear(&mut self) {
-        self.inner.clear();
+        if let Some(buf) = &mut self.inner {
+            buf.clear();
+        }
     }
     pub fn push(&mut self, path: &ObjectPath) {
         let path: &Path = path.as_ref();
         let stripped = path.strip_prefix("/").unwrap();
-        self.inner.push(stripped);
+        let len = stripped.as_os_str().len();
+        if len == 0 {
+            return;
+        }
+        if let None = self.inner {
+            *self = Self::with_capacity(len + 1);
+        }
+        let buf = self.inner.as_mut().unwrap();
+        buf.push(stripped);
     }
     pub fn pop(&mut self) -> bool {
-        self.inner.pop()
+        match &mut self.inner {
+            Some(pb) => pb.pop(),
+            None => false,
+        }
     }
     pub fn reserve(&mut self, additional: usize) {
-        self.inner.reserve(additional);
+        if additional == 0 {
+            return;
+        }
+        match &mut self.inner {
+            Some(buf) => buf.reserve(additional),
+            None => *self = Self::with_capacity(additional + 1),
+        }
     }
     pub fn reserve_exact(&mut self, additional: usize) {
-        self.inner.reserve_exact(additional);
+        if additional == 0 {
+            return;
+        }
+        match &mut self.inner {
+            Some(buf) => buf.reserve_exact(additional),
+            None => {
+                let mut buf = PathBuf::new();
+                buf.reserve_exact(additional + 1);
+                self.inner = Some(buf);
+            }
+        }
     }
 }
 impl TryFrom<OsString> for ObjectPathBuf {
     type Error = InvalidObjectPath;
     fn try_from(value: OsString) -> Result<Self, Self::Error> {
-        ObjectPath::validate(value.as_ref())?;
-        Ok(ObjectPathBuf {
-            inner: PathBuf::from(value),
-        })
+        ObjectPath::validate(&value)?;
+        Ok(unsafe { ObjectPathBuf::from_path_buf(value.into()) })
     }
 }
 impl TryFrom<String> for ObjectPathBuf {
@@ -265,7 +302,10 @@ impl TryFrom<String> for ObjectPathBuf {
 impl Deref for ObjectPathBuf {
     type Target = ObjectPath;
     fn deref(&self) -> &Self::Target {
-        unsafe { ObjectPath::new_no_val(&self.inner) }
+        match &self.inner {
+            Some(buf) => unsafe { ObjectPath::new_no_val(&buf) },
+            None => ObjectPath::root_path(),
+        }
     }
 }
 impl Borrow<ObjectPath> for ObjectPathBuf {
@@ -293,23 +333,34 @@ impl FromStr for ObjectPathBuf {
 }
 impl From<ObjectPathBuf> for PathBuf {
     fn from(buf: ObjectPathBuf) -> Self {
-        buf.inner
+        match buf.inner {
+            Some(buf) => buf,
+            None => PathBuf::from("/"),
+        }
     }
 }
 impl From<ObjectPathBuf> for String {
     fn from(path: ObjectPathBuf) -> Self {
-        let bytes = path.inner.into_os_string().into_vec();
-        #[cfg(debug)]
-        std::str::from_utf8(&bytes).expect("ObjectPathBuf was not valid utf-8. Invariant violated");
+        path.debug_assert_validitity();
+        let bytes = match path.inner {
+            Some(buf) => buf.into_os_string().into_vec(),
+            None => Vec::from(&b"/"[..]),
+        };
 
         unsafe { std::string::String::from_utf8_unchecked(bytes) }
     }
 }
 impl From<&ObjectPath> for ObjectPathBuf {
     fn from(path: &ObjectPath) -> Self {
-        Self {
-            inner: PathBuf::from(path),
-        }
+        let ret = if path == ObjectPath::root_path() {
+            ObjectPathBuf::new()
+        } else {
+            unsafe {
+                ObjectPathBuf::from_path_buf(path.into())
+            }
+        };
+        ret.debug_assert_validitity();
+        ret
     }
 }
 
