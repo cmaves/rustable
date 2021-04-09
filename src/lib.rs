@@ -257,7 +257,7 @@ impl Display for MAC {
         let m1 = self.1.to_be_bytes();
         write!(
             f,
-            "{:X}:{:X}:{:X}:{:X}:{:X}:{:X}",
+            "{:02X}:{:02X}:{:02X}:{:02X}:{:02X}:{:02X}",
             m0[0], m0[1], m0[2], m0[3], m1[0], m1[1]
         )
     }
