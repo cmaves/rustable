@@ -1,5 +1,3 @@
-use crate::properties::{PropError, Properties};
-use crate::*;
 use std::collections::HashMap;
 
 use async_rustbus::CallAction;
@@ -7,6 +5,10 @@ use async_std::channel::{bounded, Sender};
 use async_std::task::JoinHandle;
 use futures::future::{select, Either};
 use futures::pin_mut;
+
+use crate::properties::{PropError, Properties};
+use rustbus_core::path::{ObjectPathBuf, ObjectPath};
+use crate::*;
 
 #[derive(Clone, Copy)]
 pub enum AdType {
@@ -67,10 +69,10 @@ impl Advertisement {
         }
         if let Some(dest) = &self.dest {
             let mut call = MessageBuilder::new()
-                .call("ReleaseName".to_string())
-                .at("org.freedesktop.DBus".to_string())
-                .on("/org/freedesktop.DBus".to_string())
-                .with_interface("org.freedesktop.Dbus".to_string())
+                .call("ReleaseName")
+                .at("org.freedesktop.DBus")
+                .on("/org/freedesktop.DBus")
+                .with_interface("org.freedesktop.Dbus")
                 .build();
             call.body.push_param(dest).unwrap();
             let res = self.conn.send_msg_with_reply(&call).await?.await?;
@@ -78,7 +80,7 @@ impl Advertisement {
             self.dest = None;
         }
         if let Some(dest) = dest {
-            let call = rustbus_core::standard_messages::request_name(dest.clone(), 4);
+            let call = rustbus_core::standard_messages::request_name(&dest, 4);
             let res = self.conn.send_msg_with_reply(&call).await?.await?;
             let flag: u32 = is_msg_err(&res).unwrap();
             if flag == 2 || flag == 3 {
@@ -92,23 +94,23 @@ impl Advertisement {
         let base_path = ObjectPathBuf::from_str(base_path).unwrap();
         let (sender, recv) = bounded(1);
         let mut call = MessageBuilder::new()
-            .call("RegisterAdvertisement".to_string())
+            .call("RegisterAdvertisement")
             .on(self.hci.to_string())
-            .at("org.bluez".to_string())
-            .with_interface("org.bluez.LEAdvertisingManager1".to_string())
+            .at("org.bluez")
+            .with_interface("org.bluez.LEAdvertisingManager1")
             .build();
         call.body.push_param(&base_path).unwrap();
         let options: HashMap<String, BluezOptions> = HashMap::new();
         call.body.push_param(options).unwrap();
         eprintln!("Registering ad at: {}", base_path);
         let conn = self.conn.clone();
-        conn.insert_call_path(&base_path, CallAction::Exact).await;
+        conn.insert_call_path(&*base_path, CallAction::Exact).await.unwrap();
         {
             // new block limits lifetime of res_fut
             let res_fut = conn.send_msg_with_reply(&call).await?;
             pin_mut!(res_fut);
             loop {
-                let call_fut = conn.get_call(&base_path);
+                let call_fut = conn.get_call(&*base_path);
                 pin_mut!(call_fut);
                 match select(call_fut, res_fut).await {
                     Either::Left((call, res_f)) => {
@@ -132,7 +134,7 @@ impl Advertisement {
         }
         eprintln!("Ad Registered");
         let worker = async_std::task::spawn(async move {
-            let mut call_fut = conn.get_call(&base_path).boxed();
+            let mut call_fut = conn.get_call(&*base_path).boxed();
             let mut msg_fut = recv.recv();
             loop {
                 match select(call_fut, msg_fut).await {
@@ -143,7 +145,7 @@ impl Advertisement {
                             None => break,
                         }
                         msg_fut = msg_f;
-                        call_fut = conn.get_call(&base_path).boxed();
+                        call_fut = conn.get_call(&*base_path).boxed();
                     }
                     Either::Right((msg, call_f)) => {
                         match msg? {
@@ -163,7 +165,7 @@ impl Advertisement {
                 }
             }
             eprintln!("Ad Released");
-            conn.insert_call_path(base_path, CallAction::Nothing).await;
+            conn.insert_call_path(&*base_path, CallAction::Nothing).await.unwrap();
             Ok(self)
         });
         Ok(AdWorker { sender, worker })
@@ -179,13 +181,11 @@ impl Advertisement {
             BLUEZ_ADV_IF => match call.dynheader.member.as_ref().unwrap().as_str() {
                 "Release" => Ok(None),
                 _ => Ok(Some(
-                    call.dynheader
-                        .make_error_response("UnknownMethod".to_string(), None),
+                    call.dynheader.make_error_response("UnknownMethod", None),
                 )),
             },
             _ => Ok(Some(
-                call.dynheader
-                    .make_error_response("UnknownInterface".to_string(), None),
+                call.dynheader.make_error_response("UnknownInterface", None),
             )),
         }
     }

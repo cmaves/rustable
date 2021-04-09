@@ -2,11 +2,10 @@ use async_rustbus::rustbus_core;
 use rustbus_core::message_builder::MarshalledMessage;
 use rustbus_core::signature;
 use rustbus_core::standard_messages;
+use rustbus_core::path::ObjectPath;
 use std::collections::HashMap;
 
 use crate::BluezOptions;
-
-use crate::path::ObjectPath;
 
 #[derive(Debug)]
 pub enum PropError {
@@ -63,11 +62,7 @@ pub trait Properties {
     fn get_all(&mut self, msg: &MarshalledMessage) -> MarshalledMessage {
         let interface = match msg.body.parser().get() {
             Ok(i) => i,
-            Err(_) => {
-                return msg
-                    .dynheader
-                    .make_error_response("InvalidArgs".to_string(), None)
-            }
+            Err(_) => return msg.dynheader.make_error_response("InvalidArgs", None),
         };
         let path = ObjectPath::new(msg.dynheader.object.as_ref().unwrap()).unwrap();
         match self.get_all_inner(path, interface) {
@@ -86,11 +81,7 @@ pub trait Properties {
     fn get(&mut self, msg: &MarshalledMessage) -> MarshalledMessage {
         let (interface, prop) = match msg.body.parser().get2() {
             Ok(out) => out,
-            Err(_) => {
-                return msg
-                    .dynheader
-                    .make_error_response("InvalidArgs".to_string(), None)
-            }
+            Err(_) => return msg.dynheader.make_error_response("InvalidArgs", None),
         };
         let path = ObjectPath::new(msg.dynheader.object.as_ref().unwrap()).unwrap();
         match self.get_inner(path, interface, prop) {
@@ -122,10 +113,9 @@ pub trait Properties {
         let (interface, prop, var): (&str, &str, BluezOptions) = match msg.body.parser().get3() {
             Ok(vals) => vals,
             Err(err) => {
-                return msg.dynheader.make_error_response(
-                    "InvalidParameters".to_string(),
-                    Some(format!("{:?}", err)),
-                )
+                return msg
+                    .dynheader
+                    .make_error_response("InvalidParameters", Some(format!("{:?}", err)))
             }
         };
         let path = ObjectPath::new(msg.dynheader.object.as_ref().unwrap()).unwrap();

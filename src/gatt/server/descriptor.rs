@@ -46,16 +46,12 @@ impl Descriptor {
                             || self.flags.encrypt_read
                             || self.flags.encrypt_auth_read)
                         {
-                            return call
-                                .dynheader
-                                .make_error_response("PermissionDenied".to_string(), None);
+                            return call.dynheader.make_error_response("PermissionDenied", None);
                         }
                         let options: HashMap<&str, BluezOptions> = match call.body.parser().get() {
                             Ok(o) => o,
                             Err(_) => {
-                                return call
-                                    .dynheader
-                                    .make_error_response("UnknownType".to_string(), None);
+                                return call.dynheader.make_error_response("UnknownType", None);
                             }
                         };
                         let mut offset = 0;
@@ -73,17 +69,13 @@ impl Descriptor {
                             || self.flags.encrypt_write
                             || self.flags.encrypt_auth_write)
                         {
-                            return call
-                                .dynheader
-                                .make_error_response("PermissionDenied".to_string(), None);
+                            return call.dynheader.make_error_response("PermissionDenied", None);
                         }
                         let (mut att_val, options): (AttValue, HashMap<&str, BluezOptions>) =
                             match call.body.parser().get() {
                                 Ok(o) => o,
                                 Err(_) => {
-                                    return call
-                                        .dynheader
-                                        .make_error_response("UnknownType".to_string(), None);
+                                    return call.dynheader.make_error_response("UnknownType", None);
                                 }
                             };
                         let mut offset = 0;
@@ -98,9 +90,7 @@ impl Descriptor {
                         self.value = ValOrFn::Value(att_val);
                         call.dynheader.make_response()
                     }
-                    _ => call
-                        .dynheader
-                        .make_error_response("UnknownMethod".to_string(), None),
+                    _ => call.dynheader.make_error_response("UnknownMethod", None),
                 }
             }
             _ => unreachable!(),
@@ -181,12 +171,17 @@ pub struct DescWorker {
     uuid: UUID,
 }
 impl DescWorker {
-    pub fn new(mut desc: Descriptor, conn: &Arc<RpcConn>, path: ObjectPathBuf) -> Self {
+    pub fn new(
+        mut desc: Descriptor,
+        conn: &Arc<RpcConn>,
+        path: ObjectPathBuf,
+        filter: Option<String>,
+    ) -> Self {
         let (sender, msg_recv) = bounded(8);
         let conn = conn.clone();
         let uuid = desc.uuid;
         let worker = spawn(async move {
-            let call_recv = conn.get_call_recv(&path).await.unwrap();
+            let call_recv = conn.get_call_recv(&*path).await.unwrap();
             let mut call_fut = call_recv.recv();
             let mut msg_fut = msg_recv.recv();
             loop {
@@ -211,7 +206,12 @@ impl DescWorker {
                         msg_fut = msg_recv.recv();
                     }
                     Either::Right((call, msg_f)) => {
-                        let res = desc.handle_call(&call?);
+                        let call = call?;
+                        let res = if is_msg_bluez(&call, &filter) {
+                            desc.handle_call(&call)
+                        } else {
+                            call.dynheader.make_error_response("PermissionDenied", None)
+                        };
                         conn.send_message(&res).await?;
                         msg_fut = msg_f;
                         call_fut = call_recv.recv();

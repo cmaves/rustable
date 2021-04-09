@@ -9,6 +9,7 @@ use super::*;
 use crate::*;
 use async_rustbus::rustbus_core::message_builder::MessageBuilder;
 use async_rustbus::{CallAction, RpcConn};
+use async_rustbus::rustbus_core::path::{ObjectPathBuf, ObjectPath};
 
 mod one_time;
 use one_time::{one_time_channel, OneSender};
@@ -38,6 +39,7 @@ struct WorkerData {
     heirarchy: WorkerHeirarchy,
     //base_path: ObjectPathBuf,
     conn: Arc<RpcConn>,
+    filter: Option<String>,
 }
 impl WorkerData {
     fn find_serv(&mut self, uuid: UUID) -> Option<&mut ServWorker> {
@@ -68,11 +70,15 @@ impl WorkerData {
         find_desc(desc_workers, desc)
     }
     async fn handle_app(&mut self, call: &MarshalledMessage) -> Result<(), Error> {
-        let reply = match call.dynheader.interface.as_ref().unwrap().as_str() {
-            INTRO_IF => self.handle_app_intro(call),
-            //PROPS_IF => self.handle_prop(call),
-            OBJMGR_IF => self.handle_obj_mgr(call).await?,
-            _ => unimplemented!(),
+        let reply = if is_msg_bluez(call, &self.filter) {
+            match call.dynheader.interface.as_ref().unwrap().as_str() {
+                INTRO_IF => self.handle_app_intro(call),
+                //PROPS_IF => self.handle_prop(call),
+                OBJMGR_IF => self.handle_obj_mgr(call).await?,
+                _ => unimplemented!(),
+            }
+        } else {
+            call.dynheader.make_error_response("PermissionDenied", None)
         };
         self.conn.send_msg_no_reply(&reply).await?;
         Ok(())
@@ -137,9 +143,8 @@ impl Application {
             conn,
         }
     }
-    pub async fn new(hci: &Adapter, base_path: &str) -> Result<Self, Error> {
-        let conn = RpcConn::system_conn(true).await?;
-        let conn = Arc::new(conn);
+    pub fn new(hci: &Adapter, base_path: &str) -> Result<Self, Error> {
+        let conn = hci.conn.clone();
         Ok(Self::new_with_conn(hci, base_path, conn))
     }
     pub async fn set_dest(&mut self, dest: Option<String>) -> Result<(), Error> {
@@ -148,10 +153,10 @@ impl Application {
         }
         if let Some(dest) = &self.dest {
             let mut call = MessageBuilder::new()
-                .call("ReleaseName".to_string())
-                .at("org.freedesktop.DBus".to_string())
-                .on("/org/freedesktop.DBus".to_string())
-                .with_interface("org.freedesktop.Dbus".to_string())
+                .call("ReleaseName")
+                .at("org.freedesktop.DBus")
+                .on("/org/freedesktop.DBus")
+                .with_interface("org.freedesktop.Dbus")
                 .build();
             call.body.push_param(dest).unwrap();
             let res = self.conn.send_msg_with_reply(&call).await?.await?;
@@ -159,7 +164,7 @@ impl Application {
             self.dest = None;
         }
         if let Some(dest) = dest {
-            let call = rustbus_core::standard_messages::request_name(dest.clone(), 4);
+            let call = rustbus_core::standard_messages::request_name(&dest, 4);
             let res = self.conn.send_msg_with_reply(&call).await?.await?;
             let flag: u32 = is_msg_err(&res).unwrap();
             if flag == 2 || flag == 3 {
@@ -212,43 +217,65 @@ impl Application {
         Ok(self.conn.send_msg_with_reply(&call).await?)
     }
     pub async fn register(mut self) -> Result<AppWorker, Error> {
+        assert_ne!(self.services.len(), 0);
+        let filter = if self.filter {
+            let mut call = MessageBuilder::new()
+                .call("GetNameOwner")
+                .on("/org/freedesktop/DBus")
+                .with_interface("org.freedesktop.DBus")
+                .at("org.freedesktop.DBus")
+                .build();
+            call.body.push_param(BLUEZ_DEST).unwrap();
+            let res = self.conn.send_msg_with_reply(&call).await?.await?;
+            let name: String = is_msg_err(&res)?;
+            if name == "" {
+                unimplemented!()
+            }
+            Some(name)
+        } else {
+            None
+        };
         if matches!(
             self.conn.get_call_path_action("/").await,
             Some(CallAction::Drop) | Some(CallAction::Nothing)
         ) {
-            self.conn.insert_call_path("/", CallAction::Intro).await;
+            self.conn.insert_call_path("/", CallAction::Intro).await.unwrap();
         }
         self.conn
-            .insert_call_path(self.base_path.as_str(), CallAction::Exact)
-            .await;
-        let call_recv = self.conn.get_call_recv(&self.base_path).await.unwrap();
+            .insert_call_path(&*self.base_path, CallAction::Exact)
+            .await
+            .unwrap();
+        let call_recv = self.conn.get_call_recv(&*self.base_path).await.unwrap();
         self.sort_services();
         let mut serv_workers = Vec::with_capacity(self.services.len());
         for (i, mut serv) in self.services.drain(..).enumerate() {
             let serv_path = format!("{}/service{:04x}", self.base_path, i);
             self.conn
-                .insert_call_path(&serv_path, CallAction::Exact)
-                .await;
+                .insert_call_path(&*serv_path, CallAction::Exact)
+                .await.unwrap();
             let chrc_drain = serv.drain_chrcs();
             let c_cnt = chrc_drain.len();
             let mut chrc_workers = Vec::with_capacity(c_cnt);
             for (j, mut chrc) in chrc_drain.enumerate() {
                 let chrc_path = format!("{}/char{:04x}", serv_path, j);
                 self.conn
-                    .insert_call_path(&chrc_path, CallAction::Exact)
-                    .await;
+                    .insert_call_path(&*chrc_path, CallAction::Exact)
+                    .await.unwrap();
                 let desc_drain = chrc.drain_descs();
                 let d_cnt = desc_drain.len();
                 let mut desc_workers = Vec::with_capacity(d_cnt);
                 for (k, desc) in desc_drain.enumerate() {
                     let desc_path = format!("{}/desc{:04x}", chrc_path, k);
+                    let desc_path = ObjectPathBuf::try_from(desc_path).unwrap();
                     self.conn
-                        .insert_call_path(&desc_path, CallAction::Exact)
-                        .await;
+                        .insert_call_path(&*desc_path, CallAction::Exact)
+                        .await
+                        .unwrap();
                     let desc = DescWorker::new(
                         desc,
                         &self.conn,
-                        ObjectPathBuf::try_from(desc_path).unwrap(),
+                        desc_path,
+                        filter.clone(),
                     );
                     desc_workers.push(desc);
                 }
@@ -257,6 +284,7 @@ impl Application {
                     &self.conn,
                     ObjectPathBuf::try_from(chrc_path).unwrap(),
                     d_cnt,
+                    filter.clone(),
                 );
                 chrc_workers.push((chrc, desc_workers));
             }
@@ -266,14 +294,16 @@ impl Application {
                 &self.conn,
                 ObjectPathBuf::try_from(serv_path).unwrap(),
                 c_cnt,
+                filter.clone(),
             );
             serv_workers.push((serv, chrc_workers));
         }
         let mut res_fut = self.begin_reg_call().await?;
+
         let mut app_data = WorkerData {
             heirarchy: serv_workers,
             conn: self.conn.clone(),
-            //base_path: self.base_path.clone()
+            filter, //base_path: self.base_path.clone()
         };
         loop {
             let call_fut = call_recv.recv();
@@ -294,7 +324,7 @@ impl Application {
         let (sender, recv) = bounded(2);
         let worker = spawn(async move {
             let mut recv_fut = recv.recv();
-            let mut call_fut = self.conn.get_call(&self.base_path).boxed();
+            let mut call_fut = self.conn.get_call(&*self.base_path).boxed();
             loop {
                 match select(recv_fut, call_fut).await {
                     Either::Left((msg, call_f)) => {
@@ -357,7 +387,7 @@ impl Application {
                     Either::Right((call, recv_f)) => {
                         app_data.handle_app(&call?).await?;
                         recv_fut = recv_f;
-                        call_fut = self.conn.get_call(&self.base_path).boxed();
+                        call_fut = self.conn.get_call(&*self.base_path).boxed();
                     }
                 }
             }
@@ -373,19 +403,32 @@ impl Application {
                     for (k, desc) in descs.into_iter().enumerate() {
                         let desc_path = format!("{}/desc{:04x}", chrc_path, k);
                         self.conn
-                            .insert_call_path(&desc_path, CallAction::Nothing)
-                            .await;
+                            .insert_call_path(&*desc_path, CallAction::Nothing)
+                            .await
+                            .unwrap();
                         chrc.add_desc(desc);
                     }
                     serv.add_char(chrc);
                 }
                 self.services.push(serv);
             }
-            unimplemented!()
+            Ok(self)
         });
         Ok(AppWorker { worker, sender })
     }
 }
+fn is_msg_bluez(call: &MarshalledMessage, filter: &Option<String>) -> bool {
+    let self_dest = match filter {
+        Some(d) => d,
+        None => return true,
+    };
+    //let dest = call.dynheader.sender.as_ref().map(|s| s.as_str());
+    match &call.dynheader.sender {
+        Some(d) => d == BLUEZ_DEST || d == self_dest,
+        None => false,
+    }
+}
+
 fn find_chrc<'a>(
     chrc_workers: ChrcWorkerSlice<'a>,
     uuid: UUID,
@@ -435,16 +478,15 @@ impl AppWorker {
             .await?;
         Ok(())
     }
-    pub async fn notify_char(
+    pub fn notify_char(
         &self,
         service: UUID,
         character: UUID,
         val: Option<AttValue>,
-    ) -> Result<(), Error> {
+    ) -> impl Future<Output = Result<(), Error>> + Unpin + '_ {
         self.sender
             .send(WorkerMsg::NotifyChar(service, character, val))
-            .await?;
-        Ok(())
+            .err_into()
     }
     pub async fn get_char(&self, serv: UUID, cha: UUID) -> Result<AttValue, Error> {
         let (sender, recv) = one_time_channel();

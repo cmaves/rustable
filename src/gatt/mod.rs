@@ -2,6 +2,7 @@ use std::borrow::Borrow;
 use std::fmt::{Debug, Formatter};
 use std::mem::MaybeUninit;
 use std::ops::{Deref, DerefMut};
+use std::os::unix::io::AsRawFd;
 
 use async_rustbus::rustbus_core;
 use marshal::traits::{Marshal, Signature};
@@ -137,9 +138,9 @@ impl Signature for AttValue {
         <[u8]>::alignment()
     }
 }
-impl<'r, 'buf: 'r, 'fds> Unmarshal<'r, 'buf, 'fds> for AttValue {
+impl<'buf, 'fds> Unmarshal<'buf, 'fds> for AttValue {
     fn unmarshal(ctx: &mut UnmarshalContext<'fds, 'buf>) -> UnmarshalResult<Self> {
-        let (used, buf): (usize, &'r [u8]) = <&'r [u8]>::unmarshal(ctx)?;
+        let (used, buf): (usize, &'buf [u8]) = Unmarshal::unmarshal(ctx)?;
         if buf.len() > 512 {
             Err(unmarshal::Error::InvalidType)
         } else {
@@ -341,5 +342,21 @@ impl DescFlags {
             ret.push("authorize");
         }
         ret
+    }
+}
+
+fn is_hung_up<T: AsRawFd>(fd: &T) -> std::io::Result<bool> {
+    let mut pfd = libc::pollfd {
+        fd: fd.as_raw_fd(),
+        events: 0,
+        revents: 0,
+    };
+    unsafe {
+        let res = libc::poll(&mut pfd as *mut libc::pollfd, 1, 0);
+        if res < 0 {
+            Err(std::io::Error::last_os_error())
+        } else {
+            Ok(res > 0 && pfd.revents & libc::POLLHUP != 0)
+        }
     }
 }

@@ -4,8 +4,9 @@ use async_std::task::{spawn, JoinHandle};
 use futures::future::{select, Either};
 use futures::pin_mut;
 use std::collections::HashMap;
+use std::io::ErrorKind;
 use std::num::NonZeroU16;
-use std::os::unix::io::AsRawFd;
+use std::os::unix::io::{AsRawFd, FromRawFd};
 
 use super::*;
 use crate::properties::{PropError, Properties};
@@ -126,12 +127,8 @@ impl ChrcData {
             }
             Notify::Signal => {
                 let mut sig = MessageBuilder::new()
-                    .signal(
-                        PROPS_IF.to_string(),
-                        "PropertiesChanged".to_string(),
-                        path.to_string(),
-                    )
-                    .to("org.bluez".to_string())
+                    .signal(PROPS_IF, "PropertiesChanged", path.to_string())
+                    .to("org.bluez")
                     .build();
                 sig.body.push_param(BLUEZ_CHR_IF).unwrap();
                 let mut map = HashMap::new();
@@ -163,14 +160,12 @@ impl ChrcData {
                         {
                             return Ok(call
                                 .dynheader
-                                .make_error_response("PermissionDenied".to_string(), None));
+                                .make_error_response("PermissionDenied", None));
                         }
                         let options: HashMap<&str, BluezOptions> = match call.body.parser().get() {
                             Ok(o) => o,
                             Err(_) => {
-                                return Ok(call
-                                    .dynheader
-                                    .make_error_response("UnknownType".to_string(), None))
+                                return Ok(call.dynheader.make_error_response("UnknownType", None))
                             }
                         };
                         let mut offset = 0;
@@ -191,7 +186,7 @@ impl ChrcData {
                         {
                             return Ok(call
                                 .dynheader
-                                .make_error_response("PermissionDenied".to_string(), None));
+                                .make_error_response("PermissionDenied", None));
                         }
                         let (mut att_val, options): (AttValue, HashMap<&str, BluezOptions>) =
                             match call.body.parser().get() {
@@ -199,7 +194,7 @@ impl ChrcData {
                                 Err(_) => {
                                     return Ok(call
                                         .dynheader
-                                        .make_error_response("UnknownType".to_string(), None))
+                                        .make_error_response("UnknownType", None))
                                 }
                             };
                         let mut offset = 0;
@@ -222,19 +217,16 @@ impl ChrcData {
                         if !(self.flags.notify || self.flags.indicate) {
                             return Ok(call
                                 .dynheader
-                                .make_error_response("PermissionDenied".to_string(), None));
+                                .make_error_response("PermissionDenied", None));
                         }
                         match &self.notify {
                             Notify::Socket(_, _) => {
-                                return Ok(call
-                                    .dynheader
-                                    .make_error_response("FdAcquired".to_string(), None))
+                                return Ok(call.dynheader.make_error_response("FdAcquired", None))
                             }
                             Notify::Signal => {
-                                return Ok(call.dynheader.make_error_response(
-                                    "org.Bluez.Error.InProgress".to_string(),
-                                    None,
-                                ))
+                                return Ok(call
+                                    .dynheader
+                                    .make_error_response("org.Bluez.Error.InProgress", None))
                             }
                             Notify::None => {}
                         }
@@ -243,17 +235,13 @@ impl ChrcData {
                     }
                     "StopNotify" => {
                         if !matches!(self.notify, Notify::Signal) {
-                            Ok(call
-                                .dynheader
-                                .make_error_response("NotNotifying".to_string(), None))
+                            Ok(call.dynheader.make_error_response("NotNotifying", None))
                         } else {
                             self.notify = Notify::None;
                             Ok(call.dynheader.make_response())
                         }
                     }
-                    _ => Ok(call
-                        .dynheader
-                        .make_error_response("UnknownMethod".to_string(), None)),
+                    _ => Ok(call.dynheader.make_error_response("UnknownMethod", None)),
                 }
             }
             _ => unreachable!(),
@@ -264,6 +252,12 @@ impl ChrcData {
             let mut att_val = AttValue::new(512.min(*mtu));
             // this should be the last await in the block
             let read = socket.recv(&mut att_val).await?;
+            if read == 0 && is_hung_up(socket).unwrap_or(false) {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::NotConnected,
+                    "Notify socket has hung up.",
+                ));
+            }
             att_val.resize(read, 0);
             return Ok(att_val);
         }
@@ -297,28 +291,20 @@ impl ChrcData {
     }
     fn acquire_notify(&mut self, call: &MarshalledMessage) -> std::io::Result<MarshalledMessage> {
         if !self.flags.notify {
-            return Ok(call
-                .dynheader
-                .make_error_response("PermissionDenied".to_string(), None));
+            return Ok(call.dynheader.make_error_response("PermissionDenied", None));
         }
         if !matches!(self.notify, Notify::None) {
-            return Ok(call
-                .dynheader
-                .make_error_response("AlreadyAcquired".to_string(), None));
+            return Ok(call.dynheader.make_error_response("AlreadyAcquired", None));
         }
         let options: HashMap<&str, BluezOptions> = match call.body.parser().get() {
             Ok(o) => o,
-            Err(_) => {
-                return Ok(call
-                    .dynheader
-                    .make_error_response("UnknownType".to_string(), None))
-            }
+            Err(_) => return Ok(call.dynheader.make_error_response("UnknownType", None)),
         };
         let mut mtu = 517;
         if let Some(BluezOptions::U16(off)) = options.get("mtu") {
             mtu = mtu.min(*off as usize);
         }
-        let (ours, theirs) = UnixDatagram::pair()?;
+        let (ours, theirs) = get_sock_seqpacket()?;
         self.notify = Notify::Socket(ours, mtu);
         let mut reply = call.dynheader.make_response();
         let fd = UnixFd::new(theirs.as_raw_fd());
@@ -328,28 +314,20 @@ impl ChrcData {
     }
     fn acquire_write(&mut self, call: &MarshalledMessage) -> std::io::Result<MarshalledMessage> {
         if !self.flags.write_wo_response {
-            return Ok(call
-                .dynheader
-                .make_error_response("PermissionDenied".to_string(), None));
+            return Ok(call.dynheader.make_error_response("PermissionDenied", None));
         }
         if !matches!(self.write_fd, None) {
-            return Ok(call
-                .dynheader
-                .make_error_response("AlreadyAcquired".to_string(), None));
+            return Ok(call.dynheader.make_error_response("AlreadyAcquired", None));
         }
         let options: HashMap<&str, BluezOptions> = match call.body.parser().get() {
             Ok(o) => o,
-            Err(_) => {
-                return Ok(call
-                    .dynheader
-                    .make_error_response("UnknownType".to_string(), None))
-            }
+            Err(_) => return Ok(call.dynheader.make_error_response("UnknownType", None)),
         };
         let mut mtu = 517;
         if let Some(BluezOptions::U16(off)) = options.get("mtu") {
             mtu = mtu.min(*off as usize);
         }
-        let (ours, theirs) = UnixDatagram::pair()?;
+        let (ours, theirs) = get_sock_seqpacket()?;
         self.write_fd = Some((ours, mtu));
         let mut reply = call.dynheader.make_response();
         let fd = UnixFd::new(theirs.as_raw_fd());
@@ -439,6 +417,7 @@ impl ChrcWorker {
         conn: &Arc<RpcConn>,
         path: ObjectPathBuf,
         children: usize,
+        filter: Option<String>,
     ) -> Self {
         let (sender, recv) = bounded(8);
         let conn = conn.clone();
@@ -494,12 +473,22 @@ impl ChrcWorker {
                     }
                     Either::Left(Either::Right((call, recv_f))) => {
                         let call = call?;
-                        let res = chrc_data.handle_call(&call, &conn).await?;
+                        let res = if is_msg_bluez(&call, &filter) {
+                            chrc_data.handle_call(&call, &conn).await?
+                        } else {
+                            call.dynheader.make_error_response("PermissionDenied", None)
+                        };
                         conn.send_msg_no_reply(&res).await?;
                         msg_select = select(recv_f, call_recv.recv());
                     }
                     Either::Right((res, msg_s)) => {
-                        chrc_data.handle_write(&conn, &path, res?).await?;
+                        match res {
+                            Ok(res) => chrc_data.handle_write(&conn, &path, res).await?,
+                            Err(e) if e.kind() == ErrorKind::NotConnected => {
+                                chrc_data.write_fd = None;
+                            }
+                            Err(e) => return Err(e.into()),
+                        }
                         msg_select = msg_s;
                     }
                 }
@@ -522,5 +511,19 @@ impl ChrcWorker {
     pub async fn shutdown(self) -> Result<Characteristic, Error> {
         self.sender.send(ChrcMsg::Shutdown).await?;
         self.worker.await
+    }
+}
+
+fn get_sock_seqpacket() -> std::io::Result<(UnixDatagram, UnixDatagram)> {
+    unsafe {
+        let mut fds = [0; 2];
+        if libc::socketpair(libc::AF_UNIX, libc::SOCK_SEQPACKET, 0, fds.as_mut_ptr()) != 0 {
+            Err(std::io::Error::last_os_error())
+        } else {
+            Ok((
+                UnixDatagram::from_raw_fd(fds[0]),
+                UnixDatagram::from_raw_fd(fds[1]),
+            ))
+        }
     }
 }

@@ -2,11 +2,13 @@ use std::collections::HashMap;
 use std::os::unix::io::FromRawFd;
 use std::sync::Arc;
 
-use super::{AttValue, CharFlags};
+use super::{is_hung_up, AttValue, CharFlags};
 use crate::interfaces::get_prop_call;
 use crate::*;
+use crate::introspect::{Child, get_children};
 
 use rustbus_core::wire::unixfd::UnixFd;
+use rustbus_core::path::ObjectPathBuf;
 
 use async_std::os::unix::net::UnixDatagram;
 
@@ -152,10 +154,10 @@ impl Characteristic {
     }
     fn build_call(&self) -> MarshalledMessage {
         MessageBuilder::new()
-            .call(String::new())
-            .with_interface(String::from(BLUEZ_CHR_IF))
-            .at(BLUEZ_DEST.to_string())
-            .on(self.path.clone().into())
+            .call("")
+            .with_interface(BLUEZ_CHR_IF)
+            .at(BLUEZ_DEST)
+            .on(self.path.clone())
             .build()
     }
     pub async fn read_value(
@@ -221,16 +223,38 @@ impl Characteristic {
         call.dynheader.member = Some(String::from("AcquireNotify"));
         let options: HashMap<&str, BluezOptions> = HashMap::new();
         call.body.push_param(&options).unwrap();
-        let res_fut = self.conn.send_msg_with_reply(&call).await?;
-        Ok(async {
+        let conn = &self.conn;
+        //let not_mut = &mut self.notify;
+        let res_fut = conn.send_msg_with_reply(&call).await?;
+        Ok(async move {
             let res = res_fut.await?;
             let (fd, mtu): (UnixFd, u16) = is_msg_err2(&res)?;
             let sock = unsafe { UnixDatagram::from_raw_fd(fd.take_raw_fd().unwrap()) };
-            Ok(NotifySocket {
+            Ok(NotifySocket { sock, mtu })
+            /*
+            *not_mut = Some(NotifySocket {
                 sock,
                 buf: vec![0; mtu as usize],
                 mtu,
-            })
+            });
+            Ok(())*/
+        })
+    }
+    pub async fn acquire_write(
+        &self,
+    ) -> Result<impl Future<Output = Result<WriteSocket, Error>> + '_, Error> {
+        let mut call = self.build_call();
+        call.dynheader.member = Some(String::from("AcquireWrite"));
+        let options: HashMap<&str, BluezOptions> = HashMap::new();
+        call.body.push_param(&options).unwrap();
+        let conn = &self.conn;
+        //let write_mut = &mut self.write_wo;
+        let res_fut = conn.send_msg_with_reply(&call).await?;
+        Ok(async move {
+            let res = res_fut.await?;
+            let (fd, mtu): (UnixFd, u16) = is_msg_err2(&res)?;
+            let sock = unsafe { UnixDatagram::from_raw_fd(fd.take_raw_fd().unwrap()) };
+            Ok(WriteSocket { mtu, sock })
         })
     }
     pub async fn flags(
@@ -244,17 +268,39 @@ impl Characteristic {
             Ok(CharFlags::from_strings(props))
         })
     }
+    //fn conn_notify_write_borrow(&mut self) -> (&mut Arc<RpcConn>, &mut
 }
 
 pub struct NotifySocket {
     sock: UnixDatagram,
-    buf: Vec<u8>,
     mtu: u16,
 }
 impl NotifySocket {
-    pub async fn recv_notification(&mut self) -> std::io::Result<AttValue> {
-        let len = self.sock.recv(&mut self.buf).await?;
-        Ok(AttValue::from(&self.buf[..len]))
+    pub async fn recv_notification(&self) -> std::io::Result<AttValue> {
+        let mut buf = [0; 512];
+        let len = self.sock.recv(&mut buf).await?;
+        if len == 0 && is_hung_up(&self.sock).unwrap_or(false) {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::NotConnected,
+                "Notify socket has hung up.",
+            ));
+        }
+        Ok(AttValue::from(&buf[..len]))
+    }
+    pub fn mtu(&self) -> u16 {
+        self.mtu
+    }
+}
+pub struct WriteSocket {
+    sock: UnixDatagram,
+    mtu: u16,
+}
+impl WriteSocket {
+    pub async fn write(&self, val: &AttValue) -> std::io::Result<()> {
+        self.sock
+            .send(&val[..val.len().min(self.mtu as usize)])
+            .await?;
+        Ok(())
     }
     pub fn mtu(&self) -> u16 {
         self.mtu
@@ -293,10 +339,10 @@ impl Descriptor {
     }
     fn build_call(&self) -> MarshalledMessage {
         MessageBuilder::new()
-            .call(String::new())
-            .with_interface(String::from(BLUEZ_DES_IF))
-            .at(BLUEZ_DEST.to_string())
-            .on(self.path.clone().into())
+            .call("")
+            .with_interface(BLUEZ_DES_IF)
+            .at(BLUEZ_DEST)
+            .on(self.path.clone())
             .build()
     }
     async fn get_desc(conn: Arc<RpcConn>, child: Child) -> Result<Option<Self>, Error> {

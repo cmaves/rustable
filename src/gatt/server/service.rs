@@ -138,7 +138,13 @@ pub struct ServWorker {
     uuid: UUID,
 }
 impl ServWorker {
-    pub fn new(serv: Service, conn: &Arc<RpcConn>, path: ObjectPathBuf, children: usize) -> Self {
+    pub fn new(
+        serv: Service,
+        conn: &Arc<RpcConn>,
+        path: ObjectPathBuf,
+        children: usize,
+        filter: Option<String>,
+    ) -> Self {
         let (sender, recv) = bounded(8);
         let conn = conn.clone();
         let uuid = serv.uuid;
@@ -148,7 +154,7 @@ impl ServWorker {
             children,
         };
         let worker = spawn(async move {
-            let call_recv = conn.get_call_recv(&path).await.unwrap();
+            let call_recv = conn.get_call_recv(&*path).await.unwrap();
             let mut msg_fut = recv.recv();
             let mut call_fut = call_recv.recv();
             loop {
@@ -167,7 +173,12 @@ impl ServWorker {
                         msg_fut = recv.recv();
                     }
                     Either::Right((call, msg_f)) => {
-                        let res = serv_data.handle_call(&call?);
+                        let call = call?;
+                        let res = if is_msg_bluez(&call, &filter) {
+                            serv_data.handle_call(&call)
+                        } else {
+                            call.dynheader.make_error_response("PermissionDenied", None)
+                        };
                         conn.send_msg_no_reply(&res).await?;
                         msg_fut = msg_f;
                         call_fut = call_recv.recv();

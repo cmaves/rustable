@@ -1,5 +1,6 @@
 use crate::*;
 use rustbus_core::message_builder::MarshalledMessage;
+use rustbus_core::path::{ObjectPath, ObjectPathBuf};
 use std::fmt::Write;
 pub(crate) const INTROSPECT_FMT_P1: &'static str = "<!DOCTYPE node PUBLIC \"-//freedesktop//DTD D-BUS Object Introspection 1.0//EN\" \"http://www.freedesktop.org/standards/dbus/1.0/introspect.dtd\">
  <node>
@@ -124,3 +125,42 @@ pub trait Introspectable {
     }
     fn introspectable_str(&self) -> String;
 }
+
+pub struct Child {
+    path: ObjectPathBuf,
+    interface: Vec<String>,
+}
+impl Child {
+    pub fn path(&self) -> &ObjectPath {
+        &self.path
+    }
+    pub fn interfaces(&self) -> &[String] {
+        &self.interface[..]
+    }
+}
+impl From<Child> for ObjectPathBuf {
+    fn from(child: Child) -> Self {
+        child.path
+    }
+}
+
+pub async fn get_children<S: AsRef<str>, P: AsRef<ObjectPath>>(
+    conn: &RpcConn,
+    dest: S,
+    path: P,
+) -> std::io::Result<Vec<Child>> {
+    use xml::reader::EventReader;
+    let path: &str = path.as_ref().as_ref();
+    let call = MessageBuilder::new()
+        .call(String::from("Introspect"))
+        .with_interface(String::from("org.freedesktop.DBus.Introspectable"))
+        .on(path.to_string())
+        .at(dest.as_ref().to_string())
+        .build();
+    let res = conn.send_msg_with_reply(&call).await?.await?;
+    let s: &str = res.body.parser().get().unwrap();
+    let mut reader = EventReader::from_str(s);
+    eprintln!("get_children: {:?}", reader.next());
+    unimplemented!()
+}
+

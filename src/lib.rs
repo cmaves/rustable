@@ -17,6 +17,7 @@ use rustbus_core::message_builder::{MarshalledMessage, MessageBuilder, MessageTy
 use rustbus_core::wire::marshal::traits::{Marshal, Signature};
 use rustbus_core::wire::marshal::MarshalContext;
 use rustbus_core::wire::unmarshal;
+use rustbus_core::path::{ObjectPath, ObjectPathBuf};
 use unmarshal::traits::Unmarshal;
 use unmarshal::{UnmarshalContext, UnmarshalResult};
 
@@ -28,8 +29,8 @@ use gatt::client::Service as LocalService;
 pub(crate) mod introspect;
 pub(crate) mod properties;
 
-mod path;
-pub use path::*;
+use introspect::get_children;
+
 
 use interfaces::{get_prop_call, set_prop_call};
 
@@ -211,8 +212,8 @@ impl Marshal for UUID {
         String::marshal(&s, ctx)
     }
 }
-impl<'r> Unmarshal<'r, 'r, '_> for UUID {
-    fn unmarshal(ctx: &mut UnmarshalContext<'_, 'r>) -> UnmarshalResult<Self> {
+impl<'buf> Unmarshal<'buf, '_> for UUID {
+    fn unmarshal(ctx: &mut UnmarshalContext<'_, 'buf>) -> UnmarshalResult<Self> {
         let (used, s): (usize, &str) = Unmarshal::unmarshal(ctx)?;
         let uuid = UUID::from_str(s).map_err(|_| unmarshal::Error::InvalidType)?;
         Ok((used, uuid))
@@ -267,6 +268,7 @@ pub enum Error {
     Bluez(String),
     Dbus(String),
     ThreadClosed,
+    SocketHungUp,
     UnknownServ(UUID),
     UnknownChar(UUID, UUID),
     UnknownDesc(UUID, UUID, UUID),
@@ -278,6 +280,7 @@ impl std::error::Error for Error {
             Error::Bluez(_)
             | Error::Dbus(_)
             | Error::ThreadClosed
+            | Error::SocketHungUp
             | Error::UnknownServ(_)
             | Error::UnknownChar(_, _)
             | Error::UnknownDesc(_, _, _) => None,
@@ -295,9 +298,9 @@ impl From<RecvError> for Error {
         Error::ThreadClosed
     }
 }
-fn is_msg_err<'r, 'buf: 'r, T>(msg: &'buf MarshalledMessage) -> Result<T, Error>
+fn is_msg_err<'buf, T>(msg: &'buf MarshalledMessage) -> Result<T, Error>
 where
-    T: Unmarshal<'r, 'buf, 'buf>,
+    T: Unmarshal<'buf, 'buf>,
 {
     match msg.typ {
         MessageType::Reply => msg
@@ -320,10 +323,10 @@ where
     }
 }
 
-fn is_msg_err2<'r, 'buf: 'r, T, U>(msg: &'buf MarshalledMessage) -> Result<(T, U), Error>
+fn is_msg_err2<'buf, T, U>(msg: &'buf MarshalledMessage) -> Result<(T, U), Error>
 where
-    T: Unmarshal<'r, 'buf, 'buf>,
-    U: Unmarshal<'r, 'buf, 'buf>,
+    T: Unmarshal<'buf, 'buf>,
+    U: Unmarshal<'buf, 'buf>,
 {
     match msg.typ {
         MessageType::Reply => msg
@@ -532,276 +535,6 @@ impl Device {
     }
 }
 
-/*
-trait ObjectManager {
-    fn objectmanager_call(&mut self, msg: MarshalledMessage) -> MarshalledMessage {
-        match msg.dynheader.member.as_ref().unwrap().as_ref() {
-            MANGAGED_OBJ_CALL => self.get_managed_object(msg),
-            _ => standard_messages::unknown_method(&msg.dynheader),
-        }
-    }
-    fn object_manager_type() -> signature::Type {
-        signature::Type::Container(signature::Container::Dict(
-            signature::Base::String,
-            Box::new(LocalServiceBase::get_all_type()),
-        ))
-    }
-
-    fn get_managed_object(&mut self, msg: MarshalledMessage) -> MarshalledMessage;
-}
-
-impl ObjectManager for Bluetooth {
-    fn get_managed_object(&mut self, msg: MarshalledMessage) -> MarshalledMessage {
-        let mut reply = msg.dynheader.make_response();
-        let mut outer_dict: HashMap<Base, Param> = HashMap::new();
-        for service in self.services.values_mut() {
-            //let service_path = path.join(format!("service{:02x}", service.index));
-            for characteristic in service.chars.values_mut() {
-                for desc in characteristic.descs.values_mut() {
-                    let mut middle_map = HashMap::new();
-                    for interface in LocalDescBase::INTERFACES {
-                        let props = desc.get_all_inner(interface.0).unwrap();
-                        middle_map.insert(interface.0.to_string().into(), props);
-                    }
-                    let middle_cont: Container = (
-                        signature::Base::String,
-                        LocalDescBase::get_all_type(),
-                        middle_map,
-                    )
-                        .try_into()
-                        .unwrap();
-                    outer_dict.insert(
-                        Base::ObjectPath(desc.path.to_str().unwrap().to_string()),
-                        middle_cont.into(),
-                    );
-                }
-                let mut middle_map = HashMap::new();
-                for interface in LocalCharBase::INTERFACES {
-                    let props = characteristic.get_all_inner(interface.0).unwrap();
-                    middle_map.insert(interface.0.to_string().into(), props);
-                }
-                let middle_cont: Container = (
-                    signature::Base::String,
-                    LocalCharBase::get_all_type(),
-                    middle_map,
-                )
-                    .try_into()
-                    .unwrap();
-                outer_dict.insert(
-                    Base::ObjectPath(characteristic.path.to_str().unwrap().to_string()),
-                    middle_cont.into(),
-                );
-            }
-            let mut middle_map = HashMap::new();
-
-            for interface in LocalServiceBase::INTERFACES {
-                let props = service.get_all_inner(interface.0).unwrap();
-                middle_map.insert(interface.0.to_string().into(), props);
-            }
-            let middle_cont: Container = (
-                signature::Base::String,
-                LocalServiceBase::get_all_type(),
-                middle_map,
-            )
-                .try_into()
-                .unwrap();
-            outer_dict.insert(
-                Base::ObjectPath(service.path.to_str().unwrap().to_string()),
-                middle_cont.into(),
-            );
-        }
-        //let outer_param: Result<Param, std::convert::Infallible> = outer_dict.try_into();
-        let outer_cont: Container = (
-            signature::Base::ObjectPath,
-            Self::object_manager_type(),
-            outer_dict,
-        )
-            .try_into()
-            .unwrap();
-        reply.body.push_old_param(&outer_cont.into()).unwrap();
-        reply
-    }
-}
-trait Properties {
-    const GET_ALL_ITEM: signature::Type = signature::Type::Container(signature::Container::Variant);
-    fn get_all_type() -> signature::Type {
-        signature::Type::Container(signature::Container::Dict(
-            signature::Base::String,
-            Box::new(Self::GET_ALL_ITEM),
-        ))
-    }
-    const INTERFACES: &'static [(&'static str, &'static [&'static str])];
-    fn properties_call(&mut self, msg: MarshalledMessage) -> MarshalledMessage {
-        match msg.dynheader.member.as_ref().unwrap().as_ref() {
-            "Get" => self.get(msg),
-            "Set" => self.set(msg),
-            GET_ALL_CALL => self.get_all(msg),
-            _ => standard_messages::unknown_method(&msg.dynheader),
-        }
-    }
-    fn get_all_inner<'a, 'b>(&mut self, interface: &str) -> Option<Param<'a, 'b>> {
-        let props = Self::INTERFACES
-            .iter()
-            .find(|i| interface == i.0)
-            .map(|i| i.1)?;
-        let mut prop_map = HashMap::new();
-        for prop in props {
-            //eprintln!("{}: {}", interface, prop);
-            let val = self.get_inner(interface, prop).unwrap();
-            prop_map.insert(prop.to_string().into(), val);
-        }
-        let prop_cont = Container::Dict(params::Dict {
-            key_sig: signature::Base::String,
-            value_sig: Self::GET_ALL_ITEM,
-            map: prop_map,
-        });
-        /*let prop_cont: Container = (signature::Base::String, Self::GET_ALL_ITEM, prop_map)
-        .try_into()
-        .unwrap();*/
-        //Some(prop_cont.into())
-        Some(Param::Container(prop_cont))
-    }
-    fn get_all(&mut self, msg: MarshalledMessage) -> MarshalledMessage {
-        let msg = msg.unmarshall_all().unwrap();
-        let interface = if let Some(Param::Base(Base::String(interface))) = msg.params.get(0) {
-            // eprintln!("get_all() interface: {}", interface);
-            interface
-        } else {
-            return msg
-                .dynheader
-                .make_error_response("Missing interface".to_string(), None);
-        };
-        if let Some(param) = self.get_all_inner(&interface) {
-            let mut res = msg.make_response();
-            res.body.push_old_param(&param).unwrap();
-            res
-        } else {
-            let err_msg = format!(
-                "Interface {} is not known on {}",
-                interface,
-                msg.dynheader.object.as_ref().unwrap()
-            );
-            msg.dynheader
-                .make_error_response("InterfaceNotFound".to_string(), Some(err_msg))
-        }
-    }
-
-    fn get(&mut self, msg: MarshalledMessage) -> MarshalledMessage {
-        let msg = msg.unmarshall_all().unwrap();
-        if msg.params.len() < 2 {
-            let err_str = "Expected two string arguments".to_string();
-            return msg
-                .dynheader
-                .make_error_response("Invalid arguments".to_string(), Some(err_str));
-        }
-        let interface = if let Param::Base(Base::String(interface)) = &msg.params[0] {
-            interface
-        } else {
-            let err_str = "Expected string interface as first argument!".to_string();
-            return msg
-                .dynheader
-                .make_error_response("Invalid arguments".to_string(), Some(err_str));
-        };
-        let prop = if let Param::Base(Base::String(prop)) = &msg.params[1] {
-            prop
-        } else {
-            let err_str = "Expected string property as second argument!".to_string();
-            return msg
-                .dynheader
-                .make_error_response("Invalid arguments".to_string(), Some(err_str));
-        };
-        if let Some(param) = self.get_inner(interface, prop) {
-            let mut reply = msg.make_response();
-            reply.body.push_old_param(&param).unwrap();
-            reply
-        } else {
-            let s = format!("Property {} on interface {} not found.", prop, interface);
-            msg.dynheader
-                .make_error_response("PropertyNotFound".to_string(), Some(s))
-        }
-    }
-    /// Should returng a variant containing if the property is found. If it is not found then it returns None.
-    fn get_inner<'a, 'b>(&mut self, interface: &str, prop: &str) -> Option<Param<'a, 'b>>;
-    fn set_inner(&mut self, interface: &str, prop: &str, val: Variant) -> Option<String>;
-    fn set(&mut self, msg: MarshalledMessage) -> MarshalledMessage {
-        let (interface, prop, var): (&str, &str, Variant) = match msg.body.parser().get3() {
-            Ok(vals) => vals,
-            Err(err) => {
-                return msg.dynheader.make_error_response(
-                    "InvalidParameters".to_string(),
-                    Some(format!("{:?}", err)),
-                )
-            }
-        };
-        if let Some(err_str) = self.set_inner(interface, prop, var) {
-            msg.dynheader.make_error_response(err_str, None)
-        } else {
-            msg.dynheader.make_response()
-        }
-    }
-}
-
-impl Properties for Bluetooth {
-    const INTERFACES: &'static [(&'static str, &'static [&'static str])] = &[];
-    fn get_inner<'a, 'b>(&mut self, _interface: &str, _prop: &str) -> Option<Param<'a, 'b>> {
-        None
-    }
-    fn set_inner(&mut self, _interface: &str, _prop: &str, _val: Variant) -> Option<String> {
-        unimplemented!()
-    }
-}
-
-fn base_param_to_variant(b: Base) -> Param {
-    let var = match b {
-        Base::String(s) => params::Variant {
-            sig: signature::Type::Base(signature::Base::String),
-            value: Param::Base(s.into()),
-        },
-        Base::Boolean(b) => params::Variant {
-            sig: signature::Type::Base(signature::Base::Boolean),
-            value: Param::Base(b.into()),
-        },
-        Base::Uint16(u) => params::Variant {
-            sig: signature::Type::Base(signature::Base::Uint16),
-            value: Param::Base(u.into()),
-        },
-        Base::ObjectPath(p) => params::Variant {
-            sig: signature::Type::Base(signature::Base::ObjectPath),
-            value: Param::Base(Base::ObjectPath(p)),
-        },
-        Base::Byte(b) => params::Variant {
-            sig: signature::Type::Base(signature::Base::Byte),
-            value: Param::Base(b.into()),
-        },
-        Base::Uint64(b) => params::Variant {
-            sig: rustbus::signature::Type::Base(signature::Base::Uint64),
-            value: Param::Base(b.into()),
-        },
-        _ => unimplemented!(),
-    };
-    Param::Container(Container::Variant(Box::new(var)))
-}
-
-fn container_param_to_variant<'a, 'b>(c: Container<'a, 'b>) -> Param<'a, 'b> {
-    let var = match c {
-        Container::Dict(dict) => params::Variant {
-            sig: signature::Type::Container(rustbus::signature::Container::Dict(
-                dict.key_sig.clone(),
-                Box::new(dict.value_sig.clone()),
-            )),
-            value: Param::Container(Container::Dict(dict)),
-        },
-        Container::Array(array) => params::Variant {
-            sig: rustbus::signature::Type::Container(rustbus::signature::Container::Array(
-                Box::new(array.element_sig.clone()),
-            )),
-            value: Param::Container(Container::Array(array)),
-        },
-        _ => unimplemented!(),
-    };
-    Param::Container(Container::Variant(Box::new(var)))
-}
-*/
 pub fn validate_uuid(uuid: &str) -> bool {
     if uuid.len() != 36 {
         return false;
@@ -835,9 +568,9 @@ mod interfaces {
     fn prop_if_call(path: String, dest: String, interface: &str, prop: &str) -> MarshalledMessage {
         let mut call = MessageBuilder::new()
             .call(String::new())
-            .with_interface(PROPS_IF.to_string())
-            .on(path.into())
-            .at(dest.into())
+            .with_interface(PROPS_IF)
+            .on(path)
+            .at(dest)
             .build();
         call.body.push_param(interface).unwrap();
         call.body.push_param(prop).unwrap();
