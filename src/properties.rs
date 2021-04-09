@@ -1,8 +1,8 @@
 use async_rustbus::rustbus_core;
 use rustbus_core::message_builder::MarshalledMessage;
+use rustbus_core::path::ObjectPath;
 use rustbus_core::signature;
 use rustbus_core::standard_messages;
-use rustbus_core::path::ObjectPath;
 use std::collections::HashMap;
 
 use crate::BluezOptions;

@@ -8,8 +8,8 @@ use std::num::NonZeroU16;
 use super::*;
 use crate::*;
 use async_rustbus::rustbus_core::message_builder::MessageBuilder;
+use async_rustbus::rustbus_core::path::{ObjectPath, ObjectPathBuf};
 use async_rustbus::{CallAction, RpcConn};
-use async_rustbus::rustbus_core::path::{ObjectPathBuf, ObjectPath};
 
 mod one_time;
 use one_time::{one_time_channel, OneSender};
@@ -239,7 +239,10 @@ impl Application {
             self.conn.get_call_path_action("/").await,
             Some(CallAction::Drop) | Some(CallAction::Nothing)
         ) {
-            self.conn.insert_call_path("/", CallAction::Intro).await.unwrap();
+            self.conn
+                .insert_call_path("/", CallAction::Intro)
+                .await
+                .unwrap();
         }
         self.conn
             .insert_call_path(&*self.base_path, CallAction::Exact)
@@ -252,7 +255,8 @@ impl Application {
             let serv_path = format!("{}/service{:04x}", self.base_path, i);
             self.conn
                 .insert_call_path(&*serv_path, CallAction::Exact)
-                .await.unwrap();
+                .await
+                .unwrap();
             let chrc_drain = serv.drain_chrcs();
             let c_cnt = chrc_drain.len();
             let mut chrc_workers = Vec::with_capacity(c_cnt);
@@ -260,7 +264,8 @@ impl Application {
                 let chrc_path = format!("{}/char{:04x}", serv_path, j);
                 self.conn
                     .insert_call_path(&*chrc_path, CallAction::Exact)
-                    .await.unwrap();
+                    .await
+                    .unwrap();
                 let desc_drain = chrc.drain_descs();
                 let d_cnt = desc_drain.len();
                 let mut desc_workers = Vec::with_capacity(d_cnt);
@@ -271,12 +276,7 @@ impl Application {
                         .insert_call_path(&*desc_path, CallAction::Exact)
                         .await
                         .unwrap();
-                    let desc = DescWorker::new(
-                        desc,
-                        &self.conn,
-                        desc_path,
-                        filter.clone(),
-                    );
+                    let desc = DescWorker::new(desc, &self.conn, desc_path, filter.clone());
                     desc_workers.push(desc);
                 }
                 let chrc = ChrcWorker::new(

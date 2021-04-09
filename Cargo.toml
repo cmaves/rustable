@@ -16,3 +16,6 @@ libc = "0.2"
 futures = "0.3"
 futures-enum = "0.1.16"
 xml-rs = "0.8"
+
+[dev-dependencies]
+rand = "0.8"

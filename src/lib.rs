@@ -14,10 +14,10 @@ use futures::stream::FuturesUnordered;
 
 use rustbus_core::dbus_variant_var;
 use rustbus_core::message_builder::{MarshalledMessage, MessageBuilder, MessageType};
+use rustbus_core::path::{ObjectPath, ObjectPathBuf};
 use rustbus_core::wire::marshal::traits::{Marshal, Signature};
 use rustbus_core::wire::marshal::MarshalContext;
 use rustbus_core::wire::unmarshal;
-use rustbus_core::path::{ObjectPath, ObjectPathBuf};
 use unmarshal::traits::Unmarshal;
 use unmarshal::{UnmarshalContext, UnmarshalResult};
 
@@ -30,7 +30,6 @@ pub(crate) mod introspect;
 pub(crate) mod properties;
 
 use introspect::get_children;
-
 
 use interfaces::{get_prop_call, set_prop_call};
 
@@ -101,8 +100,8 @@ impl FromStr for UUID {
         }
         let first = u128::from_str_radix(&s[..8], 16)? << 96;
         let second = u128::from_str_radix(&s[9..13], 16)? << 80;
-        let third = u128::from_str_radix(&s[13..18], 16)? << 64;
-        let fourth = u128::from_str_radix(&s[18..23], 16)? << 48;
+        let third = u128::from_str_radix(&s[14..18], 16)? << 64;
+        let fourth = u128::from_str_radix(&s[19..23], 16)? << 48;
         let fifth = u128::from_str_radix(&s[24..36], 16)? << 0;
         Ok(UUID(first | second | third | fourth | fifth))
     }
@@ -600,6 +599,33 @@ mod interfaces {
         let mut msg = prop_if_call(path.into(), dest.into(), interface, prop);
         msg.dynheader.member = Some("Get".to_string());
         msg
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{MAC, UUID};
+    use rand::Rng;
+    use std::str::FromStr;
+
+    #[test]
+    fn mac_to_string() {
+        let mut rng = rand::thread_rng();
+        for _ in 0..128 {
+            let mac: u64 = rng.gen();
+            let mac = MAC::new(mac & 0x0000FFFFFFFFFFFF);
+            let mac_str = mac.to_string();
+            assert_eq!(mac, MAC::from_str(&mac_str).expect(&mac_str));
+        }
+    }
+    #[test]
+    fn uuid_to_string() {
+        let mut rng = rand::thread_rng();
+        for _ in 0..128 {
+            let uuid = UUID(rng.gen());
+            let uuid_str = uuid.to_string();
+            assert_eq!(uuid, UUID::from_str(&uuid_str).expect(&uuid_str));
+        }
     }
 }
 /*

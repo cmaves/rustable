@@ -4,11 +4,11 @@ use std::sync::Arc;
 
 use super::{is_hung_up, AttValue, CharFlags};
 use crate::interfaces::get_prop_call;
+use crate::introspect::{get_children, Child};
 use crate::*;
-use crate::introspect::{Child, get_children};
 
-use rustbus_core::wire::unixfd::UnixFd;
 use rustbus_core::path::ObjectPathBuf;
+use rustbus_core::wire::unixfd::UnixFd;
 
 use async_std::os::unix::net::UnixDatagram;
 

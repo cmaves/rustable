@@ -163,4 +163,3 @@ pub async fn get_children<S: AsRef<str>, P: AsRef<ObjectPath>>(
     eprintln!("get_children: {:?}", reader.next());
     unimplemented!()
 }
-

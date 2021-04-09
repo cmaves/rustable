@@ -7,8 +7,8 @@ use futures::future::{select, Either};
 use futures::pin_mut;
 
 use crate::properties::{PropError, Properties};
-use rustbus_core::path::{ObjectPathBuf, ObjectPath};
 use crate::*;
+use rustbus_core::path::{ObjectPath, ObjectPathBuf};
 
 #[derive(Clone, Copy)]
 pub enum AdType {
@@ -104,7 +104,9 @@ impl Advertisement {
         call.body.push_param(options).unwrap();
         eprintln!("Registering ad at: {}", base_path);
         let conn = self.conn.clone();
-        conn.insert_call_path(&*base_path, CallAction::Exact).await.unwrap();
+        conn.insert_call_path(&*base_path, CallAction::Exact)
+            .await
+            .unwrap();
         {
             // new block limits lifetime of res_fut
             let res_fut = conn.send_msg_with_reply(&call).await?;
@@ -165,7 +167,9 @@ impl Advertisement {
                 }
             }
             eprintln!("Ad Released");
-            conn.insert_call_path(&*base_path, CallAction::Nothing).await.unwrap();
+            conn.insert_call_path(&*base_path, CallAction::Nothing)
+                .await
+                .unwrap();
             Ok(self)
         });
         Ok(AdWorker { sender, worker })
