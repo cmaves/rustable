@@ -226,8 +226,11 @@ impl MAC {
         a[((0xFFFF000000000000 & mac) >> 32) as usize];
         Self((mac >> 16) as u32, mac as u16)
     }
+    pub const fn from_parts(first_four: u32, last_two: u16) -> Self {
+        MAC(first_four, last_two)
+    }
     fn from_dev_str(child: &str) -> Option<Self> {
-        if !child.starts_with("dev") {
+        if !child.starts_with("dev_") {
             return None;
         }
         let addr_str = child.get(3..)?;
@@ -244,7 +247,7 @@ impl MAC {
         let m0 = self.0.to_be_bytes();
         let m1 = self.1.to_be_bytes();
         format!(
-            "dev_{:X}_{:X}_{:X}_{:X}_{:X}_{:X}",
+            "dev_{:02X}_{:02X}_{:02X}_{:02X}_{:02X}_{:02X}",
             m0[0], m0[1], m0[2], m0[3], m1[0], m1[1]
         )
     }
@@ -259,6 +262,11 @@ impl Display for MAC {
             "{:02X}:{:02X}:{:02X}:{:02X}:{:02X}:{:02X}",
             m0[0], m0[1], m0[2], m0[3], m1[0], m1[1]
         )
+    }
+}
+impl From<(u32, u16)> for MAC {
+    fn from(pair: (u32, u16)) -> Self {
+        MAC(pair.0, pair.1)
     }
 }
 
@@ -607,15 +615,22 @@ mod tests {
     use super::{MAC, UUID};
     use rand::Rng;
     use std::str::FromStr;
-
     #[test]
     fn mac_to_string() {
         let mut rng = rand::thread_rng();
         for _ in 0..128 {
-            let mac: u64 = rng.gen();
-            let mac = MAC::new(mac & 0x0000FFFFFFFFFFFF);
+            let mac = MAC::from_parts(rng.gen(), rng.gen());
             let mac_str = mac.to_string();
             assert_eq!(mac, MAC::from_str(&mac_str).expect(&mac_str));
+        }
+    }
+    #[test]
+    fn mac_dev_string() {
+        let mut rng = rand::thread_rng();
+        for _ in 0..128 {
+            let mac = MAC::from_parts(rng.gen(), rng.gen());
+            let dev_str = mac.to_dev_str();
+            assert_eq!(mac, MAC::from_dev_str(&dev_str).expect(&dev_str));
         }
     }
     #[test]
