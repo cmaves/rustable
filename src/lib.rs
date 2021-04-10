@@ -406,7 +406,7 @@ impl BluetoothService {
             .await?
             .into_iter()
             .filter_map(|child| {
-                let name = child.path().file_name()?;
+                let name = child.file_name()?;
                 if !name.starts_with("hci") {
                     return None;
                 }
@@ -474,7 +474,7 @@ impl Adapter {
         let ret = get_children(&self.conn, BLUEZ_DEST, &self.path)
             .await?
             .into_iter()
-            .filter_map(|child| MAC::from_dev_str(child.path().as_ref()))
+            .filter_map(|child| MAC::from_dev_str(child.file_name()?))
             .collect();
         Ok(ret)
     }
@@ -483,9 +483,12 @@ impl Adapter {
         let path = format!("{}/{}", self.path, dev_str);
         let call = get_prop_call(&path, "org.bluez", BLUEZ_DEV_IF, "Address");
         let msg = self.conn.send_msg_with_reply(&call).await?.await?;
-        let res_addr: &str = is_msg_err(&msg)?;
-        let res_mac = MAC::from_str(res_addr)
-            .map_err(|_| Error::Bluez(format!("Invalid MAC received back: {}", res_addr)))?;
+        let res_var: BluezOptions = is_msg_err(&msg)?;
+        let res_mac = match res_var {
+            BluezOptions::Str(mac) => MAC::from_str(mac).map_err(|_| 
+                Error::Bluez(format!("Invalid MAC received back: {}", mac)))?,
+            _ => return Err(Error::Bluez(format!("Invalid type received for MAC.")))
+        };
         if res_mac != mac {
             return Err(Error::Bluez(format!(
                 "Address returned {} did not match given ({})!",

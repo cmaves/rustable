@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use super::{is_hung_up, AttValue, CharFlags};
 use crate::interfaces::get_prop_call;
-use crate::introspect::{get_children, Child};
+use crate::introspect::get_children;
 use crate::*;
 
 use rustbus_core::path::ObjectPathBuf;
@@ -24,32 +24,24 @@ impl Service {
     }
     pub(crate) async fn get_service(
         conn: Arc<RpcConn>,
-        child: Child,
+        child: ObjectPathBuf,
     ) -> Result<Option<Self>, Error> {
-        if let None = child
-            .interfaces()
-            .into_iter()
-            .find(|s| s.as_str() == BLUEZ_SER_IF)
-        {
-            return Ok(None);
-        }
-        let name: &str = child.path().file_name().unwrap();
+        let name: &str = child.file_name().unwrap();
         if !name.starts_with("service") {
             return Ok(None);
         }
-        let path = ObjectPathBuf::from(child);
-        let path_str: &str = path.as_ref();
+        let path_str: &str = child.as_ref();
         let call = get_prop_call(path_str, BLUEZ_DEST, BLUEZ_SER_IF, "UUID");
         let res = conn.send_msg_with_reply(&call).await?.await?;
-        let uuid_str: &str = match is_msg_err(&res) {
-            Ok(s) => s,
-            Err(_) => return Ok(None),
+        let uuid_str = match is_msg_err::<BluezOptions>(&res) {
+            Ok(BluezOptions::Str(s)) => s,
+            _ => return Ok(None),
         };
         let uuid = match UUID::from_str(uuid_str) {
             Ok(u) => u,
             Err(_) => return Ok(None),
         };
-        Ok(Some(Self { conn, path, uuid }))
+        Ok(Some(Self { conn, path: child, uuid }))
     }
     pub async fn get_characteristics(&self) -> Result<Vec<Characteristic>, Error> {
         let services = self.get_chars_stream().await?;
@@ -95,31 +87,23 @@ impl Characteristic {
     pub fn uuid(&self) -> UUID {
         self.uuid
     }
-    async fn get_char(conn: Arc<RpcConn>, child: Child) -> Result<Option<Self>, Error> {
-        if let None = child
-            .interfaces()
-            .into_iter()
-            .find(|s| s.as_str() == BLUEZ_CHR_IF)
-        {
-            return Ok(None);
-        }
-        let name: &str = child.path().file_name().unwrap();
+    async fn get_char(conn: Arc<RpcConn>, child: ObjectPathBuf) -> Result<Option<Self>, Error> {
+        let name: &str = child.file_name().unwrap();
         if !name.starts_with("char") {
             return Ok(None);
         }
-        let path = ObjectPathBuf::from(child);
-        let path_str: &str = path.as_ref();
+        let path_str: &str = child.as_ref();
         let call = get_prop_call(path_str, BLUEZ_DEST, BLUEZ_CHR_IF, "UUID");
         let res = conn.send_msg_with_reply(&call).await?.await?;
-        let uuid_str: &str = match is_msg_err(&res) {
-            Ok(s) => s,
-            Err(_) => return Ok(None),
+        let uuid_str = match is_msg_err::<BluezOptions>(&res) {
+            Ok(BluezOptions::Str(s)) => s,
+            _ => return Ok(None),
         };
         let uuid = match UUID::from_str(uuid_str) {
             Ok(u) => u,
             Err(_) => return Ok(None),
         };
-        Ok(Some(Self { conn, path, uuid }))
+        Ok(Some(Self { conn, path: child, uuid }))
     }
 
     pub async fn get_descriptors(&self) -> Result<Vec<Descriptor>, Error> {
@@ -345,30 +329,22 @@ impl Descriptor {
             .on(self.path.clone())
             .build()
     }
-    async fn get_desc(conn: Arc<RpcConn>, child: Child) -> Result<Option<Self>, Error> {
-        if let None = child
-            .interfaces()
-            .into_iter()
-            .find(|s| s.as_str() == BLUEZ_DES_IF)
-        {
-            return Ok(None);
-        }
-        let name: &str = child.path().file_name().unwrap();
+    async fn get_desc(conn: Arc<RpcConn>, child: ObjectPathBuf) -> Result<Option<Self>, Error> {
+        let name: &str = child.file_name().unwrap();
         if !name.starts_with("desc") {
             return Ok(None);
         }
-        let path = ObjectPathBuf::from(child);
-        let path_str: &str = path.as_ref();
+        let path_str: &str = child.as_ref();
         let call = get_prop_call(path_str, BLUEZ_DEST, BLUEZ_DES_IF, "UUID");
         let res = conn.send_msg_with_reply(&call).await?.await?;
-        let uuid_str: &str = match is_msg_err(&res) {
-            Ok(s) => s,
-            Err(_) => return Ok(None),
+        let uuid_str = match is_msg_err::<BluezOptions>(&res) {
+            Ok(BluezOptions::Str(s)) => s,
+            _ => return Ok(None),
         };
         let uuid = match UUID::from_str(uuid_str) {
             Ok(u) => u,
             Err(_) => return Ok(None),
         };
-        Ok(Some(Self { conn, path, uuid }))
+        Ok(Some(Self { conn, path: child, uuid }))
     }
 }

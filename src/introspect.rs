@@ -126,30 +126,25 @@ pub trait Introspectable {
     fn introspectable_str(&self) -> String;
 }
 
-pub struct Child {
-    path: ObjectPathBuf,
-    interface: Vec<String>,
-}
-impl Child {
-    pub fn path(&self) -> &ObjectPath {
-        &self.path
-    }
-    pub fn interfaces(&self) -> &[String] {
-        &self.interface[..]
-    }
-}
-impl From<Child> for ObjectPathBuf {
-    fn from(child: Child) -> Self {
-        child.path
+use xml::reader::{EventReader, XmlEvent, Error as XmlError};
+fn ignore_xml_tree(reader: &mut EventReader<&[u8]>, name: &str) -> Result<(), XmlError> {
+    loop {
+        match reader.next()? {
+            XmlEvent::StartElement{name, ..} => ignore_xml_tree(reader, &name.local_name)?,
+            XmlEvent::EndElement{name: e_name, ..} if e_name.local_name == name => return Ok(()),
+            XmlEvent::EndElement{..}|XmlEvent::StartDocument{..} | XmlEvent::EndDocument{..} => unreachable!(),
+            _ => {}
+        }
     }
 }
-
+fn invalid_introspect<T>(_: T) -> Error {
+    Error::Bluez("Bluez didn't return valid introspect XML string.".into())
+}
 pub async fn get_children<S: AsRef<str>, P: AsRef<ObjectPath>>(
     conn: &RpcConn,
     dest: S,
     path: P,
-) -> std::io::Result<Vec<Child>> {
-    use xml::reader::EventReader;
+) -> Result<Vec<ObjectPathBuf>, Error> {
     let path: &str = path.as_ref().as_ref();
     let call = MessageBuilder::new()
         .call(String::from("Introspect"))
@@ -158,8 +153,41 @@ pub async fn get_children<S: AsRef<str>, P: AsRef<ObjectPath>>(
         .at(dest.as_ref().to_string())
         .build();
     let res = conn.send_msg_with_reply(&call).await?.await?;
-    let s: &str = res.body.parser().get().unwrap();
+    let s: &str = res.body.parser().get().map_err(invalid_introspect)?;
     let mut reader = EventReader::from_str(s);
-    eprintln!("get_children: {:?}", reader.next());
-    unimplemented!()
+    if !matches!(reader.next(), Ok(XmlEvent::StartDocument {..})) {
+        unimplemented!();
+    }
+    loop {
+        let next = reader.next();
+        match &next {
+            Ok(XmlEvent::StartElement { name, .. }) if name.local_name == "node" => break,
+            Ok(XmlEvent::StartElement{name, ..}) => ignore_xml_tree(&mut reader, &name.local_name).map_err(invalid_introspect)?,
+            Ok(XmlEvent::EndDocument{..}) => return Err(invalid_introspect(())),
+            _ => {}
+        }
+    }
+    let mut children = Vec::new();
+    loop {
+        let next = reader.next();
+        match &next {
+            Ok(XmlEvent::StartElement { name, attributes, ..}) if name.local_name == "node" => {
+                let child_name = match attributes.iter().find(|attr| attr.name.local_name == "name")
+                    .map(|attr| &attr.value)
+                {
+                    Some(n) => n,
+                    None => continue
+                };
+                let mut child_path = ObjectPathBuf::with_capacity(path.len() + child_name.len());
+                child_path.push_path(&path);
+                child_path.push_path_checked(child_name).map_err(invalid_introspect)?;
+                children.push(child_path);
+                ignore_xml_tree(&mut reader, "node").map_err(invalid_introspect)?;
+            },
+            Ok(XmlEvent::StartElement{name, ..}) => ignore_xml_tree(&mut reader, &name.local_name).map_err(invalid_introspect)?,
+            Ok(XmlEvent::EndElement {..}) => break,
+            _ => {}
+        }
+    }
+    Ok(children)
 }
