@@ -277,7 +277,7 @@ pub enum Error {
     ThreadClosed,
     SocketHungUp,
     UnknownServ(UUID),
-    UnknownChar(UUID, UUID),
+    UnknownChrc(UUID, UUID),
     UnknownDesc(UUID, UUID, UUID),
     Io(std::io::Error),
 }
@@ -289,7 +289,7 @@ impl std::error::Error for Error {
             | Error::ThreadClosed
             | Error::SocketHungUp
             | Error::UnknownServ(_)
-            | Error::UnknownChar(_, _)
+            | Error::UnknownChrc(_, _)
             | Error::UnknownDesc(_, _, _) => None,
             Error::Io(e) => Some(e),
         }

@@ -1,6 +1,5 @@
-use async_std::channel::{bounded, Sender};
-use async_std::task::{spawn, JoinHandle};
-use std::collections::HashMap;
+use async_std::channel::bounded;
+use async_std::task::spawn;
 use std::num::NonZeroU16;
 
 use super::*;
@@ -74,6 +73,60 @@ impl Service {
         }
         self.chars.sort_by_key(|c| c.uuid());
     }
+	pub(super) fn start_worker(
+		self,
+        conn: &Arc<RpcConn>,
+        path: ObjectPathBuf,
+        children: usize,
+        filter: Option<Arc<str>>,
+	) -> Worker {
+        let (sender, recv) = bounded(8);
+        let conn = conn.clone();
+        let mut serv_data = ServData {
+            uuid: self.uuid,
+            handle: self.handle,
+            children,
+        };
+		let handle = spawn(async move {
+            let call_recv = conn.get_call_recv(&*path).await.unwrap();
+            let mut msg_fut = recv.recv();
+            let mut call_fut = call_recv.recv();
+            loop {
+                match select(msg_fut, call_fut).await {
+                    Either::Left((msg, call_f)) => {
+                        match msg? {
+                            WorkerMsg::Unregister => break,
+                            WorkerMsg::ObjMgr(sender) => {
+                                sender.send((path.clone(), serv_data.get_all_interfaces(&path)))?;
+                            }
+                            WorkerMsg::GetHandle(sender) => {
+                                sender.send(NonZeroU16::new(self.handle).unwrap())?;
+                            }
+							_ => unreachable!()
+                        }
+                        call_fut = call_f;
+                        msg_fut = recv.recv();
+                    }
+                    Either::Right((call, msg_f)) => {
+                        let call = call?;
+                        let res = if is_msg_bluez(&call, filter.as_deref()) {
+                            serv_data.handle_call(&call)
+                        } else {
+                            call.dynheader.make_error_response("PermissionDenied", None)
+                        };
+                        conn.send_msg_no_reply(&res).await?;
+                        msg_fut = msg_f;
+                        call_fut = call_recv.recv();
+                    }
+                }
+            }
+            Ok(WorkerJoin::Serv(self))
+		});
+		Worker {
+			sender,
+			handle
+		}
+	}
 }
 /*impl Properties for Application {
 
@@ -119,89 +172,5 @@ impl Properties for ServData {
             },
             _ => Err(PropError::PropertyNotFound),
         }
-    }
-}
-
-pub enum ServMsg {
-    Shutdown,
-    GetHandle(OneSender<NonZeroU16>),
-    ObjMgr(
-        OneSender<(
-            ObjectPathBuf,
-            HashMap<&'static str, HashMap<&'static str, BluezOptions<'static, 'static>>>,
-        )>,
-    ),
-}
-pub struct ServWorker {
-    worker: JoinHandle<Result<Service, Error>>,
-    sender: Sender<ServMsg>,
-    uuid: UUID,
-}
-impl ServWorker {
-    pub fn new(
-        serv: Service,
-        conn: &Arc<RpcConn>,
-        path: ObjectPathBuf,
-        children: usize,
-        filter: Option<String>,
-    ) -> Self {
-        let (sender, recv) = bounded(8);
-        let conn = conn.clone();
-        let uuid = serv.uuid;
-        let mut serv_data = ServData {
-            uuid: serv.uuid,
-            handle: serv.handle,
-            children,
-        };
-        let worker = spawn(async move {
-            let call_recv = conn.get_call_recv(&*path).await.unwrap();
-            let mut msg_fut = recv.recv();
-            let mut call_fut = call_recv.recv();
-            loop {
-                match select(msg_fut, call_fut).await {
-                    Either::Left((msg, call_f)) => {
-                        match msg? {
-                            ServMsg::Shutdown => break,
-                            ServMsg::ObjMgr(sender) => {
-                                sender.send((path.clone(), serv_data.get_all_interfaces(&path)))?;
-                            }
-                            ServMsg::GetHandle(sender) => {
-                                sender.send(NonZeroU16::new(serv.handle).unwrap())?;
-                            }
-                        }
-                        call_fut = call_f;
-                        msg_fut = recv.recv();
-                    }
-                    Either::Right((call, msg_f)) => {
-                        let call = call?;
-                        let res = if is_msg_bluez(&call, &filter) {
-                            serv_data.handle_call(&call)
-                        } else {
-                            call.dynheader.make_error_response("PermissionDenied", None)
-                        };
-                        conn.send_msg_no_reply(&res).await?;
-                        msg_fut = msg_f;
-                        call_fut = call_recv.recv();
-                    }
-                }
-            }
-            Ok(serv)
-        });
-        ServWorker {
-            worker,
-            sender,
-            uuid,
-        }
-    }
-    pub fn uuid(&self) -> UUID {
-        self.uuid
-    }
-    pub async fn send(&self, msg: ServMsg) -> Result<(), Error> {
-        self.sender.send(msg).await?;
-        Ok(())
-    }
-    pub async fn shutdown(self) -> Result<Service, Error> {
-        self.sender.send(ServMsg::Shutdown).await?;
-        self.worker.await
     }
 }

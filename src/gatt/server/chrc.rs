@@ -1,6 +1,6 @@
-use async_std::channel::{bounded, Sender};
+use async_std::channel::bounded;
 use async_std::os::unix::net::UnixDatagram;
-use async_std::task::{spawn, JoinHandle};
+use async_std::task::spawn;
 use futures::future::{select, Either};
 use futures::pin_mut;
 use std::collections::HashMap;
@@ -76,6 +76,93 @@ impl Characteristic {
     pub(super) fn sort_descs(&mut self) {
         self.descs.sort_by_key(|d| d.uuid());
     }
+	pub(super) fn start_worker(
+		self,
+        conn: &Arc<RpcConn>,
+        path: ObjectPathBuf,
+        children: usize,
+        filter: Option<Arc<str>>,
+	) -> Worker {
+        let (sender, recv) = bounded(8);
+        let conn = conn.clone();
+        let mut chrc_data = ChrcData::new(self, children);
+		let handle = spawn(async move {
+            let recv_fut = recv.recv();
+            let call_recv = conn.get_call_recv(path.as_str()).await.unwrap();
+            let call_fut = call_recv.recv();
+            let mut msg_select = select(recv_fut, call_fut);
+            loop {
+                // This two-staged matches are done to satisfying,
+                // the borrow-checker.
+                let either = unsafe {
+                    let write_fut = chrc_data.check_for_write();
+                    //SAFETY: write_fut is dropped below without below
+                    pin_mut!(write_fut);
+                    //let pin_wf = Pin::new_unchecked(&mut write_fut);
+                    let either = match select(msg_select, write_fut).await {
+                        Either::Left((msg_either, _)) => Either::Left(msg_either),
+                        Either::Right(res) => Either::Right(res),
+                    };
+                    // Dont this should be the only use of write_fut;
+                    //drop(write_fut);
+                    either
+                };
+                match either {
+                    Either::Left(Either::Left((msg, call_f))) => {
+                        let msg = msg?;
+                        match msg {
+                            WorkerMsg::Unregister => break,
+                            WorkerMsg::Update(vf, notify) => {
+                                chrc_data.value = vf;
+                                if notify {
+                                    chrc_data.notify(&path, &conn, None).await?;
+                                }
+                            }
+                            WorkerMsg::ObjMgr(sender) => {
+                                let map = chrc_data.get_all_interfaces(&path);
+                                sender.send((path.clone(), map))?;
+                            }
+                            WorkerMsg::Get(sender) => {
+                                sender.send(chrc_data.value.to_value())?;
+                            }
+                            WorkerMsg::GetHandle(sender) => {
+                                sender.send(NonZeroU16::new(chrc_data.handle).unwrap())?;
+                            }
+                            WorkerMsg::Notify(opt_att) => {
+                                chrc_data.notify(&path, &conn, opt_att).await?;
+                            }
+                        }
+                        msg_select = select(recv.recv(), call_f);
+                    }
+                    Either::Left(Either::Right((call, recv_f))) => {
+                        let call = call?;
+                        let res = if is_msg_bluez(&call, filter.as_deref()) {
+                            chrc_data.handle_call(&call, &conn).await?
+                        } else {
+                            call.dynheader.make_error_response("PermissionDenied", None)
+                        };
+                        conn.send_msg_no_reply(&res).await?;
+                        msg_select = select(recv_f, call_recv.recv());
+                    }
+                    Either::Right((res, msg_s)) => {
+                        match res {
+                            Ok(res) => chrc_data.handle_write(&conn, &path, res).await?,
+                            Err(e) if e.kind() == ErrorKind::NotConnected => {
+                                chrc_data.write_fd = None;
+                            }
+                            Err(e) => return Err(e.into()),
+                        }
+                        msg_select = msg_s;
+                    }
+                }
+            }
+			Ok(WorkerJoin::Chrc(chrc_data.into_chrc()))
+		});
+		Worker {
+			sender,
+			handle
+		}
+	}
 }
 struct ChrcData {
     children: usize,
@@ -389,128 +476,6 @@ impl Properties for ChrcData {
             }
             _ => Err(PropError::PropertyNotFound),
         }
-    }
-}
-
-pub enum ChrcMsg {
-    Update(ValOrFn, bool),
-    Notify(Option<AttValue>),
-    Get(OneSender<AttValue>),
-    GetHandle(OneSender<NonZeroU16>),
-    ObjMgr(
-        OneSender<(
-            ObjectPathBuf,
-            HashMap<&'static str, HashMap<&'static str, BluezOptions<'static, 'static>>>,
-        )>,
-    ),
-    Shutdown,
-}
-pub struct ChrcWorker {
-    worker: JoinHandle<Result<Characteristic, Error>>,
-    sender: Sender<ChrcMsg>,
-    uuid: UUID,
-}
-
-impl ChrcWorker {
-    pub fn new(
-        chrc: Characteristic,
-        conn: &Arc<RpcConn>,
-        path: ObjectPathBuf,
-        children: usize,
-        filter: Option<String>,
-    ) -> Self {
-        let (sender, recv) = bounded(8);
-        let conn = conn.clone();
-        let uuid = chrc.uuid;
-        let mut chrc_data = ChrcData::new(chrc, children);
-        let worker = spawn(async move {
-            let recv_fut = recv.recv();
-            let call_recv = conn.get_call_recv(path.as_str()).await.unwrap();
-            let call_fut = call_recv.recv();
-            let mut msg_select = select(recv_fut, call_fut);
-            loop {
-                // This two-staged matches are done to satisfying,
-                // the borrow-checker.
-                let either = unsafe {
-                    let write_fut = chrc_data.check_for_write();
-                    //SAFETY: write_fut is dropped below without below
-                    pin_mut!(write_fut);
-                    //let pin_wf = Pin::new_unchecked(&mut write_fut);
-                    let either = match select(msg_select, write_fut).await {
-                        Either::Left((msg_either, _)) => Either::Left(msg_either),
-                        Either::Right(res) => Either::Right(res),
-                    };
-                    // Dont this should be the only use of write_fut;
-                    //drop(write_fut);
-                    either
-                };
-                match either {
-                    Either::Left(Either::Left((msg, call_f))) => {
-                        let msg = msg?;
-                        match msg {
-                            ChrcMsg::Shutdown => break,
-                            ChrcMsg::Update(vf, notify) => {
-                                chrc_data.value = vf;
-                                if notify {
-                                    chrc_data.notify(&path, &conn, None).await?;
-                                }
-                            }
-                            ChrcMsg::ObjMgr(sender) => {
-                                let map = chrc_data.get_all_interfaces(&path);
-                                sender.send((path.clone(), map))?;
-                            }
-                            ChrcMsg::Get(sender) => {
-                                sender.send(chrc_data.value.to_value())?;
-                            }
-                            ChrcMsg::GetHandle(sender) => {
-                                sender.send(NonZeroU16::new(chrc_data.handle).unwrap())?;
-                            }
-                            ChrcMsg::Notify(opt_att) => {
-                                chrc_data.notify(&path, &conn, opt_att).await?;
-                            }
-                        }
-                        msg_select = select(recv.recv(), call_f);
-                    }
-                    Either::Left(Either::Right((call, recv_f))) => {
-                        let call = call?;
-                        let res = if is_msg_bluez(&call, &filter) {
-                            chrc_data.handle_call(&call, &conn).await?
-                        } else {
-                            call.dynheader.make_error_response("PermissionDenied", None)
-                        };
-                        conn.send_msg_no_reply(&res).await?;
-                        msg_select = select(recv_f, call_recv.recv());
-                    }
-                    Either::Right((res, msg_s)) => {
-                        match res {
-                            Ok(res) => chrc_data.handle_write(&conn, &path, res).await?,
-                            Err(e) if e.kind() == ErrorKind::NotConnected => {
-                                chrc_data.write_fd = None;
-                            }
-                            Err(e) => return Err(e.into()),
-                        }
-                        msg_select = msg_s;
-                    }
-                }
-            }
-            Ok(chrc_data.into_chrc())
-        });
-        ChrcWorker {
-            worker,
-            sender,
-            uuid,
-        }
-    }
-    pub fn uuid(&self) -> UUID {
-        self.uuid
-    }
-    pub async fn send(&self, msg: ChrcMsg) -> Result<(), Error> {
-        self.sender.send(msg).await?;
-        Ok(())
-    }
-    pub async fn shutdown(self) -> Result<Characteristic, Error> {
-        self.sender.send(ChrcMsg::Shutdown).await?;
-        self.worker.await
     }
 }
 

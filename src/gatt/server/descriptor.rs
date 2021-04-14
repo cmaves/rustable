@@ -1,5 +1,5 @@
-use async_std::channel::{bounded, Sender};
-use async_std::task::{spawn, JoinHandle};
+use async_std::channel::bounded;
+use async_std::task::spawn;
 use futures::future::{select, Either};
 use std::collections::HashMap;
 
@@ -32,6 +32,60 @@ impl Descriptor {
     pub fn uuid(&self) -> UUID {
         self.uuid
     }
+	pub(super) fn start_worker(
+		mut self,
+        conn: &Arc<RpcConn>,
+        path: ObjectPathBuf,
+        filter: Option<Arc<str>>
+	) -> Worker {
+        let (sender, msg_recv) = bounded(8);
+		let conn = conn.clone();
+		let handle = spawn(async move {
+            let call_recv = conn.get_call_recv(&*path).await.unwrap();
+            let mut call_fut = call_recv.recv();
+            let mut msg_fut = msg_recv.recv();
+            loop {
+                match select(msg_fut, call_fut).await {
+                    Either::Left((msg, call_f)) => {
+                        match msg? {
+							WorkerMsg::Unregister=> break,
+							WorkerMsg::Update(vf, _) => {
+								self.value = vf;
+							}
+                            WorkerMsg::Get(sender) => {
+                                sender.send(self.value.to_value())?;
+                            }
+                            WorkerMsg::GetHandle(sender) => {
+                                sender.send(NonZeroU16::new(self.handle).unwrap())?;
+                            }
+                            WorkerMsg::ObjMgr(sender) => {
+                                sender.send((path.clone(), self.get_all_interfaces(&path)))?;
+                            }
+							WorkerMsg::Notify(_) => unreachable!()
+                        }
+                        call_fut = call_f;
+                        msg_fut = msg_recv.recv();
+                    }
+                    Either::Right((call, msg_f)) => {
+                        let call = call?;
+                        let res = if is_msg_bluez(&call, filter.as_deref()) {
+                            self.handle_call(&call)
+                        } else {
+                            call.dynheader.make_error_response("PermissionDenied", None)
+                        };
+                        conn.send_message(&res).await?;
+                        msg_fut = msg_f;
+                        call_fut = call_recv.recv();
+                    }
+                }
+            }
+            Ok(WorkerJoin::Desc(self))
+		});
+		Worker {
+			handle,
+			sender
+		}
+	}
     fn handle_call(&mut self, call: &MarshalledMessage) -> MarshalledMessage {
         let interface = call.dynheader.interface.as_ref().unwrap();
         match &**interface {
@@ -151,90 +205,5 @@ impl Properties for Descriptor {
             UUID_STR | CHAR_STR | VAL_STR | FLAG_STR => Err(PropError::PermissionDenied),
             _ => Err(PropError::PropertyNotFound),
         }
-    }
-}
-pub enum DescMsg {
-    Shutdown,
-    Update(ValOrFn),
-    Get(OneSender<AttValue>),
-    GetHandle(OneSender<NonZeroU16>),
-    ObjMgr(
-        OneSender<(
-            ObjectPathBuf,
-            HashMap<&'static str, HashMap<&'static str, BluezOptions<'static, 'static>>>,
-        )>,
-    ),
-}
-pub struct DescWorker {
-    worker: JoinHandle<Result<Descriptor, Error>>,
-    sender: Sender<DescMsg>,
-    uuid: UUID,
-}
-impl DescWorker {
-    pub fn new(
-        mut desc: Descriptor,
-        conn: &Arc<RpcConn>,
-        path: ObjectPathBuf,
-        filter: Option<String>,
-    ) -> Self {
-        let (sender, msg_recv) = bounded(8);
-        let conn = conn.clone();
-        let uuid = desc.uuid;
-        let worker = spawn(async move {
-            let call_recv = conn.get_call_recv(&*path).await.unwrap();
-            let mut call_fut = call_recv.recv();
-            let mut msg_fut = msg_recv.recv();
-            loop {
-                match select(msg_fut, call_fut).await {
-                    Either::Left((msg, call_f)) => {
-                        match msg? {
-                            DescMsg::Shutdown => break,
-                            DescMsg::Update(vf) => {
-                                desc.value = vf;
-                            }
-                            DescMsg::Get(sender) => {
-                                sender.send(desc.value.to_value())?;
-                            }
-                            DescMsg::GetHandle(sender) => {
-                                sender.send(NonZeroU16::new(desc.handle).unwrap())?;
-                            }
-                            DescMsg::ObjMgr(sender) => {
-                                sender.send((path.clone(), desc.get_all_interfaces(&path)))?;
-                            }
-                        }
-                        call_fut = call_f;
-                        msg_fut = msg_recv.recv();
-                    }
-                    Either::Right((call, msg_f)) => {
-                        let call = call?;
-                        let res = if is_msg_bluez(&call, &filter) {
-                            desc.handle_call(&call)
-                        } else {
-                            call.dynheader.make_error_response("PermissionDenied", None)
-                        };
-                        conn.send_message(&res).await?;
-                        msg_fut = msg_f;
-                        call_fut = call_recv.recv();
-                    }
-                }
-            }
-            Ok(desc)
-        });
-        DescWorker {
-            worker,
-            sender,
-            uuid,
-        }
-    }
-    pub fn uuid(&self) -> UUID {
-        self.uuid
-    }
-    pub async fn send(&self, msg: DescMsg) -> Result<(), Error> {
-        self.sender.send(msg).await?;
-        Ok(())
-    }
-    pub async fn shutdown(self) -> Result<Descriptor, Error> {
-        self.sender.send(DescMsg::Shutdown).await?;
-        self.worker.await
     }
 }
