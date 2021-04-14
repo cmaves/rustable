@@ -76,17 +76,17 @@ impl Characteristic {
     pub(super) fn sort_descs(&mut self) {
         self.descs.sort_by_key(|d| d.uuid());
     }
-	pub(super) fn start_worker(
-		self,
+    pub(super) fn start_worker(
+        self,
         conn: &Arc<RpcConn>,
         path: ObjectPathBuf,
         children: usize,
         filter: Option<Arc<str>>,
-	) -> Worker {
+    ) -> Worker {
         let (sender, recv) = bounded(8);
         let conn = conn.clone();
         let mut chrc_data = ChrcData::new(self, children);
-		let handle = spawn(async move {
+        let handle = spawn(async move {
             let recv_fut = recv.recv();
             let call_recv = conn.get_call_recv(path.as_str()).await.unwrap();
             let call_fut = call_recv.recv();
@@ -120,16 +120,28 @@ impl Characteristic {
                             }
                             WorkerMsg::ObjMgr(sender) => {
                                 let map = chrc_data.get_all_interfaces(&path);
-                                sender.send((path.clone(), map))?;
+                                sender.send((path.clone(), map)).ok();
                             }
                             WorkerMsg::Get(sender) => {
-                                sender.send(chrc_data.value.to_value())?;
+                                sender.send(chrc_data.value.to_value()).ok();
                             }
                             WorkerMsg::GetHandle(sender) => {
-                                sender.send(NonZeroU16::new(chrc_data.handle).unwrap())?;
+                                sender.send(NonZeroU16::new(chrc_data.handle).unwrap()).ok();
                             }
                             WorkerMsg::Notify(opt_att) => {
                                 chrc_data.notify(&path, &conn, opt_att).await?;
+                            }
+                            WorkerMsg::Notifying(sender) => {
+                                let is_notifying = !matches!(chrc_data.notify, Notify::None);
+                                sender.send(is_notifying).ok();
+                            }
+                            WorkerMsg::NotifyAcquired(sender) => {
+                                let acquired = matches!(chrc_data.notify, Notify::Socket(_, _));
+                                sender.send(acquired).ok();
+                            }
+                            WorkerMsg::NotifyingSignal(sender) => {
+                                let signaling = matches!(chrc_data.notify, Notify::Signal);
+                                sender.send(signaling).ok();
                             }
                         }
                         msg_select = select(recv.recv(), call_f);
@@ -156,13 +168,10 @@ impl Characteristic {
                     }
                 }
             }
-			Ok(WorkerJoin::Chrc(chrc_data.into_chrc()))
-		});
-		Worker {
-			sender,
-			handle
-		}
-	}
+            Ok(WorkerJoin::Chrc(chrc_data.into_chrc()))
+        });
+        Worker { sender, handle }
+    }
 }
 struct ChrcData {
     children: usize,

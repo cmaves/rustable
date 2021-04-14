@@ -41,7 +41,11 @@ impl Service {
             Ok(u) => u,
             Err(_) => return Ok(None),
         };
-        Ok(Some(Self { conn, path: child, uuid }))
+        Ok(Some(Self {
+            conn,
+            path: child,
+            uuid,
+        }))
     }
     pub async fn get_characteristics(&self) -> Result<Vec<Characteristic>, Error> {
         let services = self.get_chars_stream().await?;
@@ -103,7 +107,11 @@ impl Characteristic {
             Ok(u) => u,
             Err(_) => return Ok(None),
         };
-        Ok(Some(Self { conn, path: child, uuid }))
+        Ok(Some(Self {
+            conn,
+            path: child,
+            uuid,
+        }))
     }
 
     pub async fn get_descriptors(&self) -> Result<Vec<Descriptor>, Error> {
@@ -345,6 +353,10 @@ impl Descriptor {
             Ok(u) => u,
             Err(_) => return Ok(None),
         };
-        Ok(Some(Self { conn, path: child, uuid }))
+        Ok(Some(Self {
+            conn,
+            path: child,
+            uuid,
+        }))
     }
 }

@@ -32,15 +32,15 @@ impl Descriptor {
     pub fn uuid(&self) -> UUID {
         self.uuid
     }
-	pub(super) fn start_worker(
-		mut self,
+    pub(super) fn start_worker(
+        mut self,
         conn: &Arc<RpcConn>,
         path: ObjectPathBuf,
-        filter: Option<Arc<str>>
-	) -> Worker {
+        filter: Option<Arc<str>>,
+    ) -> Worker {
         let (sender, msg_recv) = bounded(8);
-		let conn = conn.clone();
-		let handle = spawn(async move {
+        let conn = conn.clone();
+        let handle = spawn(async move {
             let call_recv = conn.get_call_recv(&*path).await.unwrap();
             let mut call_fut = call_recv.recv();
             let mut msg_fut = msg_recv.recv();
@@ -48,10 +48,10 @@ impl Descriptor {
                 match select(msg_fut, call_fut).await {
                     Either::Left((msg, call_f)) => {
                         match msg? {
-							WorkerMsg::Unregister=> break,
-							WorkerMsg::Update(vf, _) => {
-								self.value = vf;
-							}
+                            WorkerMsg::Unregister => break,
+                            WorkerMsg::Update(vf, _) => {
+                                self.value = vf;
+                            }
                             WorkerMsg::Get(sender) => {
                                 sender.send(self.value.to_value())?;
                             }
@@ -61,7 +61,7 @@ impl Descriptor {
                             WorkerMsg::ObjMgr(sender) => {
                                 sender.send((path.clone(), self.get_all_interfaces(&path)))?;
                             }
-							WorkerMsg::Notify(_) => unreachable!()
+                            _ => unreachable!(),
                         }
                         call_fut = call_f;
                         msg_fut = msg_recv.recv();
@@ -80,12 +80,9 @@ impl Descriptor {
                 }
             }
             Ok(WorkerJoin::Desc(self))
-		});
-		Worker {
-			handle,
-			sender
-		}
-	}
+        });
+        Worker { handle, sender }
+    }
     fn handle_call(&mut self, call: &MarshalledMessage) -> MarshalledMessage {
         let interface = call.dynheader.interface.as_ref().unwrap();
         match &**interface {

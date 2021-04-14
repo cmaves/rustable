@@ -126,13 +126,15 @@ pub trait Introspectable {
     fn introspectable_str(&self) -> String;
 }
 
-use xml::reader::{EventReader, XmlEvent, Error as XmlError};
+use xml::reader::{Error as XmlError, EventReader, XmlEvent};
 fn ignore_xml_tree(reader: &mut EventReader<&[u8]>, name: &str) -> Result<(), XmlError> {
     loop {
         match reader.next()? {
-            XmlEvent::StartElement{name, ..} => ignore_xml_tree(reader, &name.local_name)?,
-            XmlEvent::EndElement{name: e_name, ..} if e_name.local_name == name => return Ok(()),
-            XmlEvent::EndElement{..}|XmlEvent::StartDocument{..} | XmlEvent::EndDocument{..} => unreachable!(),
+            XmlEvent::StartElement { name, .. } => ignore_xml_tree(reader, &name.local_name)?,
+            XmlEvent::EndElement { name: e_name, .. } if e_name.local_name == name => return Ok(()),
+            XmlEvent::EndElement { .. }
+            | XmlEvent::StartDocument { .. }
+            | XmlEvent::EndDocument { .. } => unreachable!(),
             _ => {}
         }
     }
@@ -155,15 +157,17 @@ pub async fn get_children<S: AsRef<str>, P: AsRef<ObjectPath>>(
     let res = conn.send_msg_with_reply(&call).await?.await?;
     let s: &str = res.body.parser().get().map_err(invalid_introspect)?;
     let mut reader = EventReader::from_str(s);
-    if !matches!(reader.next(), Ok(XmlEvent::StartDocument {..})) {
+    if !matches!(reader.next(), Ok(XmlEvent::StartDocument { .. })) {
         unimplemented!();
     }
     loop {
         let next = reader.next();
         match &next {
             Ok(XmlEvent::StartElement { name, .. }) if name.local_name == "node" => break,
-            Ok(XmlEvent::StartElement{name, ..}) => ignore_xml_tree(&mut reader, &name.local_name).map_err(invalid_introspect)?,
-            Ok(XmlEvent::EndDocument{..}) => return Err(invalid_introspect(())),
+            Ok(XmlEvent::StartElement { name, .. }) => {
+                ignore_xml_tree(&mut reader, &name.local_name).map_err(invalid_introspect)?
+            }
+            Ok(XmlEvent::EndDocument { .. }) => return Err(invalid_introspect(())),
             _ => {}
         }
     }
@@ -171,21 +175,29 @@ pub async fn get_children<S: AsRef<str>, P: AsRef<ObjectPath>>(
     loop {
         let next = reader.next();
         match &next {
-            Ok(XmlEvent::StartElement { name, attributes, ..}) if name.local_name == "node" => {
-                let child_name = match attributes.iter().find(|attr| attr.name.local_name == "name")
+            Ok(XmlEvent::StartElement {
+                name, attributes, ..
+            }) if name.local_name == "node" => {
+                let child_name = match attributes
+                    .iter()
+                    .find(|attr| attr.name.local_name == "name")
                     .map(|attr| &attr.value)
                 {
                     Some(n) => n,
-                    None => continue
+                    None => continue,
                 };
                 let mut child_path = ObjectPathBuf::with_capacity(path.len() + child_name.len());
                 child_path.push_path(&path);
-                child_path.push_path_checked(child_name).map_err(invalid_introspect)?;
+                child_path
+                    .push_path_checked(child_name)
+                    .map_err(invalid_introspect)?;
                 children.push(child_path);
                 ignore_xml_tree(&mut reader, "node").map_err(invalid_introspect)?;
-            },
-            Ok(XmlEvent::StartElement{name, ..}) => ignore_xml_tree(&mut reader, &name.local_name).map_err(invalid_introspect)?,
-            Ok(XmlEvent::EndElement {..}) => break,
+            }
+            Ok(XmlEvent::StartElement { name, .. }) => {
+                ignore_xml_tree(&mut reader, &name.local_name).map_err(invalid_introspect)?
+            }
+            Ok(XmlEvent::EndElement { .. }) => break,
             _ => {}
         }
     }

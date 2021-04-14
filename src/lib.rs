@@ -485,9 +485,9 @@ impl Adapter {
         let msg = self.conn.send_msg_with_reply(&call).await?.await?;
         let res_var: BluezOptions = is_msg_err(&msg)?;
         let res_mac = match res_var {
-            BluezOptions::Str(mac) => MAC::from_str(mac).map_err(|_| 
-                Error::Bluez(format!("Invalid MAC received back: {}", mac)))?,
-            _ => return Err(Error::Bluez(format!("Invalid type received for MAC.")))
+            BluezOptions::Str(mac) => MAC::from_str(mac)
+                .map_err(|_| Error::Bluez(format!("Invalid MAC received back: {}", mac)))?,
+            _ => return Err(Error::Bluez(format!("Invalid type received for MAC."))),
         };
         if res_mac != mac {
             return Err(Error::Bluez(format!(
