@@ -380,8 +380,15 @@ impl ChrcData {
         if !self.flags.notify {
             return Ok(call.dynheader.make_error_response("PermissionDenied", None));
         }
-        if !matches!(self.notify, Notify::None) {
-            return Ok(call.dynheader.make_error_response("AlreadyAcquired", None));
+        // Check if notify fd has hung-up and it trying to get a new fd.
+        match &self.notify {
+            Notify::None => {}
+            Notify::Socket(sock, _) if is_hung_up(sock)? => {
+                self.notify = Notify::None
+            },
+            Notify::Signal | Notify::Socket(_, _) => {
+                return Ok(call.dynheader.make_error_response("AlreadyAcquired", None));
+            }
         }
         let options: HashMap<&str, BluezOptions> = match call.body.parser().get() {
             Ok(o) => o,
