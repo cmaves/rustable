@@ -110,9 +110,9 @@ impl Application {
             conn,
         }
     }
-    pub fn new(hci: &Adapter, base_path: &str) -> Result<Self, Error> {
+    pub fn new(hci: &Adapter, base_path: &str) -> Self {
         let conn = hci.conn.clone();
-        Ok(Self::new_with_conn(hci, base_path, conn))
+        Self::new_with_conn(hci, base_path, conn)
     }
     pub async fn set_dest(&mut self, dest: Option<String>) -> Result<(), Error> {
         if self.dest == dest {
