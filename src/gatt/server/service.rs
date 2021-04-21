@@ -10,11 +10,13 @@ pub struct Service {
     chars: Vec<Characteristic>,
     handle: u16,
     uuid: UUID,
+    primary: bool
 }
 struct ServData {
     handle: u16,
     uuid: UUID,
     children: usize,
+    primary: bool
 }
 impl ServData {
     fn handle_call(&mut self, call: &MarshalledMessage) -> MarshalledMessage {
@@ -38,9 +40,10 @@ impl ServData {
     }
 }
 impl Service {
-    pub fn new(uuid: UUID) -> Self {
+    pub fn new(uuid: UUID, primary: bool) -> Self {
         Self {
             uuid,
+            primary,
             handle: 0,
             chars: Vec::new(),
         }
@@ -85,6 +88,7 @@ impl Service {
         let mut serv_data = ServData {
             uuid: self.uuid,
             handle: self.handle,
+            primary: self.primary,
             children,
         };
         let handle = spawn(async move {
@@ -142,7 +146,7 @@ impl Properties for ServData {
         }
         match prop {
             UUID_STR => Ok(BluezOptions::OwnedStr(self.uuid.to_string())),
-            PRY_STR => Ok(BluezOptions::Bool(true)),
+            PRY_STR => Ok(BluezOptions::Bool(self.primary)),
             HANDLE_STR => Ok(BluezOptions::U16(self.handle)),
             _ => Err(PropError::PropertyNotFound),
         }
