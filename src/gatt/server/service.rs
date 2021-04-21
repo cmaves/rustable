@@ -10,13 +10,13 @@ pub struct Service {
     chars: Vec<Characteristic>,
     handle: u16,
     uuid: UUID,
-    primary: bool
+    primary: bool,
 }
 struct ServData {
     handle: u16,
     uuid: UUID,
     children: usize,
-    primary: bool
+    primary: bool,
 }
 impl ServData {
     fn handle_call(&mut self, call: &MarshalledMessage) -> MarshalledMessage {

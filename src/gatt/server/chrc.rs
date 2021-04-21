@@ -7,8 +7,10 @@ use std::collections::HashMap;
 use std::io::ErrorKind;
 use std::num::NonZeroU16;
 use std::os::unix::io::{AsRawFd, FromRawFd};
+use std::pin::Pin;
 
 use super::*;
+use crate::drop_select;
 use crate::properties::{PropError, Properties};
 use async_rustbus::rustbus_core;
 use async_rustbus::RpcConn;
@@ -20,12 +22,20 @@ enum Notify {
     Signal,
     None,
 }
+pub enum ShouldNotify {
+    Yes,
+    WithSpecialValue(AttValue),
+    No,
+}
 pub struct Characteristic {
     descs: Vec<Descriptor>,
     value: ValOrFn,
     uuid: UUID,
     flags: CharFlags,
     write_callback: Box<dyn FnMut(AttValue) -> (Option<ValOrFn>, bool) + Send + Sync + 'static>,
+    notify_cb: Box<
+        dyn FnMut() -> Pin<Box<dyn Future<Output = ShouldNotify> + Send>> + Send + Sync + 'static,
+    >,
     handle: u16,
 }
 impl Characteristic {
@@ -37,6 +47,7 @@ impl Characteristic {
             handle: 0,
             value: ValOrFn::default(),
             write_callback: Box::new(|val| (Some(ValOrFn::Value(val)), false)),
+            notify_cb: Box::new(|| futures::future::pending().boxed()),
         }
     }
     pub fn set_handle(&mut self, handle: Option<NonZeroU16>) {
@@ -70,6 +81,12 @@ impl Characteristic {
     ) {
         self.write_callback = Box::new(cb);
     }
+    pub fn set_notify_cb<C>(&mut self, cb: C)
+    where
+        C: FnMut() -> Pin<Box<dyn Future<Output = ShouldNotify> + Send>> + Send + Sync + 'static,
+    {
+        self.notify_cb = Box::new(cb);
+    }
     fn find_desc_unsorted(&mut self, uuid: UUID) -> Option<&mut Descriptor> {
         self.descs.iter_mut().find(|d| d.uuid() == uuid)
     }
@@ -83,32 +100,29 @@ impl Characteristic {
         children: usize,
         filter: Option<Arc<str>>,
     ) -> Worker {
-        let (sender, recv) = bounded(8);
+        let (sender, recv) = bounded::<WorkerMsg>(8);
         let conn = conn.clone();
         let mut chrc_data = ChrcData::new(self, children);
         let handle = spawn(async move {
             let recv_fut = recv.recv();
+            let not_fut = (chrc_data.notify_cb)();
+            let mut recv_not_fut = select(recv_fut, not_fut);
             let call_recv = conn.get_call_recv(path.as_str()).await.unwrap();
-            let call_fut = call_recv.recv();
-            let mut msg_select = select(recv_fut, call_fut);
             loop {
                 // This two-staged matches are done to satisfying,
                 // the borrow-checker.
-                let either = unsafe {
+                let either = {
+                    let call_fut = call_recv.recv();
                     let write_fut = chrc_data.check_for_write();
-                    //SAFETY: write_fut is dropped below without below
-                    pin_mut!(write_fut);
-                    //let pin_wf = Pin::new_unchecked(&mut write_fut);
-                    let either = match select(msg_select, write_fut).await {
-                        Either::Left((msg_either, _)) => Either::Left(msg_either),
+                    let call_write = drop_select(write_fut, call_fut);
+                    pin_mut!(call_write);
+                    match select(recv_not_fut, call_write).await {
+                        Either::Left((call_not, _)) => Either::Left(call_not),
                         Either::Right(res) => Either::Right(res),
-                    };
-                    // Dont this should be the only use of write_fut;
-                    //drop(write_fut);
-                    either
+                    }
                 };
                 match either {
-                    Either::Left(Either::Left((msg, call_f))) => {
+                    Either::Left(Either::Left((msg, not_fut))) => {
                         let msg = msg?;
                         match msg {
                             WorkerMsg::Unregister => break,
@@ -144,19 +158,21 @@ impl Characteristic {
                                 sender.send(signaling).ok();
                             }
                         }
-                        msg_select = select(recv.recv(), call_f);
+                        recv_not_fut = select(recv.recv(), not_fut);
                     }
-                    Either::Left(Either::Right((call, recv_f))) => {
-                        let call = call?;
-                        let res = if is_msg_bluez(&call, filter.as_deref()) {
-                            chrc_data.handle_call(&call, &conn).await?
-                        } else {
-                            call.dynheader.make_error_response("PermissionDenied", None)
-                        };
-                        conn.send_msg_no_reply(&res).await?;
-                        msg_select = select(recv_f, call_recv.recv());
+                    Either::Left(Either::Right((should_not, recv_f))) => {
+                        match should_not {
+                            ShouldNotify::Yes => {
+                                chrc_data.notify(&path, &conn, None).await?;
+                            }
+                            ShouldNotify::WithSpecialValue(val) => {
+                                chrc_data.notify(&path, &conn, Some(val)).await?;
+                            }
+                            ShouldNotify::No => {}
+                        }
+                        recv_not_fut = select(recv_f, (chrc_data.notify_cb)());
                     }
-                    Either::Right((res, msg_s)) => {
+                    Either::Right((Either::Left(res), recv_not_f)) => {
                         match res {
                             Ok(res) => chrc_data.handle_write(&conn, &path, res).await?,
                             Err(e) if e.kind() == ErrorKind::NotConnected => {
@@ -164,8 +180,19 @@ impl Characteristic {
                             }
                             Err(e) => return Err(e.into()),
                         }
-                        msg_select = msg_s;
+                        recv_not_fut = recv_not_f;
                     }
+                    Either::Right((Either::Right(call), recv_not_f)) => {
+                        let call = call?;
+                        let res = if is_msg_bluez(&call, filter.as_deref()) {
+                            chrc_data.handle_call(&call, &conn).await?
+                        } else {
+                            call.dynheader.make_error_response("PermissionDenied", None)
+                        };
+                        conn.send_msg_no_reply(&res).await?;
+                        recv_not_fut = recv_not_f;
+                    } /*
+                       */
                 }
             }
             Ok(WorkerJoin::Chrc(chrc_data.into_chrc()))
@@ -180,6 +207,9 @@ struct ChrcData {
     notify: Notify,
     flags: CharFlags,
     write_callback: Box<dyn FnMut(AttValue) -> (Option<ValOrFn>, bool) + Send + Sync + 'static>,
+    notify_cb: Box<
+        dyn FnMut() -> Pin<Box<dyn Future<Output = ShouldNotify> + Send>> + Send + Sync + 'static,
+    >,
     write_fd: Option<(UnixDatagram, usize)>,
     handle: u16,
 }
@@ -192,6 +222,7 @@ impl ChrcData {
             uuid: chrc.uuid,
             flags: chrc.flags,
             write_callback: chrc.write_callback,
+            notify_cb: chrc.notify_cb,
             notify: Notify::None,
             write_fd: None,
         }
@@ -203,6 +234,7 @@ impl ChrcData {
             value: self.value,
             flags: self.flags,
             write_callback: self.write_callback,
+            notify_cb: self.notify_cb,
             descs: Vec::new(),
         }
     }
@@ -392,9 +424,7 @@ impl ChrcData {
         // Check if notify fd has hung-up and it trying to get a new fd.
         match &self.notify {
             Notify::None => {}
-            Notify::Socket(sock, _) if is_hung_up(sock)? => {
-                self.notify = Notify::None
-            },
+            Notify::Socket(sock, _) if is_hung_up(sock)? => self.notify = Notify::None,
             Notify::Signal | Notify::Socket(_, _) => {
                 return Ok(call.dynheader.make_error_response("AlreadyAcquired", None));
             }

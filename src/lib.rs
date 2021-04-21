@@ -9,6 +9,8 @@ use std::sync::Arc;
 use async_rustbus::rustbus_core;
 use async_rustbus::RpcConn;
 use async_std::channel::{RecvError, SendError};
+use futures::future::{select, Either};
+use futures::pin_mut;
 use futures::prelude::*;
 use futures::stream::FuturesUnordered;
 
@@ -613,6 +615,26 @@ mod interfaces {
     }
 }
 
+fn factor_fut<A, B>(either: Either<(A::Output, B), (B::Output, A)>) -> Either<A::Output, B::Output>
+where
+    A: Future,
+    B: Future,
+{
+    match either {
+        Either::Left((out, _)) => Either::Left(out),
+        Either::Right((out, _)) => Either::Right(out),
+    }
+}
+
+async fn drop_select<A, B>(left: A, right: B) -> Either<A::Output, B::Output>
+where
+    A: Future,
+    B: Future,
+{
+    pin_mut!(left);
+    pin_mut!(right);
+    factor_fut(select(left, right).await)
+}
 #[cfg(test)]
 mod tests {
     use super::{MAC, UUID};

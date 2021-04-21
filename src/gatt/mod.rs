@@ -79,11 +79,11 @@ impl AttValue {
         }
         self.len = end;
     }
-	pub fn push(&mut self, byte: u8) {
-		assert!(self.len < 512);
-		self.buf[self.len] = MaybeUninit::new(byte);
-		self.len += 1;
-	}
+    pub fn push(&mut self, byte: u8) {
+        assert!(self.len < 512);
+        self.buf[self.len] = MaybeUninit::new(byte);
+        self.len += 1;
+    }
     pub fn extend_from_slice(&mut self, slice: &[u8]) {
         let mut iter = slice.iter().map(|x| *x);
         self.resize_with(self.len + slice.len(), || iter.next().unwrap());

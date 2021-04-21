@@ -16,7 +16,7 @@ mod one_time;
 use one_time::{one_time_channel, OneSender};
 
 mod chrc;
-pub use chrc::Characteristic;
+pub use chrc::{Characteristic, ShouldNotify};
 
 mod service;
 pub use service::Service;
