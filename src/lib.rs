@@ -487,7 +487,8 @@ impl Adapter {
         let path = format!("{}/{}", self.path, dev_str);
         let call = get_prop_call(&path, "org.bluez", BLUEZ_DEV_IF, "Address");
         let msg = self.conn.send_msg_with_reply(&call).await?.await?;
-        let res_var: BluezOptions = is_msg_err(&msg).map_err(Error::UnknownDevice(mac))?;
+        let res_var: BluezOptions = is_msg_err(&msg)
+			.map_err(|_| Error::UnknownDevice(mac))?;
         let res_mac = match res_var {
             BluezOptions::Str(mac) => MAC::from_str(mac)
                 .map_err(|_| Error::Bluez(format!("Invalid MAC received back: {}", mac)))?,
