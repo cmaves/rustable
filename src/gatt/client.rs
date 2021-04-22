@@ -7,6 +7,7 @@ use crate::interfaces::get_prop_call;
 use crate::introspect::get_children;
 use crate::*;
 
+use futures::future::try_join_all;
 use rustbus_core::path::ObjectPathBuf;
 use rustbus_core::wire::unixfd::UnixFd;
 
@@ -79,6 +80,18 @@ impl Service {
             }
         }
         Ok(None)
+    }
+    pub async fn get_includes(&self) -> Result<Vec<UUID>, Error> {
+        let call = get_prop_call(self.path.clone(), BLUEZ_DEST, BLUEZ_SER_IF, "Includes");
+        let res = self.conn.send_msg_with_reply(&call).await?.await?;
+        let paths: Vec<&ObjectPath> = is_msg_err(&res)?;
+        let uuid_futs = paths.into_iter().map(|p: &ObjectPath| async move {
+            let call = get_prop_call(p.to_owned(), BLUEZ_DEST, BLUEZ_SER_IF, "UUID");
+            let res = self.conn.send_msg_with_reply(&call).await?.await?;
+            let uuid: UUID = is_msg_err(&res)?;
+            Ok(uuid)
+        });
+        try_join_all(uuid_futs).await
     }
 }
 
