@@ -294,7 +294,8 @@ impl std::error::Error for Error {
             | Error::SocketHungUp
             | Error::UnknownServ(_)
             | Error::UnknownChrc(_, _)
-            | Error::UnknownDesc(_, _, _) => None,
+            | Error::UnknownDesc(_, _, _)
+            | Error::UnknownDevice(_) => None,
             Error::Io(e) => Some(e),
         }
     }
@@ -487,8 +488,7 @@ impl Adapter {
         let path = format!("{}/{}", self.path, dev_str);
         let call = get_prop_call(&path, "org.bluez", BLUEZ_DEV_IF, "Address");
         let msg = self.conn.send_msg_with_reply(&call).await?.await?;
-        let res_var: BluezOptions = is_msg_err(&msg)
-			.map_err(|_| Error::UnknownDevice(mac))?;
+        let res_var: BluezOptions = is_msg_err(&msg).map_err(|_| Error::UnknownDevice(mac))?;
         let res_mac = match res_var {
             BluezOptions::Str(mac) => MAC::from_str(mac)
                 .map_err(|_| Error::Bluez(format!("Invalid MAC received back: {}", mac)))?,
