@@ -8,6 +8,7 @@ use async_rustbus::RpcConn;
 
 pub struct Service {
     chars: Vec<Characteristic>,
+    includes: Vec<UUID>,
     handle: u16,
     uuid: UUID,
     primary: bool,
@@ -16,6 +17,7 @@ struct ServData {
     handle: u16,
     uuid: UUID,
     children: usize,
+    includes: Vec<ObjectPathBuf>,
     primary: bool,
 }
 impl ServData {
@@ -46,6 +48,7 @@ impl Service {
             primary,
             handle: 0,
             chars: Vec::new(),
+            includes: Vec::new(),
         }
     }
     pub fn set_handle(&mut self, handle: Option<NonZeroU16>) {
@@ -55,6 +58,19 @@ impl Service {
         match self.find_char_unsorted(character.uuid()) {
             Some(c) => std::mem::swap(c, &mut character),
             None => self.chars.push(character),
+        }
+    }
+    pub fn includes(&self) -> &[UUID] {
+        &self.includes
+    }
+    pub fn add_includes(&mut self, service: UUID) {
+        if !self.includes.contains(&service) {
+            self.includes.push(service);
+        }
+    }
+    pub fn remove_includes(&mut self, service: UUID) {
+        if let Some(idx) = self.includes.iter().position(|u| *u == service) {
+            self.includes.remove(idx);
         }
     }
     pub fn remove_char(&mut self, uuid: UUID) -> Option<Characteristic> {
@@ -79,16 +95,18 @@ impl Service {
     pub(super) fn start_worker(
         self,
         conn: &Arc<RpcConn>,
-        path: ObjectPathBuf,
+        path: &ObjectPath,
         children: usize,
         filter: Option<Arc<str>>,
     ) -> Worker {
+        let path = path.to_owned();
         let (sender, recv) = bounded(8);
         let conn = conn.clone();
         let mut serv_data = ServData {
             uuid: self.uuid,
             handle: self.handle,
             primary: self.primary,
+            includes: Vec::new(),
             children,
         };
         let handle = spawn(async move {
@@ -105,6 +123,9 @@ impl Service {
                             }
                             WorkerMsg::GetHandle(sender) => {
                                 sender.send(NonZeroU16::new(self.handle).unwrap())?;
+                            }
+                            WorkerMsg::IncludedPaths(includes) => {
+                                serv_data.includes = includes;
                             }
                             _ => unreachable!(),
                         }
@@ -134,7 +155,7 @@ impl Service {
 }*/
 impl Properties for ServData {
     const INTERFACES: &'static [(&'static str, &'static [&'static str])] =
-        &[(BLUEZ_SER_IF, &[UUID_STR, PRY_STR, HANDLE_STR])];
+        &[(BLUEZ_SER_IF, &[UUID_STR, PRY_STR, HANDLE_STR, INC_STR])];
     fn get_inner(
         &mut self,
         _path: &ObjectPath,
@@ -148,6 +169,7 @@ impl Properties for ServData {
             UUID_STR => Ok(BluezOptions::OwnedStr(self.uuid.to_string())),
             PRY_STR => Ok(BluezOptions::Bool(self.primary)),
             HANDLE_STR => Ok(BluezOptions::U16(self.handle)),
+            INC_STR => Ok(BluezOptions::OwnedPaths(self.includes.clone())),
             _ => Err(PropError::PropertyNotFound),
         }
     }

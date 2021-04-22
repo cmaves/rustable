@@ -212,10 +212,12 @@ impl Application {
         let call_recv = self.conn.get_call_recv(&*self.base_path).await.unwrap();
         let mut workers = HashMap::new();
         let serv_cnt = self.services.len();
+        let mut includes = Vec::new(); // used to setup  service Includes property
         for (i, mut serv) in self.services.drain(..).enumerate() {
             let serv_path = format!("{}/service{:04x}", self.base_path, i);
             let serv_path = ObjectPathBuf::try_from(serv_path).unwrap();
             let serv_uuid = serv.uuid();
+            includes.push((serv_uuid, Vec::<UUID>::from(serv.includes())));
             self.conn
                 .insert_call_path(&*serv_path, CallAction::Exact)
                 .await
@@ -240,18 +242,32 @@ impl Application {
                         .insert_call_path(&*desc_path, CallAction::Exact)
                         .await
                         .unwrap();
-                    let desc_worker = desc.start_worker(&self.conn, desc_path, filter.clone());
-                    workers.insert((serv_uuid, chrc_uuid, desc_uuid), desc_worker);
+                    let desc_worker = desc.start_worker(&self.conn, &desc_path, filter.clone());
+                    workers.insert((serv_uuid, chrc_uuid, desc_uuid), (desc_worker, desc_path));
                 }
-                let chrc_worker = chrc.start_worker(&self.conn, chrc_path, d_cnt, filter.clone());
-                workers.insert((serv_uuid, chrc_uuid, UUID(0)), chrc_worker);
+                let chrc_worker = chrc.start_worker(&self.conn, &chrc_path, d_cnt, filter.clone());
+                workers.insert((serv_uuid, chrc_uuid, UUID(0)), (chrc_worker, chrc_path));
             }
-            let serv_worker = serv.start_worker(&self.conn, serv_path, c_cnt, filter.clone());
-            workers.insert((serv_uuid, UUID(0), UUID(0)), serv_worker);
+            let serv_worker = serv.start_worker(&self.conn, &serv_path, c_cnt, filter.clone());
+            workers.insert((serv_uuid, UUID(0), UUID(0)), (serv_worker, serv_path));
+        }
+        for (serv_uuid, included) in includes {
+            // serv_worker
+            let paths = included
+                .into_iter()
+                .map(|uuid| workers[&(uuid, UUID(0), UUID(0))].1.to_owned())
+                .collect();
+            let msg = WorkerMsg::IncludedPaths(paths);
+            workers[&(serv_uuid, UUID(0), UUID(0))]
+                .0
+                .sender
+                .send(msg)
+                .await
+                .unwrap();
         }
         let senders = workers
             .values()
-            .map(|worker| worker.sender.clone())
+            .map(|(worker, _)| worker.sender.clone())
             .collect();
         let mut res_fut = self.begin_reg_call().await?;
 
@@ -300,6 +316,7 @@ impl Application {
             Ok(WorkerJoin::App(self))
         });
         let app_worker = Worker { handle, sender };
+        let mut workers: HashMap<_, _> = workers.into_iter().map(|(k, (v, _))| (k, v)).collect();
         workers.insert((UUID(0), UUID(0), UUID(0)), app_worker);
         Ok(AppWorker { workers })
     }
@@ -523,6 +540,7 @@ enum WorkerMsg {
     Notifying(OneSender<bool>),
     NotifyAcquired(OneSender<bool>),
     NotifyingSignal(OneSender<bool>),
+    IncludedPaths(Vec<ObjectPathBuf>),
     ObjMgr(
         OneSender<(
             ObjectPathBuf,

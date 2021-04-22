@@ -35,9 +35,10 @@ impl Descriptor {
     pub(super) fn start_worker(
         mut self,
         conn: &Arc<RpcConn>,
-        path: ObjectPathBuf,
+        path: &ObjectPath,
         filter: Option<Arc<str>>,
     ) -> Worker {
+        let path = path.to_owned();
         let (sender, msg_recv) = bounded(8);
         let conn = conn.clone();
         let handle = spawn(async move {

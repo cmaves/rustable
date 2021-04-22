@@ -43,6 +43,7 @@ dbus_variant_var!(BluezOptions, Bool => bool;
                                 OwnedPath => ObjectPathBuf;
                                 Buf => &'buf [u8];
                                 OwnedBuf => Vec<u8>;
+                                OwnedPaths => Vec<ObjectPathBuf>;
                                 Flags => Vec<&'buf str>;
                                 UUIDs => Vec<UUID>;
                                 DataMap => HashMap<String, Vec<u8>>;

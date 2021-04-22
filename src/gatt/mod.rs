@@ -18,6 +18,7 @@ pub mod server;
 const UUID_STR: &'static str = "UUID";
 const PRY_STR: &'static str = "Primary";
 const HANDLE_STR: &'static str = "Handle";
+const INC_STR: &'static str = "Includes";
 const SERV_STR: &'static str = "Service";
 const CHAR_STR: &'static str = "Characteristic";
 const NO_STR: &'static str = "Notifying";

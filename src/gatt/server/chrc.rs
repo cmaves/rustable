@@ -96,10 +96,11 @@ impl Characteristic {
     pub(super) fn start_worker(
         self,
         conn: &Arc<RpcConn>,
-        path: ObjectPathBuf,
+        path: &ObjectPath,
         children: usize,
         filter: Option<Arc<str>>,
     ) -> Worker {
+        let path = path.to_owned();
         let (sender, recv) = bounded::<WorkerMsg>(8);
         let conn = conn.clone();
         let mut chrc_data = ChrcData::new(self, children);
@@ -157,6 +158,7 @@ impl Characteristic {
                                 let signaling = matches!(chrc_data.notify, Notify::Signal);
                                 sender.send(signaling).ok();
                             }
+                            _ => unreachable!(),
                         }
                         recv_not_fut = select(recv.recv(), not_fut);
                     }
