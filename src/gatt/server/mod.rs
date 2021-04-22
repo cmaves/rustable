@@ -217,7 +217,9 @@ impl Application {
             let serv_path = format!("{}/service{:04x}", self.base_path, i);
             let serv_path = ObjectPathBuf::try_from(serv_path).unwrap();
             let serv_uuid = serv.uuid();
-            includes.push((serv_uuid, Vec::<UUID>::from(serv.includes())));
+            if !serv.includes().is_empty() {
+                includes.push((serv_uuid, Vec::<UUID>::from(serv.includes())));
+            }
             self.conn
                 .insert_call_path(&*serv_path, CallAction::Exact)
                 .await
