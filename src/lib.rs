@@ -537,16 +537,16 @@ impl Device {
 
         Ok(children)
     }
-    pub async fn get_service(&self, uuid: UUID) -> Result<Option<gatt::client::Service>, Error> {
+    pub async fn get_service(&self, uuid: UUID) -> Result<gatt::client::Service, Error> {
         let mut services = self.get_services_stream().await?;
         while let Some(res) = services.next().await {
             if let Some(service) = res? {
                 if service.uuid() == uuid {
-                    return Ok(Some(service));
+                    return Ok(service);
                 }
             }
         }
-        Ok(None)
+		Err(Error::UnknownServ(uuid))
     }
 }
 

@@ -70,26 +70,31 @@ impl Service {
 
         Ok(children)
     }
-    pub async fn get_characteristic(&self, uuid: UUID) -> Result<Option<Characteristic>, Error> {
+    pub async fn get_characteristic(&self, uuid: UUID) -> Result<Characteristic, Error> {
         let mut characters = self.get_chars_stream().await?;
         while let Some(res) = characters.next().await {
             if let Some(character) = res? {
                 if character.uuid() == uuid {
-                    return Ok(Some(character));
+                    return Ok(character);
                 }
             }
         }
-        Ok(None)
+		Err(Error::UnknownChrc(self.uuid, uuid))
     }
-    pub async fn get_includes(&self) -> Result<Vec<UUID>, Error> {
+    pub async fn get_includes(&self) -> Result<Vec<Self>, Error> {
         let call = get_prop_call(self.path.clone(), BLUEZ_DEST, BLUEZ_SER_IF, "Includes");
         let res = self.conn.send_msg_with_reply(&call).await?.await?;
         let paths: Vec<&ObjectPath> = is_msg_err(&res)?;
         let uuid_futs = paths.into_iter().map(|p: &ObjectPath| async move {
-            let call = get_prop_call(p.to_owned(), BLUEZ_DEST, BLUEZ_SER_IF, "UUID");
+			let path = p.to_owned();
+            let call = get_prop_call(path.clone(), BLUEZ_DEST, BLUEZ_SER_IF, "UUID");
             let res = self.conn.send_msg_with_reply(&call).await?.await?;
             let uuid: UUID = is_msg_err(&res)?;
-            Ok(uuid)
+			Ok(Self {
+				conn: self.conn.clone(),
+				path,
+				uuid
+			})
         });
         try_join_all(uuid_futs).await
     }
