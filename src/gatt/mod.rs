@@ -42,9 +42,9 @@ impl Debug for AttValue {
     }
 }
 impl PartialEq<AttValue> for AttValue {
-	fn eq(&self, other: &AttValue) -> bool {
-		self.as_slice() == other.as_slice()
-	}
+    fn eq(&self, other: &AttValue) -> bool {
+        self.as_slice() == other.as_slice()
+    }
 }
 impl Eq for AttValue {}
 impl AttValue {

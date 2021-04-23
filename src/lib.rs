@@ -49,9 +49,10 @@ dbus_variant_var!(BluezOptions, Bool => bool;
                                 DataMap => HashMap<String, Vec<u8>>;
                                 UUIDMap => HashMap<UUID, Vec<u8>>
 );
-#[derive(Debug, PartialEq, Eq, Copy, Clone, PartialOrd, Ord, Hash)]
+#[derive(PartialEq, Eq, Copy, Clone, PartialOrd, Ord, Hash)]
 pub struct UUID(pub u128);
-#[derive(Debug, PartialEq, Eq, Clone, Copy, Hash)]
+
+#[derive(PartialEq, Eq, Clone, Copy, Hash)]
 pub struct MAC(u32, u16);
 
 pub const MAX_CHAR_LEN: usize = 512;
@@ -175,6 +176,13 @@ impl Display for UUID {
         )
     }
 }
+
+impl Debug for UUID {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        Display::fmt(self, f)
+    }
+}
+
 impl FromStr for MAC {
     type Err = IDParseError;
     fn from_str(s: &str) -> Result<Self, Self::Err> {
@@ -267,6 +275,12 @@ impl Display for MAC {
         )
     }
 }
+impl Debug for MAC {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        Display::fmt(self, f)
+    }
+}
+
 impl From<(u32, u16)> for MAC {
     fn from(pair: (u32, u16)) -> Self {
         MAC(pair.0, pair.1)
@@ -546,7 +560,7 @@ impl Device {
                 }
             }
         }
-		Err(Error::UnknownServ(uuid))
+        Err(Error::UnknownServ(uuid))
     }
 }
 

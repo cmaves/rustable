@@ -79,22 +79,22 @@ impl Service {
                 }
             }
         }
-		Err(Error::UnknownChrc(self.uuid, uuid))
+        Err(Error::UnknownChrc(self.uuid, uuid))
     }
     pub async fn get_includes(&self) -> Result<Vec<Self>, Error> {
         let call = get_prop_call(self.path.clone(), BLUEZ_DEST, BLUEZ_SER_IF, "Includes");
         let res = self.conn.send_msg_with_reply(&call).await?.await?;
         let paths: Vec<&ObjectPath> = is_msg_err(&res)?;
         let uuid_futs = paths.into_iter().map(|p: &ObjectPath| async move {
-			let path = p.to_owned();
+            let path = p.to_owned();
             let call = get_prop_call(path.clone(), BLUEZ_DEST, BLUEZ_SER_IF, "UUID");
             let res = self.conn.send_msg_with_reply(&call).await?.await?;
             let uuid: UUID = is_msg_err(&res)?;
-			Ok(Self {
-				conn: self.conn.clone(),
-				path,
-				uuid
-			})
+            Ok(Self {
+                conn: self.conn.clone(),
+                path,
+                uuid,
+            })
         });
         try_join_all(uuid_futs).await
     }
