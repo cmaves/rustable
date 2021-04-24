@@ -565,7 +565,7 @@ impl Device {
         Err(Error::UnknownServ(uuid))
     }
     pub async fn connected(&self) -> Result<bool, Error> {
-        let call = get_prop_call(self.path.clone(), BLUEZ_DEST, BLUEZ_ADP_IF, "Connected");
+        let call = get_prop_call(self.path.clone(), BLUEZ_DEST, BLUEZ_DEV_IF, "Connected");
         let res = self.conn.send_msg_with_reply(&call).await?.await?;
         match is_msg_err(&res) {
             Ok(BluezOptions::Bool(ret)) => Ok(ret),
