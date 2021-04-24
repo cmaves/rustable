@@ -90,15 +90,8 @@ impl Service {
             Err(e) => return Err(e),
         };
         let uuid_futs = paths.into_iter().map(|p: &ObjectPath| async move {
-            let path = p.to_owned();
-            let call = get_prop_call(path.clone(), BLUEZ_DEST, BLUEZ_SER_IF, "UUID");
-            let res = self.conn.send_msg_with_reply(&call).await?.await?;
-            let uuid: UUID = is_msg_err(&res)?;
-            Ok(Self {
-                conn: self.conn.clone(),
-                path,
-                uuid,
-            })
+            let inc_opt = Service::get_service(self.conn.clone(), p.to_owned()).await?;
+            inc_opt.ok_or_else(|| Error::Bluez(format!("Bluez returned invalid service path!")))
         });
         try_join_all(uuid_futs).await
     }
