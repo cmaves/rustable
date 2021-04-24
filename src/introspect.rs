@@ -2,7 +2,7 @@ use crate::*;
 use rustbus_core::message_builder::MarshalledMessage;
 use rustbus_core::path::{ObjectPath, ObjectPathBuf};
 use std::fmt::Write;
-pub(crate) const INTROSPECT_FMT_P1: &'static str = "<!DOCTYPE node PUBLIC \"-//freedesktop//DTD D-BUS Object Introspection 1.0//EN\" \"http://www.freedesktop.org/standards/dbus/1.0/introspect.dtd\">
+pub(crate) const INTROSPECT_FMT_P1: &str = "<!DOCTYPE node PUBLIC \"-//freedesktop//DTD D-BUS Object Introspection 1.0//EN\" \"http://www.freedesktop.org/standards/dbus/1.0/introspect.dtd\">
  <node>
 \t<interface name=\"org.freedesktop.DBus.Introspectable\">
 \t\t<method name=\"Introspect\">
@@ -10,9 +10,9 @@ pub(crate) const INTROSPECT_FMT_P1: &'static str = "<!DOCTYPE node PUBLIC \"-//f
 \t\t</method>
 \t</interface>\n";
 
-pub(crate) const INTROSPECT_FMT_P3: &'static str = " </node>";
+pub(crate) const INTROSPECT_FMT_P3: &str = " </node>";
 
-pub(crate) const PROP_STR: &'static str = "\t<interface name=\"org.freedesktop.DBus.Properties\">
+pub(crate) const PROP_STR: &str = "\t<interface name=\"org.freedesktop.DBus.Properties\">
 \t\t<method name=\"Get\">
 \t\t\t<arg name=\"interface_name\" type=\"s\" direction=\"in\"/>
 \t\t\t<arg name=\"property_name\" type=\"s\" direction=\"in\"/>
@@ -28,7 +28,7 @@ pub(crate) const PROP_STR: &'static str = "\t<interface name=\"org.freedesktop.D
 \t\t\t<arg name=\"value\" type=\"v\" direction=\"in\"/>
 \t\t</method>
 \t</interface>\n";
-pub(crate) const ADV_STR: &'static str = "\t<interface name=\"org.bluez.LEAdvertisement1\">
+pub(crate) const ADV_STR: &str = "\t<interface name=\"org.bluez.LEAdvertisement1\">
 \t\t<method name=\"Release\"/>
 \t\t<property name=\"Type\" type=\"s\" access=\"readwrite\"/>
 \t\t<property name=\"ServiceUUIDs\" type=\"as\" access=\"readwrite\"/>
@@ -38,7 +38,7 @@ pub(crate) const ADV_STR: &'static str = "\t<interface name=\"org.bluez.LEAdvert
 \t\t<property name=\"Data\" type=\"a{sv}\" access=\"readwrite\"/>
 \t\t<property name=\"Discoverable\" type=\"b\" access=\"readwrite\"/>
 \t\t<property name=\"DiscoverableTimeout\" type=\"q\" access=\"readwrite\"/>
-\t\t<property name=\"Includes\" type=\"as\" access=\"readwrite\"/>
+\t\t<property name=\"Includes\" type=\"ao\" access=\"readwrite\"/>
 \t\t<property name=\"LocalName\" type=\"s\" access=\"readwrite\"/>
 \t\t<property name=\"Appearance\" type=\"q\" access=\"readwrite\"/>
 \t\t<property name=\"Duration\" type=\"q\" access=\"readwrite\"/>
@@ -46,13 +46,14 @@ pub(crate) const ADV_STR: &'static str = "\t<interface name=\"org.bluez.LEAdvert
 \t\t<property name=\"SecondaryChannel\" type=\"s\" access=\"readwrite\"/>
 \t</interface>\n";
 //TODO: implement for ADV_STR: \t\t<property name=\"ManufacturerData\" type=\"a{sv}\" access=\"readwrite\"/>
-pub(crate) const SERVICE_STR: &'static str = "\t<interface name=\"org.bluez.GattService1\">
+pub(crate) const SERVICE_STR: &str = "\t<interface name=\"org.bluez.GattService1\">
 \t\t<property name=\"UUID\" type=\"s\" access=\"read\"/>
 \t\t<property name=\"Primary\" type=\"b\" access=\"read\"/>
 \t\t<property name=\"Device\" type=\"o\" access=\"read\"/>
 \t\t<property name=\"Handle\" type=\"q\" access=\"read\"/>
+\t\t<property name=\"Includes\" type=\"as\" access=\"read\"/>
 \t</interface>\n";
-pub(crate) const CHAR_STR: &'static str = "\t<interface name=\"org.bluez.GattCharacteristic1\">
+pub(crate) const CHAR_STR: &str = "\t<interface name=\"org.bluez.GattCharacteristic1\">
 \t\t<method name=\"ReadValue\">
 \t\t\t<arg name=\"options\" type=\"a{sv}\" direction=\"in\"/>
 \t\t\t<arg name=\"value\" type=\"ay\" direction=\"out\"/>
@@ -83,7 +84,7 @@ pub(crate) const CHAR_STR: &'static str = "\t<interface name=\"org.bluez.GattCha
 \t\t<property name=\"Flags\" type=\"as\" access=\"read\"/>
 \t\t<property name=\"Handle\" type=\"q\" access=\"readwrite\"/>
 \t</interface>\n";
-pub(crate) const DESC_STR: &'static str = "\t<interface name=\"org.bluez.GattDescriptor1\">
+pub(crate) const DESC_STR: &str = "\t<interface name=\"org.bluez.GattDescriptor1\">
 \t\t<method name=\"ReadValue\">
 \t\t\t<arg name=\"options\" type=\"a{sv}\" direction=\"in\"/>
 \t\t\t<arg name=\"value\" type=\"ay\" direction=\"out\"/>
@@ -98,7 +99,7 @@ pub(crate) const DESC_STR: &'static str = "\t<interface name=\"org.bluez.GattDes
 \t\t<property name=\"Flags\" type=\"as\" access=\"read\"/>
 \t\t<property name=\"Handle\" type=\"q\" access=\"readwrite\"/>
 \t</interface>\n";
-pub(crate) const MANGAGER_STR: &'static str = "\t<interface name=\"org.freedesktop.DBus.ObjectManager\">
+pub(crate) const MANGAGER_STR: &str = "\t<interface name=\"org.freedesktop.DBus.ObjectManager\">
 \t\t<method name=\"GetManagedObjects\">
 \t\t\t<arg type=\"a{oa{sa{sv}}}\" name=\"object_paths_interfaces_and_properties\" direction=\"out\"/>
 \t\t</method>
@@ -113,7 +114,7 @@ pub(crate) const MANGAGER_STR: &'static str = "\t<interface name=\"org.freedeskt
 \t</interface>\n";
 pub(crate) fn child_nodes<S: AsRef<str>, T: IntoIterator<Item = S>>(children: T, dst: &mut String) {
     for child in children {
-        write!(dst, "\t<node name=\"{}\"/>\n", child.as_ref()).unwrap();
+        writeln!(dst, "\t<node name=\"{}\"/>", child.as_ref()).unwrap();
     }
 }
 pub trait Introspectable {

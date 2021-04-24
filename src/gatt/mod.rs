@@ -15,17 +15,17 @@ use unmarshal::{UnmarshalContext, UnmarshalResult};
 pub mod client;
 pub mod server;
 
-const UUID_STR: &'static str = "UUID";
-const PRY_STR: &'static str = "Primary";
-const HANDLE_STR: &'static str = "Handle";
-const INC_STR: &'static str = "Includes";
-const SERV_STR: &'static str = "Service";
-const CHAR_STR: &'static str = "Characteristic";
-const NO_STR: &'static str = "Notifying";
-const NA_STR: &'static str = "NotifyAcquired";
-const VAL_STR: &'static str = "Value";
-const WA_STR: &'static str = "WriteAcquired";
-const FLAG_STR: &'static str = "Flags";
+const UUID_STR: &str = "UUID";
+const PRY_STR: &str = "Primary";
+const HANDLE_STR: &str = "Handle";
+const INC_STR: &str = "Includes";
+const SERV_STR: &str = "Service";
+const CHAR_STR: &str = "Characteristic";
+const NO_STR: &str = "Notifying";
+const NA_STR: &str = "NotifyAcquired";
+const VAL_STR: &str = "Value";
+const WA_STR: &str = "WriteAcquired";
+const FLAG_STR: &str = "Flags";
 
 /// Represents the value of a characteristic or descriptor.
 pub struct AttValue {
@@ -72,11 +72,13 @@ impl AttValue {
     }
     pub fn as_slice(&self) -> &[u8] {
         // SAFETY: MaybeUninit<u8> has same layout as u8 as as been init up to self.len
-        unsafe { std::mem::transmute(&self.buf[..self.len]) }
+        unsafe { &*(&self.buf[..self.len] as *const [std::mem::MaybeUninit<u8>] as *const [u8]) }
     }
     pub fn as_mut_slice(&mut self) -> &mut [u8] {
         // SAFETY: MaybeUninit<u8> has same layout as u8 as as been init up to self.len
-        unsafe { std::mem::transmute(&mut self.buf[..self.len]) }
+        unsafe {
+            &mut *(&mut self.buf[..self.len] as *mut [std::mem::MaybeUninit<u8>] as *mut [u8])
+        }
     }
     pub fn update(&mut self, slice: &[u8], offset: usize) {
         assert!(offset <= self.len);
@@ -92,7 +94,7 @@ impl AttValue {
         self.len += 1;
     }
     pub fn extend_from_slice(&mut self, slice: &[u8]) {
-        let mut iter = slice.iter().map(|x| *x);
+        let mut iter = slice.iter().copied();
         self.resize_with(self.len + slice.len(), || iter.next().unwrap());
     }
     pub fn remaining(&self) -> usize {

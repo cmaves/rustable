@@ -84,7 +84,11 @@ impl Service {
     pub async fn get_includes(&self) -> Result<Vec<Self>, Error> {
         let call = get_prop_call(self.path.clone(), BLUEZ_DEST, BLUEZ_SER_IF, "Includes");
         let res = self.conn.send_msg_with_reply(&call).await?.await?;
-        let paths: Vec<&ObjectPath> = is_msg_err(&res)?;
+        let paths: Vec<&ObjectPath> = match is_msg_err(&res) {
+            Ok(BluezOptions::Paths(paths)) => paths,
+            Ok(_) => return Err(Error::Dbus(format!("Variant was wrong type!"))),
+            Err(e) => return Err(e),
+        };
         let uuid_futs = paths.into_iter().map(|p: &ObjectPath| async move {
             let path = p.to_owned();
             let call = get_prop_call(path.clone(), BLUEZ_DEST, BLUEZ_SER_IF, "UUID");

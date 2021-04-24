@@ -43,6 +43,7 @@ dbus_variant_var!(BluezOptions, Bool => bool;
                                 OwnedPath => ObjectPathBuf;
                                 Buf => &'buf [u8];
                                 OwnedBuf => Vec<u8>;
+                                Paths => Vec<&'buf ObjectPath>;
                                 OwnedPaths => Vec<ObjectPathBuf>;
                                 Flags => Vec<&'buf str>;
                                 UUIDs => Vec<UUID>;
@@ -57,17 +58,17 @@ pub struct MAC(u32, u16);
 
 pub const MAX_CHAR_LEN: usize = 512;
 pub const MAX_APP_MTU: usize = 511;
-const BLUEZ_DEV_IF: &'static str = "org.bluez.Device1";
-const BLUEZ_SER_IF: &'static str = "org.bluez.GattService1";
-const BLUEZ_CHR_IF: &'static str = "org.bluez.GattCharacteristic1";
-const BLUEZ_DES_IF: &'static str = "org.bluez.GattDescriptor1";
-const BLUEZ_MGR_IF: &'static str = "org.bluez.GattManager1";
-const BLUEZ_ADV_IF: &'static str = "org.bluez.LEAdvertisement1";
-const BLUEZ_ADP_IF: &'static str = "org.bluez.Adapter1";
-const PROPS_IF: &'static str = "org.freedesktop.DBus.Properties";
-const INTRO_IF: &'static str = "org.freedesktop.DBus.Introspectable";
-const OBJMGR_IF: &'static str = "org.freedesktop.DBus.ObjectManager";
-const BLUEZ_DEST: &'static str = "org.bluez";
+const BLUEZ_DEV_IF: &str = "org.bluez.Device1";
+const BLUEZ_SER_IF: &str = "org.bluez.GattService1";
+const BLUEZ_CHR_IF: &str = "org.bluez.GattCharacteristic1";
+const BLUEZ_DES_IF: &str = "org.bluez.GattDescriptor1";
+const BLUEZ_MGR_IF: &str = "org.bluez.GattManager1";
+const BLUEZ_ADV_IF: &str = "org.bluez.LEAdvertisement1";
+const BLUEZ_ADP_IF: &str = "org.bluez.Adapter1";
+const PROPS_IF: &str = "org.freedesktop.DBus.Properties";
+const INTRO_IF: &str = "org.freedesktop.DBus.Introspectable";
+const OBJMGR_IF: &str = "org.freedesktop.DBus.ObjectManager";
+const BLUEZ_DEST: &str = "org.bluez";
 const BT_BASE_UUID: UUID = UUID(0x0000000000001000800000805F9B34FB);
 
 /// This trait creates a UUID from the implementing Type.
@@ -106,7 +107,7 @@ impl FromStr for UUID {
         let second = u128::from_str_radix(&s[9..13], 16)? << 80;
         let third = u128::from_str_radix(&s[14..18], 16)? << 64;
         let fourth = u128::from_str_radix(&s[19..23], 16)? << 48;
-        let fifth = u128::from_str_radix(&s[24..36], 16)? << 0;
+        let fifth = u128::from_str_radix(&s[24..36], 16)?;
         Ok(UUID(first | second | third | fourth | fifth))
     }
 }
@@ -234,6 +235,7 @@ impl MAC {
         //assert!(mac < 0xFFFF000000000000);
         let a = [0];
         // hacky way to panic if the value is out of range in const_fn
+        #[allow(clippy::no_effect)]
         a[((0xFFFF000000000000 & mac) >> 32) as usize];
         Self((mac >> 16) as u32, mac as u16)
     }
@@ -506,7 +508,7 @@ impl Adapter {
         let res_mac = match res_var {
             BluezOptions::Str(mac) => MAC::from_str(mac)
                 .map_err(|_| Error::Bluez(format!("Invalid MAC received back: {}", mac)))?,
-            _ => return Err(Error::Bluez(format!("Invalid type received for MAC."))),
+            _ => return Err(Error::Bluez("Invalid type received for MAC.".into())),
         };
         if res_mac != mac {
             return Err(Error::Bluez(format!(
@@ -585,11 +587,7 @@ pub fn validate_uuid(uuid: &str) -> bool {
         u128::from_str_radix(&uuid[24..36], 16)?;
         Ok(())
     };
-    if let Ok(_) = parse(uuid) {
-        true
-    } else {
-        false
-    }
+    parse(uuid).is_ok()
 }
 
 mod interfaces {

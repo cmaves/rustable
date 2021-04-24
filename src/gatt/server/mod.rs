@@ -142,6 +142,10 @@ impl Application {
         Ok(())
     }
     pub fn add_service(&mut self, mut service: Service) {
+        assert!(
+            !service.characteristics().is_empty(),
+            "Bluez doesn't handle services without chrcs correctly."
+        );
         match self.find_serv_unsorted(service.uuid()) {
             Some(old) => std::mem::swap(old, &mut service),
             None => self.services.push(service),

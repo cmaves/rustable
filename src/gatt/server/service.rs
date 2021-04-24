@@ -63,6 +63,9 @@ impl Service {
     pub fn includes(&self) -> &[UUID] {
         &self.includes
     }
+    pub fn characteristics(&self) -> &[Characteristic] {
+        &self.chars
+    }
     pub fn add_includes(&mut self, service: UUID) {
         if !self.includes.contains(&service) {
             self.includes.push(service);
