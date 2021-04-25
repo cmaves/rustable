@@ -14,6 +14,7 @@ use crate::drop_select;
 use crate::properties::{PropError, Properties};
 use async_rustbus::rustbus_core;
 use async_rustbus::RpcConn;
+use log::{info, warn};
 use rustbus_core::message_builder::MessageBuilder;
 use rustbus_core::wire::UnixFd;
 
@@ -245,16 +246,18 @@ impl ChrcData {
         path: &ObjectPath,
         conn: &RpcConn,
         opt_att: Option<AttValue>,
-    ) -> std::io::Result<()> {
+    ) -> std::io::Result<bool> {
         let att_val = opt_att.unwrap_or_else(|| self.value.to_value());
         match &self.notify {
-            Notify::None => Ok(()),
-            Notify::Socket(socket, _) => {
-                if let Err(_) = socket.send(&att_val).await {
+            Notify::None => Ok(false),
+            Notify::Socket(socket, _) => match socket.send(&att_val).await {
+                Ok(_) => Ok(true),
+                Err(e) => {
+                    info!("Write to notify fd failed: {:?}, closing socket.", e);
                     self.notify = Notify::None;
+                    Ok(false)
                 }
-                Ok(())
-            }
+            },
             Notify::Signal => {
                 let mut sig = MessageBuilder::new()
                     .signal(PROPS_IF, "PropertiesChanged", path.to_string())
@@ -266,7 +269,7 @@ impl ChrcData {
                 sig.body.push_param(BLUEZ_CHR_IF).unwrap();
                 sig.body.push_param(&map).unwrap();
                 conn.send_message(&sig).await?;
-                Ok(())
+                Ok(true)
             }
         }
     }
@@ -421,6 +424,8 @@ impl ChrcData {
     }
     fn acquire_notify(&mut self, call: &MarshalledMessage) -> std::io::Result<MarshalledMessage> {
         if !self.flags.notify {
+            // TODO: check if indication can trigger AcquireNotify call.
+            warn!("An attempt was made to AcquireNotify when notify flags isn't set.");
             return Ok(call.dynheader.make_error_response("PermissionDenied", None));
         }
         // Check if notify fd has hung-up and it trying to get a new fd.
@@ -428,6 +433,7 @@ impl ChrcData {
             Notify::None => {}
             Notify::Socket(sock, _) if is_hung_up(sock)? => self.notify = Notify::None,
             Notify::Signal | Notify::Socket(_, _) => {
+                warn!("An attempt was made to AcquireNotify when session was already in progress.");
                 return Ok(call.dynheader.make_error_response("AlreadyAcquired", None));
             }
         }
@@ -440,6 +446,12 @@ impl ChrcData {
             mtu = mtu.min(*off as usize);
         }
         let (ours, theirs) = get_sock_seqpacket()?;
+        info!(
+            "Notify acquired: mtu: {}, our fd: {}, their fd: {}",
+            mtu,
+            ours.as_raw_fd(),
+            theirs.as_raw_fd(),
+        );
         self.notify = Notify::Socket(ours, mtu);
         let mut reply = call.dynheader.make_response();
         let fd = UnixFd::new(theirs.as_raw_fd());
