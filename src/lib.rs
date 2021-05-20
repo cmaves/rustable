@@ -413,7 +413,7 @@ pub struct BluetoothService {
 impl BluetoothService {
     pub async fn from_conn(conn: Arc<RpcConn>) -> Result<Self, Error> {
         let ret = Self { conn };
-        let path: &ObjectPath = ObjectPath::new("/org/bluez").unwrap();
+        let path: &ObjectPath = ObjectPath::from_str("/org/bluez").unwrap();
         ret.get_children(path).await?; // validate that function is working
         Ok(ret)
     }
@@ -464,7 +464,7 @@ impl Adapter {
     /// Get the `MAC` of the local adapter.
     pub async fn addr(&self) -> Result<MAC, Error> {
         let call = get_prop_call(self.path.clone(), BLUEZ_DEST, BLUEZ_ADP_IF, "Address");
-        let res = self.conn.send_msg_with_reply(&call).await?.await?;
+        let res = self.conn.send_msg_w_rsp(&call).await?.await?;
         let var: BluezOptions = is_msg_err(&res)?;
         let addr_str = match var {
             BluezOptions::Str(s) => s,
@@ -485,7 +485,7 @@ impl Adapter {
             "Powered",
             BluezOptions::Bool(powered),
         );
-        let res = self.conn.send_msg_with_reply(&call).await?.await?;
+        let res = self.conn.send_msg_w_rsp(&call).await?.await?;
         is_msg_err_empty(&res)
     }
     pub fn path(&self) -> &ObjectPath {
@@ -503,7 +503,7 @@ impl Adapter {
         let dev_str = mac.to_dev_str();
         let path = format!("{}/{}", self.path, dev_str);
         let call = get_prop_call(&path, "org.bluez", BLUEZ_DEV_IF, "Address");
-        let msg = self.conn.send_msg_with_reply(&call).await?.await?;
+        let msg = self.conn.send_msg_w_rsp(&call).await?.await?;
         let res_var: BluezOptions = is_msg_err(&msg).map_err(|_| Error::UnknownDevice(mac))?;
         let res_mac = match res_var {
             BluezOptions::Str(mac) => MAC::from_str(mac)
@@ -566,7 +566,7 @@ impl Device {
     }
     pub async fn connected(&self) -> Result<bool, Error> {
         let call = get_prop_call(self.path.clone(), BLUEZ_DEST, BLUEZ_DEV_IF, "Connected");
-        let res = self.conn.send_msg_with_reply(&call).await?.await?;
+        let res = self.conn.send_msg_w_rsp(&call).await?.await?;
         match is_msg_err(&res) {
             Ok(BluezOptions::Bool(ret)) => Ok(ret),
             Ok(_) => Err(Error::Bluez("Bluez returned unexpected type!".into())),

@@ -62,7 +62,7 @@ impl WorkerData {
         } else {
             call.dynheader.make_error_response("PermissionDenied", None)
         };
-        self.conn.send_msg_no_reply(&reply).await?;
+        self.conn.send_msg_wo_rsp(&reply).await?;
         Ok(())
     }
     fn handle_app_intro(&self, call: &MarshalledMessage) -> MarshalledMessage {
@@ -126,13 +126,13 @@ impl Application {
                 .with_interface("org.freedesktop.Dbus")
                 .build();
             call.body.push_param(dest).unwrap();
-            let res = self.conn.send_msg_with_reply(&call).await?.await?;
+            let res = self.conn.send_msg_w_rsp(&call).await?.await?;
             is_msg_err_empty(&res)?;
             self.dest = None;
         }
         if let Some(dest) = dest {
             let call = rustbus_core::standard_messages::request_name(&dest, 4);
-            let res = self.conn.send_msg_with_reply(&call).await?.await?;
+            let res = self.conn.send_msg_w_rsp(&call).await?.await?;
             let flag: u32 = is_msg_err(&res).unwrap();
             if flag == 2 || flag == 3 {
                 return Err(Error::Dbus("Name taken!".to_string()));
@@ -179,7 +179,7 @@ impl Application {
         call.body.push_param(&*self.base_path).unwrap();
         let options: HashMap<&str, BluezOptions> = HashMap::new();
         call.body.push_param(&options).unwrap();
-        Ok(self.conn.send_msg_with_reply(&call).await?)
+        Ok(self.conn.send_msg_w_rsp(&call).await?)
     }
     pub async fn register(mut self) -> Result<AppWorker, Error> {
         assert_ne!(self.services.len(), 0);
@@ -191,7 +191,7 @@ impl Application {
                 .at("org.freedesktop.DBus")
                 .build();
             call.body.push_param(BLUEZ_DEST).unwrap();
-            let res = self.conn.send_msg_with_reply(&call).await?.await?;
+            let res = self.conn.send_msg_w_rsp(&call).await?.await?;
             let name: String = is_msg_err(&res)?;
             if name == "" {
                 unimplemented!()

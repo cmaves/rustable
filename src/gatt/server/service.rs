@@ -142,7 +142,7 @@ impl Service {
                         } else {
                             call.dynheader.make_error_response("PermissionDenied", None)
                         };
-                        conn.send_msg_no_reply(&res).await?;
+                        conn.send_msg_wo_rsp(&res).await?;
                         msg_fut = msg_f;
                         call_fut = call_recv.recv();
                     }

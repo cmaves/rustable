@@ -192,7 +192,7 @@ impl Characteristic {
                         } else {
                             call.dynheader.make_error_response("PermissionDenied", None)
                         };
-                        conn.send_msg_no_reply(&res).await?;
+                        conn.send_msg_wo_rsp(&res).await?;
                         recv_not_fut = recv_not_f;
                     } /*
                        */
@@ -268,7 +268,7 @@ impl ChrcData {
                 map.insert("Value", BluezOptions::Buf(&att_val));
                 sig.body.push_param(BLUEZ_CHR_IF).unwrap();
                 sig.body.push_param(&map).unwrap();
-                conn.send_message(&sig).await?;
+                conn.send_msg(&sig).await?;
                 Ok(true)
             }
         }
@@ -340,7 +340,7 @@ impl ChrcData {
                             att_val = old;
                         }
                         let path =
-                            ObjectPath::new(call.dynheader.object.as_ref().unwrap()).unwrap();
+                            ObjectPath::from_str(call.dynheader.object.as_ref().unwrap()).unwrap();
                         self.handle_write(conn, path, att_val).await?;
                         Ok(call.dynheader.make_response())
                     }

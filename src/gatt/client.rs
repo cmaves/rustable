@@ -33,7 +33,7 @@ impl Service {
         }
         let path_str: &str = child.as_ref();
         let call = get_prop_call(path_str, BLUEZ_DEST, BLUEZ_SER_IF, "UUID");
-        let res = conn.send_msg_with_reply(&call).await?.await?;
+        let res = conn.send_msg_w_rsp(&call).await?.await?;
         let uuid_str = match is_msg_err::<BluezOptions>(&res) {
             Ok(BluezOptions::Str(s)) => s,
             _ => return Ok(None),
@@ -83,7 +83,7 @@ impl Service {
     }
     pub async fn get_includes(&self) -> Result<Vec<Self>, Error> {
         let call = get_prop_call(self.path.clone(), BLUEZ_DEST, BLUEZ_SER_IF, "Includes");
-        let res = self.conn.send_msg_with_reply(&call).await?.await?;
+        let res = self.conn.send_msg_w_rsp(&call).await?.await?;
         let paths: Vec<&ObjectPath> = match is_msg_err(&res) {
             Ok(BluezOptions::Paths(paths)) => paths,
             Ok(_) => return Err(Error::Dbus(format!("Variant was wrong type!"))),
@@ -113,7 +113,7 @@ impl Characteristic {
         }
         let path_str: &str = child.as_ref();
         let call = get_prop_call(path_str, BLUEZ_DEST, BLUEZ_CHR_IF, "UUID");
-        let res = conn.send_msg_with_reply(&call).await?.await?;
+        let res = conn.send_msg_w_rsp(&call).await?.await?;
         let uuid_str = match is_msg_err::<BluezOptions>(&res) {
             Ok(BluezOptions::Str(s)) => s,
             _ => return Ok(None),
@@ -176,7 +176,7 @@ impl Characteristic {
         let mut options = HashMap::new();
         options.insert("offset", BluezOptions::U16(offset));
         call.body.push_param(options).unwrap();
-        let res_fut = self.conn.send_msg_with_reply(&call).await?;
+        let res_fut = self.conn.send_msg_w_rsp(&call).await?;
         Ok(async {
             let res = res_fut.await?;
             let value: &[u8] = is_msg_err(&res)?;
@@ -197,7 +197,7 @@ impl Characteristic {
         call.dynheader.member = Some(String::from("WriteValue"));
         call.body.push_param(value).unwrap();
         call.body.push_param(&options).unwrap();
-        let res_fut = self.conn.send_msg_with_reply(&call).await?;
+        let res_fut = self.conn.send_msg_w_rsp(&call).await?;
         Ok(async {
             let res = res_fut.await?;
             is_msg_err_empty(&res)
@@ -232,7 +232,7 @@ impl Characteristic {
         call.body.push_param(&options).unwrap();
         let conn = &self.conn;
         //let not_mut = &mut self.notify;
-        let res_fut = conn.send_msg_with_reply(&call).await?;
+        let res_fut = conn.send_msg_w_rsp(&call).await?;
         Ok(async move {
             let res = res_fut.await?;
             let (fd, mtu): (UnixFd, u16) = is_msg_err2(&res)?;
@@ -256,7 +256,7 @@ impl Characteristic {
         call.body.push_param(&options).unwrap();
         let conn = &self.conn;
         //let write_mut = &mut self.write_wo;
-        let res_fut = conn.send_msg_with_reply(&call).await?;
+        let res_fut = conn.send_msg_w_rsp(&call).await?;
         Ok(async move {
             let res = res_fut.await?;
             let (fd, mtu): (UnixFd, u16) = is_msg_err2(&res)?;
@@ -268,7 +268,7 @@ impl Characteristic {
         &self,
     ) -> Result<impl Future<Output = Result<CharFlags, Error>> + '_, Error> {
         let call = get_prop_call(self.path.clone(), BLUEZ_DEST, BLUEZ_CHR_IF, "Flags");
-        let res_fut = self.conn.send_msg_with_reply(&call).await?;
+        let res_fut = self.conn.send_msg_w_rsp(&call).await?;
         Ok(async {
             let res = res_fut.await?;
             let props: Vec<&str> = is_msg_err(&res)?;
@@ -332,7 +332,7 @@ impl Descriptor {
         let mut options = HashMap::new();
         options.insert("offset", BluezOptions::U16(offset));
         call.body.push_param(options).unwrap();
-        let res_fut = self.conn.send_msg_with_reply(&call).await?;
+        let res_fut = self.conn.send_msg_w_rsp(&call).await?;
         Ok(async {
             let res = res_fut.await?;
             let value: &[u8] = is_msg_err(&res)?;
@@ -359,7 +359,7 @@ impl Descriptor {
         }
         let path_str: &str = child.as_ref();
         let call = get_prop_call(path_str, BLUEZ_DEST, BLUEZ_DES_IF, "UUID");
-        let res = conn.send_msg_with_reply(&call).await?.await?;
+        let res = conn.send_msg_w_rsp(&call).await?.await?;
         let uuid_str = match is_msg_err::<BluezOptions>(&res) {
             Ok(BluezOptions::Str(s)) => s,
             _ => return Ok(None),

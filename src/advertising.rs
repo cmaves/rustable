@@ -75,13 +75,13 @@ impl Advertisement {
                 .with_interface("org.freedesktop.Dbus")
                 .build();
             call.body.push_param(dest).unwrap();
-            let res = self.conn.send_msg_with_reply(&call).await?.await?;
+            let res = self.conn.send_msg_w_rsp(&call).await?.await?;
             is_msg_err_empty(&res)?;
             self.dest = None;
         }
         if let Some(dest) = dest {
             let call = rustbus_core::standard_messages::request_name(&dest, 4);
-            let res = self.conn.send_msg_with_reply(&call).await?.await?;
+            let res = self.conn.send_msg_w_rsp(&call).await?.await?;
             let flag: u32 = is_msg_err(&res).unwrap();
             if flag == 2 || flag == 3 {
                 return Err(Error::Dbus("Name taken!".to_string()));
@@ -109,7 +109,7 @@ impl Advertisement {
             .unwrap();
         {
             // new block limits lifetime of res_fut
-            let res_fut = conn.send_msg_with_reply(&call).await?;
+            let res_fut = conn.send_msg_w_rsp(&call).await?;
             pin_mut!(res_fut);
             loop {
                 let call_fut = conn.get_call(&*base_path);
@@ -118,7 +118,7 @@ impl Advertisement {
                     Either::Left((call, res_f)) => {
                         let res = self.handle_call(&call?)?;
                         match res {
-                            Some(res) => self.conn.send_msg_no_reply(&res).await?,
+                            Some(res) => self.conn.send_msg_wo_rsp(&res).await?,
                             None => {
                                 return Err(Error::Bluez(
                                     "Released before ad could start.".to_string(),
@@ -143,7 +143,7 @@ impl Advertisement {
                     Either::Left((call, msg_f)) => {
                         let res = self.handle_call(&call?)?;
                         match res {
-                            Some(res) => self.conn.send_msg_no_reply(&res).await?,
+                            Some(res) => self.conn.send_msg_wo_rsp(&res).await?,
                             None => break,
                         }
                         msg_fut = msg_f;
@@ -155,7 +155,7 @@ impl Advertisement {
                                 call.dynheader.member = Some("UnregisterAdvertisement".to_string());
                                 call.body.reset();
                                 call.body.push_param(&base_path).unwrap();
-                                let res = self.conn.send_msg_with_reply(&call).await?.await?;
+                                let res = self.conn.send_msg_w_rsp(&call).await?.await?;
                                 is_msg_err_empty(&res)?;
                                 break;
                             }

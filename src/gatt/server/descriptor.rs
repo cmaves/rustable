@@ -74,7 +74,7 @@ impl Descriptor {
                         } else {
                             call.dynheader.make_error_response("PermissionDenied", None)
                         };
-                        conn.send_message(&res).await?;
+                        conn.send_msg(&res).await?;
                         msg_fut = msg_f;
                         call_fut = call_recv.recv();
                     }

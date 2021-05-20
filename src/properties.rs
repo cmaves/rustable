@@ -64,7 +64,7 @@ pub trait Properties {
             Ok(i) => i,
             Err(_) => return msg.dynheader.make_error_response("InvalidArgs", None),
         };
-        let path = ObjectPath::new(msg.dynheader.object.as_ref().unwrap()).unwrap();
+        let path = ObjectPath::from_str(msg.dynheader.object.as_ref().unwrap()).unwrap();
         match self.get_all_inner(path, interface) {
             Ok(map) => {
                 let mut res = msg.dynheader.make_response();
@@ -83,7 +83,7 @@ pub trait Properties {
             Ok(out) => out,
             Err(_) => return msg.dynheader.make_error_response("InvalidArgs", None),
         };
-        let path = ObjectPath::new(msg.dynheader.object.as_ref().unwrap()).unwrap();
+        let path = ObjectPath::from_str(msg.dynheader.object.as_ref().unwrap()).unwrap();
         match self.get_inner(path, interface, prop) {
             Ok(var) => {
                 let mut reply = msg.dynheader.make_response();
@@ -118,7 +118,7 @@ pub trait Properties {
                     .make_error_response("InvalidParameters", Some(format!("{:?}", err)))
             }
         };
-        let path = ObjectPath::new(msg.dynheader.object.as_ref().unwrap()).unwrap();
+        let path = ObjectPath::from_str(msg.dynheader.object.as_ref().unwrap()).unwrap();
         match self.set_inner(path, interface, prop, var) {
             Ok(_) => msg.dynheader.make_response(),
             Err(e) => msg
