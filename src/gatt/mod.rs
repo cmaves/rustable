@@ -1,3 +1,5 @@
+//! This module is used to interact with GATT applications on remote devices 
+//! or provide GATT applications from the local adapter.
 use std::borrow::Borrow;
 use std::fmt::{Debug, Formatter};
 use std::mem::MaybeUninit;
@@ -313,6 +315,7 @@ impl ValOrFn {
         ValOrFn::Value(slice.into())
     }
 }
+/// Flags for GATT descriptors.
 #[derive(Default, Clone, Copy)]
 pub struct DescFlags {
     pub read: bool,

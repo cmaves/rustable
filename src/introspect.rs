@@ -119,8 +119,7 @@ pub(crate) fn child_nodes<S: AsRef<str>, T: IntoIterator<Item = S>>(children: T,
 }
 pub trait Introspectable {
     fn introspectable(&self, call: MarshalledMessage) -> MarshalledMessage {
-        let call = call.unmarshall_all().unwrap();
-        let mut reply = call.make_response();
+        let mut reply = call.dynheader.make_response();
         reply.body.push_param(self.introspectable_str()).unwrap();
         reply
     }

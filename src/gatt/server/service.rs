@@ -6,6 +6,8 @@ use super::*;
 use crate::properties::{PropError, Properties};
 use async_rustbus::RpcConn;
 
+
+/// A GATT service that is to be added to an [`Application`].
 pub struct Service {
     chars: Vec<Characteristic>,
     includes: Vec<UUID>,
@@ -42,6 +44,9 @@ impl ServData {
     }
 }
 impl Service {
+    /// Create new `Service`.
+    ///
+    /// A non-`primary` services indicates that it is intended to be included by another service.
     pub fn new(uuid: UUID, primary: bool) -> Self {
         Self {
             uuid,
@@ -51,6 +56,13 @@ impl Service {
             includes: Vec::new(),
         }
     }
+    /// Set the handle to requested by the service.
+    ///
+    /// If this is not set then one will be requested from Bluez.
+    /// Setting this can be useful because some remote devices (like Android devices) do not
+    /// handle changing handles very well.
+    /// When [`Application`] is finally registered, if the requested handles are not unique 
+    /// or they are already in use Bluez will reject the `Application` registration.
     pub fn set_handle(&mut self, handle: Option<NonZeroU16>) {
         self.handle = handle.map_or(0, |u| u.into());
     }
@@ -80,21 +92,28 @@ impl Service {
         let idx = self.chars.iter().position(|s| s.uuid() == uuid)?;
         Some(self.chars.remove(idx))
     }
+    /// Get the `UUID` of `Service`.
     pub fn uuid(&self) -> UUID {
         self.uuid
     }
+    /// Removes all of the `Characteristic`s in the service and returns then in an iterator.
+    ///
+    /// Even if not all of the `Characteristic`s are not consumed, they are still removed.
     pub fn drain_chrcs(&mut self) -> std::vec::Drain<Characteristic> {
         self.chars.drain(..)
+    }
+    pub fn chrc_cnt(&self) -> usize {
+        self.chars.len()
     }
     fn find_char_unsorted(&mut self, uuid: UUID) -> Option<&mut Characteristic> {
         self.chars.iter_mut().find(|c| c.uuid() == uuid)
     }
-    pub fn sort_chars(&mut self) {
+    /*pub fn sort_chars(&mut self) {
         for cha in self.chars.iter_mut() {
             cha.sort_descs();
         }
         self.chars.sort_by_key(|c| c.uuid());
-    }
+    }*/
     pub(super) fn start_worker(
         self,
         conn: &Arc<RpcConn>,

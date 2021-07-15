@@ -24,6 +24,7 @@ pub use service::Service;
 mod descriptor;
 pub use descriptor::Descriptor;
 
+/// Use to build an application containing local GATT services that can be used by remote devices.
 pub struct Application {
     services: Vec<Service>,
     dest: Option<String>,
@@ -99,6 +100,9 @@ impl WorkerData {
     }
 }
 impl Application {
+    /// Create new `Application` that is assocated with the given adapter.
+    /// 
+    /// This app will use the given `conn` to interact with Bluez to provide the services.
     pub fn new_with_conn(hci: &Adapter, base_path: &str, conn: Arc<RpcConn>) -> Self {
         let hci = hci.path.clone();
         Self {
@@ -110,11 +114,19 @@ impl Application {
             conn,
         }
     }
+    /// Create new `Application` that is assocated with the given adapter.
+    ///
+    /// The connection used to interact with Bluez daemon is the same as the one used in `hci`.
     pub fn new(hci: &Adapter, base_path: &str) -> Self {
         let conn = hci.conn.clone();
         Self::new_with_conn(hci, base_path, conn)
     }
-    pub async fn set_dest(&mut self, dest: Option<String>) -> Result<(), Error> {
+    /// Requests a DBus name for the `Application` using its DBus connection.
+    ///
+    /// If the destination is in use this will fail and not place the connection in the name queue.
+    /// # Notes
+    /// * When the application is dropped, the underlying connection will not drop the name.
+    pub async fn set_dbus_name(&mut self, dest: Option<String>) -> Result<(), Error> {
         if self.dest == dest {
             return Ok(());
         }
@@ -141,6 +153,12 @@ impl Application {
         }
         Ok(())
     }
+    /// Get the DBus name currently in use for the `Application`.
+    #[inline]
+    pub fn get_dbus_dest(&self) -> Option<&str> {
+        self.dest.as_deref()
+    }
+    /// Add a GATT service to the `Application`.
     pub fn add_service(&mut self, mut service: Service) {
         assert!(
             !service.characteristics().is_empty(),
@@ -151,16 +169,33 @@ impl Application {
             None => self.services.push(service),
         }
     }
+    /// Remove a GATT service from the `Application`.
     pub fn remove_service(&mut self, uuid: UUID) -> Option<Service> {
         let idx = self.services.iter().position(|s| s.uuid() == uuid)?;
         Some(self.services.remove(idx))
     }
+    /// Set whether the `Application` should filter out DBus messages coming from sources 
+    /// other than the Bluez daemon.
+    /// 
+    /// `true` (the default) will filter out messages while `false` will allow all messages.
+    /// This can be useful debugging, 
+    /// but users should be cautious 
+    /// as this will give all users on the local device access to the application.
+    #[inline]
     pub fn set_filter(&mut self, filter: bool) {
         self.filter = filter;
     }
-    pub fn get_conn(&self) -> &Arc<RpcConn> {
+    /// Get whether the `Application` is filtering out incoming DBus messages from sources 
+    /// other than the Bluez daemon.
+    #[inline]
+    pub fn get_filter(&self) -> bool {
+        self.filter
+    }
+    /// Get a reference to `Arc<async_rustbus::RpcConn>` used to communicate with the Bluez daemon.
+    pub fn conn(&self) -> &Arc<RpcConn> {
         &self.conn
     }
+    #[doc(hidden)]
     pub fn zero_handles(&mut self) {
         unimplemented!()
     }
@@ -181,6 +216,10 @@ impl Application {
         call.body.push_param(&options).unwrap();
         Ok(self.conn.send_msg_w_rsp(&call).await?)
     }
+    /// Register the application with Bluez daemon, and begin a worker thread to run the service.
+    ///
+    /// # Notes
+    /// * This makes the org.bluez.GattManager1.RegisterApplication DBus call, starting the application.
     pub async fn register(mut self) -> Result<AppWorker, Error> {
         assert_ne!(self.services.len(), 0);
         let filter = if self.filter {
@@ -327,6 +366,8 @@ impl Application {
         Ok(AppWorker { workers })
     }
 }
+/// Given an optional filter, check if this message should be allowed, 
+/// or rejected because it is not from the Bluez daemon.
 fn is_msg_bluez(call: &MarshalledMessage, filter: Option<&str>) -> bool {
     let self_dest = match filter {
         Some(d) => d,
@@ -339,10 +380,14 @@ fn is_msg_bluez(call: &MarshalledMessage, filter: Option<&str>) -> bool {
     }
 }
 
+/// An active GATT application that is registered with the Bluez daemon.
+///
+/// This worker will continue to work even if this handle to it is dropped.
 pub struct AppWorker {
     workers: HashMap<(UUID, UUID, UUID), Worker>,
 }
 impl AppWorker {
+    /// Deregister the application with Bluez, shutdown the workers, and return the original `Application`.
     pub async fn unregister(self) -> Result<Application, Error> {
         struct SortableWorkers((UUID, UUID, UUID), Worker);
         impl PartialEq<SortableWorkers> for SortableWorkers {
@@ -402,6 +447,7 @@ impl AppWorker {
         }
         Ok(app)
     }
+    /// Update the value of the given characteristic with `val`.
     pub async fn update_characteristic(
         &self,
         service: UUID,
@@ -416,6 +462,7 @@ impl AppWorker {
         worker.sender.send(WorkerMsg::Update(val, notify)).await?;
         Ok(())
     }
+    /// Update the value of the given descriptor with `val`.
     pub async fn update_descriptor(
         &self,
         service: UUID,
@@ -431,6 +478,7 @@ impl AppWorker {
         worker.sender.send(WorkerMsg::Update(val, false)).await?;
         Ok(())
     }
+    /// Trigger a notification for the Bluetooth service.
     pub fn notify_char(
         &self,
         service: UUID,
@@ -444,6 +492,11 @@ impl AppWorker {
         )
         .and_then(|worker| worker.sender.send(WorkerMsg::Notify(val)).err_into())
     }
+    /// Get the current value of the characteristic.
+    ///
+    /// If the value of the characteristic is a `ValOrFn::Function` the callback will be called.
+    /// If this is the case, note that this could affect what remote devices see 
+    /// if the callback changes based on number/timing of reads.
     pub async fn get_char(&self, serv: UUID, cha: UUID) -> Result<AttValue, Error> {
         let worker = self
             .workers
@@ -454,6 +507,7 @@ impl AppWorker {
         let res = recv.recv().await?;
         Ok(res)
     }
+    /// Get the ATT handle for the given service.
     pub async fn get_serv_handle(&self, serv: UUID) -> Result<NonZeroU16, Error> {
         let worker = self
             .workers
@@ -464,6 +518,7 @@ impl AppWorker {
         let res = recv.recv().await?;
         Ok(res)
     }
+    /// Get the ATT handle for the given characteristic.
     pub async fn get_char_handle(&self, serv: UUID, cha: UUID) -> Result<NonZeroU16, Error> {
         let worker = self
             .workers
@@ -474,6 +529,13 @@ impl AppWorker {
         let res = recv.recv().await?;
         Ok(res)
     }
+    /// Check if the characteristic is notifying.
+    ///
+    /// This just indicates that Bluez has called `org.bluez.GattCharacteristic1.AcquireNotify` 
+    /// and has not hungup the socket, or `org.bluez.GattCharacteristic1.StartNotify` was called 
+    /// and has not been stopped. 
+    /// This does not guarantee that the device(s) that requested notifications are still connected 
+    /// or listening.
     pub async fn char_notifying(&self, serv: UUID, cha: UUID) -> Result<bool, Error> {
         let worker = self
             .workers
@@ -484,6 +546,16 @@ impl AppWorker {
         let res = recv.recv().await?;
         Ok(res)
     }
+    /// Check if the characteristic is notifying through a file descriptor.
+    ///
+    /// This indicates that Bluez has acquired a file descriptor 
+    /// with `org.bluez.GattCharacteristic1.AcquireNotify` and it hasn't been closed yet.
+    /// This does not guarantee that the device(s) that requested notifications are still connected 
+    /// or listening.
+    ///
+    /// # Notes
+    /// * When remote devices acquire notifications, Bluez will almost always call 
+    /// `org.bluez.GattCharacteristic1.AcquireNotify` to services them.
     pub async fn char_notify_acquired(&self, serv: UUID, cha: UUID) -> Result<bool, Error> {
         let worker = self
             .workers
@@ -497,6 +569,13 @@ impl AppWorker {
         let res = recv.recv().await?;
         Ok(res)
     }
+    /// Check if the characteristic is notifying via DBus signals.
+    ///
+    /// This indicates that Bluez has started a notification session by with
+    /// `org.bluez.GattCharacteristic1.StartNotify`.
+    /// # Notes
+    /// * Bluez will almost never uses `org.bluez.GattCharacteristic1.StartNotify`, 
+    /// but it can be useful for debugging.
     pub async fn char_notify_signaling(&self, serv: UUID, cha: UUID) -> Result<bool, Error> {
         let worker = self
             .workers
@@ -510,6 +589,11 @@ impl AppWorker {
         let res = recv.recv().await?;
         Ok(res)
     }
+    /// Get the current value of the given descriptor.
+    ///
+    /// If the value of the descriptor is a `ValOrFn::Function` the callback will be called.
+    /// If this is the case, note that this could affect what remote devices see 
+    /// if the callback changes based on number/timing of reads.
     pub async fn get_desc(&self, serv: UUID, cha: UUID, desc: UUID) -> Result<AttValue, Error> {
         let worker = self
             .workers
@@ -520,6 +604,7 @@ impl AppWorker {
         let res = recv.recv().await?;
         Ok(res)
     }
+    /// Get the ATT handle for the given descriptor.
     pub async fn get_desc_handle(
         &self,
         serv: UUID,

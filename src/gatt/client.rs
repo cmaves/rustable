@@ -1,3 +1,4 @@
+//! This module is used to query GATT services on remote devices.
 use std::collections::HashMap;
 use std::os::unix::io::FromRawFd;
 use std::sync::Arc;
@@ -12,7 +13,7 @@ use rustbus_core::path::ObjectPathBuf;
 use rustbus_core::wire::unixfd::UnixFd;
 
 use async_std::os::unix::net::UnixDatagram;
-
+/// Used to interact with remote GATT services. Mostly used to get `Characteristic`s.
 pub struct Service {
     conn: Arc<RpcConn>,
     path: ObjectPathBuf,

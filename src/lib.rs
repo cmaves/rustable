@@ -50,9 +50,12 @@ dbus_variant_var!(BluezOptions, Bool => bool;
                                 DataMap => HashMap<String, Vec<u8>>;
                                 UUIDMap => HashMap<UUID, Vec<u8>>
 );
+
+/// Represents a UUID used for GATT attributes.
 #[derive(PartialEq, Eq, Copy, Clone, PartialOrd, Ord, Hash)]
 pub struct UUID(pub u128);
 
+/// Represents a MAC address used for Bluetooth devices.
 #[derive(PartialEq, Eq, Clone, Copy, Hash)]
 pub struct MAC(u32, u16);
 
@@ -69,7 +72,7 @@ const PROPS_IF: &str = "org.freedesktop.DBus.Properties";
 const INTRO_IF: &str = "org.freedesktop.DBus.Introspectable";
 const OBJMGR_IF: &str = "org.freedesktop.DBus.ObjectManager";
 const BLUEZ_DEST: &str = "org.bluez";
-const BT_BASE_UUID: UUID = UUID(0x0000000000001000800000805F9B34FB);
+pub const BT_BASE_UUID: UUID = UUID(0x0000000000001000800000805F9B34FB);
 
 /// This trait creates a UUID from the implementing Type.
 /// This trait can panic if the given type doesn't represent a valid uuid.
@@ -112,11 +115,17 @@ impl FromStr for UUID {
     }
 }
 impl From<u16> for UUID {
+    /// Creates a `UUID` from a 16-bit Bluetooth UUID aliases.
+    ///
+    /// The actual conversion done is `((u16_val as u128) << 96) + BT_BASE_UUID`
     fn from(u: u16) -> Self {
         Self::from(u as u32)
     }
 }
 impl From<u32> for UUID {
+    /// Creates a `UUID` from a 32-bit Bluetooth UUID aliases.
+    ///
+    /// The actual conversion done is `((u32_val as u128) << 96) + BT_BASE_UUID`
     fn from(u: u32) -> Self {
         UUID(((u as u128) << 96) | BT_BASE_UUID.0)
     }
@@ -131,6 +140,7 @@ impl From<u128> for UUID {
         Self(u)
     }
 }
+/// Error for conversion where the input value is not within a valid range for the output type.
 pub struct OutOfRange;
 
 impl TryFrom<UUID> for u16 {
@@ -146,14 +156,16 @@ impl TryFrom<UUID> for u32 {
     }
 }
 impl UUID {
+    /// Get the 16-bit Bluetooth UUID alias for this `UUID` if it is in the proper range.
     pub const fn short(&self) -> Option<u16> {
-        const U16_MAX_UUID: u128 = BT_BASE_UUID.0 | ((std::u16::MAX as u128) << 112);
+        const U16_MAX_UUID: u128 = BT_BASE_UUID.0 | ((std::u16::MAX as u128) << 96);
         if (self.0 & !U16_MAX_UUID) == 0 {
             Some((self.0 >> 96) as u16)
         } else {
             None
         }
     }
+    /// Get the 32-bit Bluetooth UUID alias for this `UUID` if it is in the proper range.
     pub const fn uint(&self) -> Option<u32> {
         const U32_MAX_UUID: u128 = BT_BASE_UUID.0 | ((std::u32::MAX as u128) << 96);
         if (self.0 & !U32_MAX_UUID) == 0 {
@@ -231,6 +243,18 @@ impl<'buf> Unmarshal<'buf, '_> for UUID {
     }
 }
 impl MAC {
+    /// Create a new MAC address from the number.
+    ///
+    /// The least signficant 6 bytes are used to create the MAC.
+    /// # Example
+    /// ```
+    /// use rustbus::MAC;
+    ///
+    /// let mac = MAC::new(0x010203A0B0C0);
+    /// println!("{}", mac); // prints '01:02:03:A0:B0:C0'.
+    /// ```
+    /// # Panics
+    /// Panics if the number given is greater than _2^48 - 1_ (`0xFFFFFFFFFFFF`).
     pub const fn new(mac: u64) -> Self {
         //assert!(mac < 0xFFFF000000000000);
         let a = [0];
@@ -239,6 +263,15 @@ impl MAC {
         a[((0xFFFF000000000000 & mac) >> 32) as usize];
         Self((mac >> 16) as u32, mac as u16)
     }
+    /// Create a new MAC from the first four octals and last two.
+    ///
+    /// # Example
+    /// ```
+    /// use rustbus::MAC;
+    ///
+    /// let mac = MAC::new(0x010203A0, 0xB0C0);
+    /// println!("{}", mac); // prints '01:02:03:A0:B0:C0'.
+    /// ```
     pub const fn from_parts(first_four: u32, last_two: u16) -> Self {
         MAC(first_four, last_two)
     }
@@ -405,23 +438,28 @@ impl From<std::io::Error> for Error {
     }
 }
 
-/// `Bluetooth` is created to interact with Bluez over DBus and file descriptors.
+/// `BluetoothService` is created to interact with Bluez daemon over DBus. 
 pub struct BluetoothService {
     conn: Arc<RpcConn>,
 }
 
 impl BluetoothService {
+    /// Create a new `BluetoothService` struct by reusing an existing `async_rustbus::RpcConn`.
     pub async fn from_conn(conn: Arc<RpcConn>) -> Result<Self, Error> {
         let ret = Self { conn };
         let path: &ObjectPath = ObjectPath::from_str("/org/bluez").unwrap();
         ret.get_children(path).await?; // validate that function is working
         Ok(ret)
     }
-    /// Creates a new `Bluetooth` and setup a DBus client to interact with Bluez.
+    /// Creates a new `BluetoothService` and setup a DBus client to interact with Bluez.
     pub async fn new() -> Result<Self, Error> {
         let conn = RpcConn::system_conn(true).await?;
         Self::from_conn(Arc::new(conn)).await
     }
+    /// Get a list of adapter indices that are in use.
+    ///
+    /// Each index returned represents a different Bluetooth controller that can be used.
+    /// Most systems only have one.
     async fn get_children<P: AsRef<ObjectPath>>(&self, path: P) -> Result<Vec<u8>, Error> {
         let ret = get_children(&self.conn, BLUEZ_DEST, path)
             .await?
@@ -436,18 +474,28 @@ impl BluetoothService {
             .collect();
         Ok(ret)
     }
+    /// Get an `Adapter` corresponding to the `idx` given.
+    ///
+    /// On most systems index will be zero.
     pub async fn get_adapter(&self, idx: u8) -> Result<Adapter, Error> {
         Adapter::from_conn(self.conn.clone(), idx).await
     }
-    pub fn get_conn(&self) -> &Arc<RpcConn> {
+    /// Get a reference to `Arc<async_rustbus::RpcConn>` used to communicate with the Bluez daemon.
+    pub fn conn(&self) -> &Arc<RpcConn> {
         &self.conn
     }
 }
+/// This struct represents a local Bluetooth adapter.
+///
+/// It can be used to query and configure the local adapter, get remote [`Device`]s, and host local GATT services.
 pub struct Adapter {
     conn: Arc<RpcConn>,
     path: ObjectPathBuf,
 }
 impl Adapter {
+    /// Create an `Adapter` to interface with a specific Bluetooth adapter 
+    /// using an existing `async_rustbus::RpcConn`
+    ///
     pub async fn from_conn(conn: Arc<RpcConn>, idx: u8) -> Result<Adapter, Error> {
         let path = format!("/org/bluez/hci{}", idx);
         let ret = Adapter {
@@ -457,6 +505,7 @@ impl Adapter {
         ret.addr().await?;
         Ok(ret)
     }
+    /// Create an `Adapter` to interface with a specific Bluetooth adapter.
     pub async fn new(idx: u8) -> Result<Adapter, Error> {
         let conn = RpcConn::system_conn(true).await?;
         Self::from_conn(Arc::new(conn), idx).await
@@ -477,6 +526,7 @@ impl Adapter {
         MAC::from_str(addr_str)
             .map_err(|e| Error::Bluez(format!("Invalid address received: {} ({:?})", addr_str, e)))
     }
+    /// Turn the Bluetooth adapter on (`true`) or off.
     pub async fn set_powered(&self, powered: bool) -> Result<(), Error> {
         let call = set_prop_call(
             self.path.clone(),
@@ -488,9 +538,25 @@ impl Adapter {
         let res = self.conn.send_msg_w_rsp(&call).await?.await?;
         is_msg_err_empty(&res)
     }
+    /// Check if the device is powered on (`true`) or off.
+    pub async fn get_powered(&self) -> Result<bool, Error> {
+        let call = get_prop_call(
+            self.path.clone(),
+            BLUEZ_DEST,
+            BLUEZ_ADP_IF,
+            "Powered",
+        );
+        let res = self.conn.send_msg_w_rsp(&call).await?.await?;
+        is_msg_err(&res)
+    }
+    /// Get the DBus `ObjectPath` of this remote device.
     pub fn path(&self) -> &ObjectPath {
         &self.path
     }
+    /// Get the `MAC`s of remote devices that the adapter knows of.
+    ///
+    /// This will included connected devices, paired devices, and visible
+    /// devices (if discovery is enabled).
     pub async fn get_devices(&self) -> Result<Vec<MAC>, Error> {
         let ret = get_children(&self.conn, BLUEZ_DEST, &self.path)
             .await?
@@ -499,6 +565,7 @@ impl Adapter {
             .collect();
         Ok(ret)
     }
+    /// Get `Device` for the given `MAC`.
     pub async fn get_device(&self, mac: MAC) -> Result<Device, Error> {
         let dev_str = mac.to_dev_str();
         let path = format!("{}/{}", self.path, dev_str);
@@ -519,18 +586,25 @@ impl Adapter {
         Ok(Device {
             conn: self.conn.clone(),
             path: ObjectPathBuf::try_from(path).unwrap(),
+            mac
         })
     }
+    /// Get a reference to `Arc<async_rustbus::RpcConn>` used to communicate with the Bluez daemon.
     pub fn conn(&self) -> &Arc<RpcConn> {
         &self.conn
     }
 }
 
+/// Represents a remote Bluetooth device.
+///
+/// It can be used to check connection status, or retrieve its GATT services.
 pub struct Device {
     conn: Arc<RpcConn>,
     path: ObjectPathBuf,
+    mac: MAC
 }
 impl Device {
+    /// Get all the GATT services for a remote device.
     pub async fn get_services(&self) -> Result<Vec<LocalService>, Error> {
         let services = self.get_services_stream().await?;
         let fut = |s: Option<LocalService>| async move { Ok(s) };
@@ -543,7 +617,6 @@ impl Device {
         FuturesUnordered<impl Future<Output = Result<Option<LocalService>, Error>> + '_>,
         Error,
     >
-//-> Result<impl TryStream<Ok=Option<LocalService>, Error=Error> +'_, Error>
     {
         let children: FuturesUnordered<_> = get_children(&self.conn, BLUEZ_DEST, &self.path)
             .await?
@@ -553,6 +626,7 @@ impl Device {
 
         Ok(children)
     }
+    /// Get the GATT service for the given `uuid` if it exist on the remote device.
     pub async fn get_service(&self, uuid: UUID) -> Result<gatt::client::Service, Error> {
         let mut services = self.get_services_stream().await?;
         while let Some(res) = services.next().await {
@@ -564,6 +638,7 @@ impl Device {
         }
         Err(Error::UnknownServ(uuid))
     }
+    /// Check if the device is connected to the local adapter.
     pub async fn connected(&self) -> Result<bool, Error> {
         let call = get_prop_call(self.path.clone(), BLUEZ_DEST, BLUEZ_DEV_IF, "Connected");
         let res = self.conn.send_msg_w_rsp(&call).await?.await?;
@@ -572,6 +647,10 @@ impl Device {
             Ok(_) => Err(Error::Bluez("Bluez returned unexpected type!".into())),
             Err(e) => Err(e),
         }
+    }
+    /// Get the address of the remote device.
+    pub fn addr(&self) -> MAC {
+        self.mac
     }
 }
 

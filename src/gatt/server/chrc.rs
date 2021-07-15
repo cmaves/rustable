@@ -57,6 +57,7 @@ impl Characteristic {
     pub fn set_value(&mut self, value: ValOrFn) {
         self.value = value;
     }
+    /// Get the `UUID` of the `Characteristic`.
     pub fn uuid(&self) -> UUID {
         self.uuid
     }
@@ -70,6 +71,9 @@ impl Characteristic {
         let idx = self.descs.iter().position(|d| d.uuid() == uuid)?;
         Some(self.descs.remove(idx))
     }
+    /// Removes all of the `Descriptor`s in the service and returns then in an iterator.
+    ///
+    /// Even if not all of the `Characteristic`s are not consumed, they are still removed.
     pub fn drain_descs(&mut self) -> std::vec::Drain<Descriptor> {
         self.descs.drain(..)
     }
@@ -91,9 +95,9 @@ impl Characteristic {
     fn find_desc_unsorted(&mut self, uuid: UUID) -> Option<&mut Descriptor> {
         self.descs.iter_mut().find(|d| d.uuid() == uuid)
     }
-    pub(super) fn sort_descs(&mut self) {
+    /*pub(super) fn sort_descs(&mut self) {
         self.descs.sort_by_key(|d| d.uuid());
-    }
+    }*/
     pub(super) fn start_worker(
         self,
         conn: &Arc<RpcConn>,
