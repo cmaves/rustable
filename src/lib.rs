@@ -8,11 +8,9 @@ use std::sync::Arc;
 //use futures::future::{try_join_all, ready, join};
 use async_rustbus::rustbus_core;
 use async_rustbus::RpcConn;
-use async_std::channel::{RecvError, SendError};
-use futures::future::{select, Either};
-use futures::pin_mut;
 use futures::prelude::*;
 use futures::stream::FuturesUnordered;
+use tokio::sync::mpsc::error::SendError;
 
 use rustbus_core::dbus_variant_var;
 use rustbus_core::message_builder::{MarshalledMessage, MessageBuilder, MessageType};
@@ -328,6 +326,7 @@ pub enum Error {
     Dbus(String),
     ThreadClosed,
     SocketHungUp,
+    ThreadPanicked,
     UnknownDevice(MAC),
     UnknownServ(UUID),
     UnknownChrc(UUID, UUID),
@@ -340,6 +339,7 @@ impl std::error::Error for Error {
             Error::Bluez(_)
             | Error::Dbus(_)
             | Error::ThreadClosed
+            | Error::ThreadPanicked
             | Error::SocketHungUp
             | Error::UnknownServ(_)
             | Error::UnknownChrc(_, _)
@@ -354,11 +354,19 @@ impl<T> From<SendError<T>> for Error {
         Error::ThreadClosed
     }
 }
-impl From<RecvError> for Error {
-    fn from(_err: RecvError) -> Self {
+
+impl From<tokio::sync::oneshot::error::RecvError> for Error {
+    fn from(_: tokio::sync::oneshot::error::RecvError) -> Self {
         Error::ThreadClosed
     }
 }
+
+impl From<async_channel::RecvError> for Error {
+    fn from(_: async_channel::RecvError) -> Self {
+        Error::ThreadClosed
+    }
+}
+
 fn is_msg_err<'buf, T>(msg: &'buf MarshalledMessage) -> Result<T, Error>
 where
     T: Unmarshal<'buf, 'buf>,
@@ -438,7 +446,7 @@ impl From<std::io::Error> for Error {
     }
 }
 
-/// `BluetoothService` is created to interact with Bluez daemon over DBus. 
+/// `BluetoothService` is created to interact with Bluez daemon over DBus.
 pub struct BluetoothService {
     conn: Arc<RpcConn>,
 }
@@ -493,7 +501,7 @@ pub struct Adapter {
     path: ObjectPathBuf,
 }
 impl Adapter {
-    /// Create an `Adapter` to interface with a specific Bluetooth adapter 
+    /// Create an `Adapter` to interface with a specific Bluetooth adapter
     /// using an existing `async_rustbus::RpcConn`
     ///
     pub async fn from_conn(conn: Arc<RpcConn>, idx: u8) -> Result<Adapter, Error> {
@@ -540,12 +548,7 @@ impl Adapter {
     }
     /// Check if the device is powered on (`true`) or off.
     pub async fn get_powered(&self) -> Result<bool, Error> {
-        let call = get_prop_call(
-            self.path.clone(),
-            BLUEZ_DEST,
-            BLUEZ_ADP_IF,
-            "Powered",
-        );
+        let call = get_prop_call(self.path.clone(), BLUEZ_DEST, BLUEZ_ADP_IF, "Powered");
         let res = self.conn.send_msg_w_rsp(&call).await?.await?;
         is_msg_err(&res)
     }
@@ -586,7 +589,7 @@ impl Adapter {
         Ok(Device {
             conn: self.conn.clone(),
             path: ObjectPathBuf::try_from(path).unwrap(),
-            mac
+            mac,
         })
     }
     /// Get a reference to `Arc<async_rustbus::RpcConn>` used to communicate with the Bluez daemon.
@@ -601,7 +604,7 @@ impl Adapter {
 pub struct Device {
     conn: Arc<RpcConn>,
     path: ObjectPathBuf,
-    mac: MAC
+    mac: MAC,
 }
 impl Device {
     /// Get all the GATT services for a remote device.
@@ -616,8 +619,7 @@ impl Device {
     ) -> Result<
         FuturesUnordered<impl Future<Output = Result<Option<LocalService>, Error>> + '_>,
         Error,
-    >
-    {
+    > {
         let children: FuturesUnordered<_> = get_children(&self.conn, BLUEZ_DEST, &self.path)
             .await?
             .into_iter()
@@ -718,26 +720,6 @@ mod interfaces {
     }
 }
 
-fn factor_fut<A, B>(either: Either<(A::Output, B), (B::Output, A)>) -> Either<A::Output, B::Output>
-where
-    A: Future,
-    B: Future,
-{
-    match either {
-        Either::Left((out, _)) => Either::Left(out),
-        Either::Right((out, _)) => Either::Right(out),
-    }
-}
-
-async fn drop_select<A, B>(left: A, right: B) -> Either<A::Output, B::Output>
-where
-    A: Future,
-    B: Future,
-{
-    pin_mut!(left);
-    pin_mut!(right);
-    factor_fut(select(left, right).await)
-}
 #[cfg(test)]
 mod tests {
     use super::{MAC, UUID};

@@ -1,10 +1,10 @@
 use std::collections::HashMap;
 
 use async_rustbus::CallAction;
-use async_std::channel::{bounded, Sender};
-use async_std::task::JoinHandle;
 use futures::future::{select, Either};
 use futures::pin_mut;
+use tokio::sync::mpsc::{channel as bounded, Sender};
+use tokio::task::JoinHandle;
 
 use crate::properties::{PropError, Properties};
 use crate::*;
@@ -92,7 +92,7 @@ impl Advertisement {
     }
     pub async fn register(mut self, base_path: &str) -> Result<AdWorker, Error> {
         let base_path = ObjectPathBuf::from_str(base_path).unwrap();
-        let (sender, recv) = bounded(1);
+        let (sender, mut recv) = bounded(1);
         let mut call = MessageBuilder::new()
             .call("RegisterAdvertisement")
             .on(self.hci.to_string())
@@ -135,22 +135,22 @@ impl Advertisement {
             }
         }
         eprintln!("Ad Registered");
-        let worker = async_std::task::spawn(async move {
+        let worker = tokio::task::spawn(async move {
             let mut call_fut = conn.get_call(&*base_path).boxed();
-            let mut msg_fut = recv.recv();
             loop {
-                match select(call_fut, msg_fut).await {
-                    Either::Left((call, msg_f)) => {
-                        let res = self.handle_call(&call?)?;
+                tokio::select! {
+                    biased;
+                    res = &mut call_fut => {
+                        let res = self.handle_call(&res?)?;
                         match res {
                             Some(res) => self.conn.send_msg_wo_rsp(&res).await?,
                             None => break,
                         }
-                        msg_fut = msg_f;
+                        // call_fut.set(conn.get_call(&*base_path));
                         call_fut = conn.get_call(&*base_path).boxed();
                     }
-                    Either::Right((msg, call_f)) => {
-                        match msg? {
+                    opt = recv.recv() => {
+                        match opt.ok_or(Error::ThreadClosed)? {
                             WorkerMsg::Release => {
                                 call.dynheader.member = Some("UnregisterAdvertisement".to_string());
                                 call.body.reset();
@@ -161,8 +161,6 @@ impl Advertisement {
                             }
                             WorkerMsg::Alive => {}
                         }
-                        call_fut = call_f;
-                        msg_fut = recv.recv();
                     }
                 }
             }
@@ -212,7 +210,7 @@ pub struct AdWorker {
 impl AdWorker {
     pub async fn release(self) -> Result<Advertisement, Error> {
         self.sender.send(WorkerMsg::Release).await.ok();
-        self.worker.await
+        self.worker.await.map_err(|_| Error::ThreadPanicked)?
     }
     pub async fn is_alive(&self) -> bool {
         matches!(self.sender.send(WorkerMsg::Alive).await, Ok(_))

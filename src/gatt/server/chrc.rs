@@ -1,16 +1,14 @@
-use async_std::channel::bounded;
-use async_std::os::unix::net::UnixDatagram;
-use async_std::task::spawn;
-use futures::future::{select, Either};
-use futures::pin_mut;
 use std::collections::HashMap;
 use std::io::ErrorKind;
 use std::num::NonZeroU16;
 use std::os::unix::io::{AsRawFd, FromRawFd};
+use std::os::unix::net::UnixDatagram as StdUnixDatagram;
 use std::pin::Pin;
+use tokio::net::UnixDatagram;
+use tokio::sync::mpsc::channel as bounded;
+use tokio::task::spawn;
 
 use super::*;
-use crate::drop_select;
 use crate::properties::{PropError, Properties};
 use async_rustbus::rustbus_core;
 use async_rustbus::RpcConn;
@@ -106,30 +104,19 @@ impl Characteristic {
         filter: Option<Arc<str>>,
     ) -> Worker {
         let path = path.to_owned();
-        let (sender, recv) = bounded::<WorkerMsg>(8);
+        let (sender, mut recv) = bounded::<WorkerMsg>(8);
         let conn = conn.clone();
         let mut chrc_data = ChrcData::new(self, children);
         let handle = spawn(async move {
-            let recv_fut = recv.recv();
-            let not_fut = (chrc_data.notify_cb)();
-            let mut recv_not_fut = select(recv_fut, not_fut);
             let call_recv = conn.get_call_recv(path.as_str()).await.unwrap();
+            let mut call_fut = call_recv.recv();
+            let mut not_fut = (chrc_data.notify_cb)();
             loop {
-                // This two-staged matches are done to satisfying,
-                // the borrow-checker.
-                let either = {
-                    let call_fut = call_recv.recv();
-                    let write_fut = chrc_data.check_for_write();
-                    let call_write = drop_select(write_fut, call_fut);
-                    pin_mut!(call_write);
-                    match select(recv_not_fut, call_write).await {
-                        Either::Left((call_not, _)) => Either::Left(call_not),
-                        Either::Right(res) => Either::Right(res),
-                    }
-                };
-                match either {
-                    Either::Left(Either::Left((msg, not_fut))) => {
-                        let msg = msg?;
+                tokio::select! {
+                    biased;
+
+                    opt = recv.recv() => {
+                        let msg = opt.ok_or(Error::ThreadClosed)?;
                         match msg {
                             WorkerMsg::Unregister => break,
                             WorkerMsg::Update(vf, notify) => {
@@ -165,9 +152,8 @@ impl Characteristic {
                             }
                             _ => unreachable!(),
                         }
-                        recv_not_fut = select(recv.recv(), not_fut);
                     }
-                    Either::Left(Either::Right((should_not, recv_f))) => {
+                    should_not = &mut not_fut => {
                         match should_not {
                             ShouldNotify::Yes => {
                                 chrc_data.notify(&path, &conn, None).await?;
@@ -177,9 +163,9 @@ impl Characteristic {
                             }
                             ShouldNotify::No => {}
                         }
-                        recv_not_fut = select(recv_f, (chrc_data.notify_cb)());
+                        not_fut = (chrc_data.notify_cb)();
                     }
-                    Either::Right((Either::Left(res), recv_not_f)) => {
+                    res = chrc_data.check_for_write() => {
                         match res {
                             Ok(res) => chrc_data.handle_write(&conn, &path, res).await?,
                             Err(e) if e.kind() == ErrorKind::NotConnected => {
@@ -187,19 +173,17 @@ impl Characteristic {
                             }
                             Err(e) => return Err(e.into()),
                         }
-                        recv_not_fut = recv_not_f;
                     }
-                    Either::Right((Either::Right(call), recv_not_f)) => {
-                        let call = call?;
+                    res = &mut call_fut => {
+                        let call = res?;
                         let res = if is_msg_bluez(&call, filter.as_deref()) {
                             chrc_data.handle_call(&call, &conn).await?
                         } else {
                             call.dynheader.make_error_response("PermissionDenied", None)
                         };
                         conn.send_msg_wo_rsp(&res).await?;
-                        recv_not_fut = recv_not_f;
-                    } /*
-                       */
+                        call_fut = call_recv.recv();
+                    }
                 }
             }
             Ok(WorkerJoin::Chrc(chrc_data.into_chrc()))
@@ -550,8 +534,14 @@ fn get_sock_seqpacket() -> std::io::Result<(UnixDatagram, UnixDatagram)> {
             Err(std::io::Error::last_os_error())
         } else {
             Ok((
-                UnixDatagram::from_raw_fd(fds[0]),
-                UnixDatagram::from_raw_fd(fds[1]),
+                {
+                    let socket = StdUnixDatagram::from_raw_fd(fds[0]);
+                    UnixDatagram::from_std(socket)?
+                },
+                {
+                    let socket = StdUnixDatagram::from_raw_fd(fds[1]);
+                    UnixDatagram::from_std(socket)?
+                },
             ))
         }
     }

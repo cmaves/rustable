@@ -1,11 +1,10 @@
-use async_std::channel::bounded;
-use async_std::task::spawn;
 use std::num::NonZeroU16;
+use tokio::sync::mpsc::channel as bounded;
+use tokio::task::spawn;
 
 use super::*;
 use crate::properties::{PropError, Properties};
 use async_rustbus::RpcConn;
-
 
 /// A GATT service that is to be added to an [`Application`].
 pub struct Service {
@@ -61,7 +60,7 @@ impl Service {
     /// If this is not set then one will be requested from Bluez.
     /// Setting this can be useful because some remote devices (like Android devices) do not
     /// handle changing handles very well.
-    /// When [`Application`] is finally registered, if the requested handles are not unique 
+    /// When [`Application`] is finally registered, if the requested handles are not unique
     /// or they are already in use Bluez will reject the `Application` registration.
     pub fn set_handle(&mut self, handle: Option<NonZeroU16>) {
         self.handle = handle.map_or(0, |u| u.into());
@@ -122,7 +121,7 @@ impl Service {
         filter: Option<Arc<str>>,
     ) -> Worker {
         let path = path.to_owned();
-        let (sender, recv) = bounded(8);
+        let (sender, mut recv) = bounded(8);
         let conn = conn.clone();
         let mut serv_data = ServData {
             uuid: self.uuid,
@@ -133,36 +132,39 @@ impl Service {
         };
         let handle = spawn(async move {
             let call_recv = conn.get_call_recv(&*path).await.unwrap();
-            let mut msg_fut = recv.recv();
             let mut call_fut = call_recv.recv();
             loop {
-                match select(msg_fut, call_fut).await {
-                    Either::Left((msg, call_f)) => {
-                        match msg? {
+                tokio::select! {
+                    biased;
+
+                    opt = recv.recv() => {
+                        match opt.ok_or(Error::ThreadClosed)? {
                             WorkerMsg::Unregister => break,
                             WorkerMsg::ObjMgr(sender) => {
-                                sender.send((path.clone(), serv_data.get_all_interfaces(&path)))?;
+                                sender.send(
+                                    (path.clone(), serv_data.get_all_interfaces(&path))
+                                ).map_err(|_| Error::ThreadClosed)?;
                             }
                             WorkerMsg::GetHandle(sender) => {
-                                sender.send(NonZeroU16::new(self.handle).unwrap())?;
+                                sender.send(
+                                    NonZeroU16::new(self.handle).unwrap()
+                                ).map_err(|_| Error::ThreadClosed)?;
                             }
                             WorkerMsg::IncludedPaths(includes) => {
                                 serv_data.includes = includes;
                             }
                             _ => unreachable!(),
                         }
-                        call_fut = call_f;
-                        msg_fut = recv.recv();
                     }
-                    Either::Right((call, msg_f)) => {
-                        let call = call?;
+                    res = &mut call_fut => {
+                        let call = res?;
                         let res = if is_msg_bluez(&call, filter.as_deref()) {
                             serv_data.handle_call(&call)
                         } else {
                             call.dynheader.make_error_response("PermissionDenied", None)
                         };
                         conn.send_msg_wo_rsp(&res).await?;
-                        msg_fut = msg_f;
+
                         call_fut = call_recv.recv();
                     }
                 }

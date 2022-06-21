@@ -1,6 +1,6 @@
 //! This module is used to query GATT services on remote devices.
 use std::collections::HashMap;
-use std::os::unix::io::FromRawFd;
+use std::os::unix::prelude::FromRawFd;
 use std::sync::Arc;
 
 use super::{is_hung_up, AttValue, CharFlags};
@@ -10,9 +10,10 @@ use crate::*;
 
 use futures::future::try_join_all;
 use rustbus_core::path::ObjectPathBuf;
-use rustbus_core::wire::unixfd::UnixFd;
+use rustbus_core::wire::UnixFd;
 
-use async_std::os::unix::net::UnixDatagram;
+use std::os::unix::net::UnixDatagram as StdUnixDatagram;
+use tokio::net::UnixDatagram;
 /// Used to interact with remote GATT services. Mostly used to get `Characteristic`s.
 pub struct Service {
     conn: Arc<RpcConn>,
@@ -237,7 +238,10 @@ impl Characteristic {
         Ok(async move {
             let res = res_fut.await?;
             let (fd, mtu): (UnixFd, u16) = is_msg_err2(&res)?;
-            let sock = unsafe { UnixDatagram::from_raw_fd(fd.take_raw_fd().unwrap()) };
+            let sock = unsafe {
+                let socket = StdUnixDatagram::from_raw_fd(fd.take_raw_fd().unwrap());
+                UnixDatagram::from_std(socket)?
+            };
             Ok(NotifySocket { sock, mtu })
             /*
             *not_mut = Some(NotifySocket {
@@ -261,7 +265,10 @@ impl Characteristic {
         Ok(async move {
             let res = res_fut.await?;
             let (fd, mtu): (UnixFd, u16) = is_msg_err2(&res)?;
-            let sock = unsafe { UnixDatagram::from_raw_fd(fd.take_raw_fd().unwrap()) };
+            let sock = unsafe {
+                let socket = StdUnixDatagram::from_raw_fd(fd.take_raw_fd().unwrap());
+                UnixDatagram::from_std(socket)?
+            };
             Ok(WriteSocket { mtu, sock })
         })
     }

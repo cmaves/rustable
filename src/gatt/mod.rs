@@ -1,4 +1,4 @@
-//! This module is used to interact with GATT applications on remote devices 
+//! This module is used to interact with GATT applications on remote devices
 //! or provide GATT applications from the local adapter.
 use std::borrow::Borrow;
 use std::fmt::{Debug, Formatter};

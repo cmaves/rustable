@@ -1,10 +1,9 @@
-use async_std::channel::{bounded, Sender};
-use async_std::task::{spawn, JoinHandle};
 use futures::future::{select, try_join_all, Either};
-use futures::pin_mut;
 use futures::prelude::*;
 use std::collections::HashMap;
 use std::num::NonZeroU16;
+use tokio::sync::mpsc::{channel as bounded, Sender};
+use tokio::task::{spawn, JoinHandle};
 
 use super::*;
 use crate::*;
@@ -12,8 +11,7 @@ use async_rustbus::rustbus_core::message_builder::MessageBuilder;
 use async_rustbus::rustbus_core::path::{ObjectPath, ObjectPathBuf};
 use async_rustbus::{CallAction, RpcConn};
 
-mod one_time;
-use one_time::{one_time_channel, OneSender};
+use tokio::sync::oneshot::{channel as one_time_channel, Sender as OneSender};
 
 mod chrc;
 pub use chrc::{Characteristic, ShouldNotify};
@@ -88,7 +86,7 @@ impl WorkerData {
         let obj_iter = self.senders.iter().map(|sender| async move {
             let (send, recv) = one_time_channel::<FutTuple>();
             sender.send(WorkerMsg::ObjMgr(send)).await?;
-            let ret = recv.recv().await?;
+            let ret = recv.await?;
             Result::<_, Error>::Ok(ret)
         });
         let map: HashMap<ObjectPathBuf, IfAndProps> =
@@ -101,7 +99,7 @@ impl WorkerData {
 }
 impl Application {
     /// Create new `Application` that is assocated with the given adapter.
-    /// 
+    ///
     /// This app will use the given `conn` to interact with Bluez to provide the services.
     pub fn new_with_conn(hci: &Adapter, base_path: &str, conn: Arc<RpcConn>) -> Self {
         let hci = hci.path.clone();
@@ -174,18 +172,18 @@ impl Application {
         let idx = self.services.iter().position(|s| s.uuid() == uuid)?;
         Some(self.services.remove(idx))
     }
-    /// Set whether the `Application` should filter out DBus messages coming from sources 
+    /// Set whether the `Application` should filter out DBus messages coming from sources
     /// other than the Bluez daemon.
-    /// 
+    ///
     /// `true` (the default) will filter out messages while `false` will allow all messages.
-    /// This can be useful debugging, 
-    /// but users should be cautious 
+    /// This can be useful debugging,
+    /// but users should be cautious
     /// as this will give all users on the local device access to the application.
     #[inline]
     pub fn set_filter(&mut self, filter: bool) {
         self.filter = filter;
     }
-    /// Get whether the `Application` is filtering out incoming DBus messages from sources 
+    /// Get whether the `Application` is filtering out incoming DBus messages from sources
     /// other than the Bluez daemon.
     #[inline]
     pub fn get_filter(&self) -> bool {
@@ -338,23 +336,21 @@ impl Application {
                 }
             }
         }
-        let (sender, recv) = bounded(2);
+        let (sender, mut recv) = bounded(2);
         let handle = spawn(async move {
-            let mut recv_fut = recv.recv();
             loop {
-                let call_fut = self.conn.get_call(&*self.base_path);
-                pin_mut!(call_fut);
-                match select(recv_fut, call_fut).await {
-                    Either::Left((msg, _)) => {
-                        let msg = msg.unwrap();
+                tokio::select! {
+                    biased;
+                    opt = recv.recv() => {
+                        let msg = opt.unwrap();
                         match msg {
                             WorkerMsg::Unregister => break,
                             _ => unreachable!(),
                         }
+
                     }
-                    Either::Right((call, recv_f)) => {
+                    call = self.conn.get_call(&*self.base_path) => {
                         app_data.handle_app(&call?).await?;
-                        recv_fut = recv_f;
                     }
                 }
             }
@@ -366,7 +362,7 @@ impl Application {
         Ok(AppWorker { workers })
     }
 }
-/// Given an optional filter, check if this message should be allowed, 
+/// Given an optional filter, check if this message should be allowed,
 /// or rejected because it is not from the Bluez daemon.
 fn is_msg_bluez(call: &MarshalledMessage, filter: Option<&str>) -> bool {
     let self_dest = match filter {
@@ -413,7 +409,7 @@ impl AppWorker {
             .collect();
         let mut finished = try_join_all(heap.into_iter().map(|w| async {
             w.1.sender.send(WorkerMsg::Unregister).await?;
-            let ret = w.1.handle.await?;
+            let ret = w.1.handle.await.map_err(|_| Error::ThreadPanicked)??;
             Result::<_, Error>::Ok(ret)
         }))
         .await?
@@ -479,23 +475,23 @@ impl AppWorker {
         Ok(())
     }
     /// Trigger a notification for the Bluetooth service.
-    pub fn notify_char(
+    pub async fn notify_char(
         &self,
         service: UUID,
         character: UUID,
         val: Option<AttValue>,
-    ) -> impl Future<Output = Result<(), Error>> + Unpin + '_ {
-        futures::future::ready(
-            self.workers
-                .get(&(service, character, UUID(0)))
-                .ok_or(Error::UnknownChrc(service, character)),
-        )
-        .and_then(|worker| worker.sender.send(WorkerMsg::Notify(val)).err_into())
+    ) -> Result<(), Error> {
+        let worker = self
+            .workers
+            .get(&(service, character, UUID(0)))
+            .ok_or(Error::UnknownChrc(service, character))?;
+        worker.sender.send(WorkerMsg::Notify(val)).await?;
+        Ok(())
     }
     /// Get the current value of the characteristic.
     ///
     /// If the value of the characteristic is a `ValOrFn::Function` the callback will be called.
-    /// If this is the case, note that this could affect what remote devices see 
+    /// If this is the case, note that this could affect what remote devices see
     /// if the callback changes based on number/timing of reads.
     pub async fn get_char(&self, serv: UUID, cha: UUID) -> Result<AttValue, Error> {
         let worker = self
@@ -504,7 +500,7 @@ impl AppWorker {
             .ok_or(Error::UnknownChrc(serv, cha))?;
         let (sender, recv) = one_time_channel();
         worker.sender.send(WorkerMsg::Get(sender)).await?;
-        let res = recv.recv().await?;
+        let res = recv.await?;
         Ok(res)
     }
     /// Get the ATT handle for the given service.
@@ -515,7 +511,7 @@ impl AppWorker {
             .ok_or(Error::UnknownServ(serv))?;
         let (sender, recv) = one_time_channel();
         worker.sender.send(WorkerMsg::GetHandle(sender)).await?;
-        let res = recv.recv().await?;
+        let res = recv.await?;
         Ok(res)
     }
     /// Get the ATT handle for the given characteristic.
@@ -526,15 +522,15 @@ impl AppWorker {
             .ok_or(Error::UnknownChrc(serv, cha))?;
         let (sender, recv) = one_time_channel();
         worker.sender.send(WorkerMsg::GetHandle(sender)).await?;
-        let res = recv.recv().await?;
+        let res = recv.await?;
         Ok(res)
     }
     /// Check if the characteristic is notifying.
     ///
-    /// This just indicates that Bluez has called `org.bluez.GattCharacteristic1.AcquireNotify` 
-    /// and has not hungup the socket, or `org.bluez.GattCharacteristic1.StartNotify` was called 
-    /// and has not been stopped. 
-    /// This does not guarantee that the device(s) that requested notifications are still connected 
+    /// This just indicates that Bluez has called `org.bluez.GattCharacteristic1.AcquireNotify`
+    /// and has not hungup the socket, or `org.bluez.GattCharacteristic1.StartNotify` was called
+    /// and has not been stopped.
+    /// This does not guarantee that the device(s) that requested notifications are still connected
     /// or listening.
     pub async fn char_notifying(&self, serv: UUID, cha: UUID) -> Result<bool, Error> {
         let worker = self
@@ -543,18 +539,18 @@ impl AppWorker {
             .ok_or(Error::UnknownChrc(serv, cha))?;
         let (sender, recv) = one_time_channel();
         worker.sender.send(WorkerMsg::Notifying(sender)).await?;
-        let res = recv.recv().await?;
+        let res = recv.await?;
         Ok(res)
     }
     /// Check if the characteristic is notifying through a file descriptor.
     ///
-    /// This indicates that Bluez has acquired a file descriptor 
+    /// This indicates that Bluez has acquired a file descriptor
     /// with `org.bluez.GattCharacteristic1.AcquireNotify` and it hasn't been closed yet.
-    /// This does not guarantee that the device(s) that requested notifications are still connected 
+    /// This does not guarantee that the device(s) that requested notifications are still connected
     /// or listening.
     ///
     /// # Notes
-    /// * When remote devices acquire notifications, Bluez will almost always call 
+    /// * When remote devices acquire notifications, Bluez will almost always call
     /// `org.bluez.GattCharacteristic1.AcquireNotify` to services them.
     pub async fn char_notify_acquired(&self, serv: UUID, cha: UUID) -> Result<bool, Error> {
         let worker = self
@@ -566,7 +562,7 @@ impl AppWorker {
             .sender
             .send(WorkerMsg::NotifyAcquired(sender))
             .await?;
-        let res = recv.recv().await?;
+        let res = recv.await?;
         Ok(res)
     }
     /// Check if the characteristic is notifying via DBus signals.
@@ -574,7 +570,7 @@ impl AppWorker {
     /// This indicates that Bluez has started a notification session by with
     /// `org.bluez.GattCharacteristic1.StartNotify`.
     /// # Notes
-    /// * Bluez will almost never uses `org.bluez.GattCharacteristic1.StartNotify`, 
+    /// * Bluez will almost never uses `org.bluez.GattCharacteristic1.StartNotify`,
     /// but it can be useful for debugging.
     pub async fn char_notify_signaling(&self, serv: UUID, cha: UUID) -> Result<bool, Error> {
         let worker = self
@@ -586,13 +582,13 @@ impl AppWorker {
             .sender
             .send(WorkerMsg::NotifyingSignal(sender))
             .await?;
-        let res = recv.recv().await?;
+        let res = recv.await?;
         Ok(res)
     }
     /// Get the current value of the given descriptor.
     ///
     /// If the value of the descriptor is a `ValOrFn::Function` the callback will be called.
-    /// If this is the case, note that this could affect what remote devices see 
+    /// If this is the case, note that this could affect what remote devices see
     /// if the callback changes based on number/timing of reads.
     pub async fn get_desc(&self, serv: UUID, cha: UUID, desc: UUID) -> Result<AttValue, Error> {
         let worker = self
@@ -601,7 +597,7 @@ impl AppWorker {
             .ok_or(Error::UnknownDesc(serv, cha, desc))?;
         let (sender, recv) = one_time_channel();
         worker.sender.send(WorkerMsg::Get(sender)).await?;
-        let res = recv.recv().await?;
+        let res = recv.await?;
         Ok(res)
     }
     /// Get the ATT handle for the given descriptor.
@@ -617,11 +613,12 @@ impl AppWorker {
             .ok_or(Error::UnknownDesc(serv, cha, desc))?;
         let (sender, recv) = one_time_channel();
         worker.sender.send(WorkerMsg::GetHandle(sender)).await?;
-        let res = recv.recv().await?;
+        let res = recv.await?;
         Ok(res)
     }
 }
 
+#[derive(Debug)]
 enum WorkerMsg {
     Unregister,
     Update(ValOrFn, bool),

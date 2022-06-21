@@ -1,7 +1,6 @@
-use async_std::channel::bounded;
-use async_std::task::spawn;
-use futures::future::{select, Either};
 use std::collections::HashMap;
+use tokio::sync::mpsc::channel as bounded;
+use tokio::task::spawn;
 
 use super::*;
 use crate::properties::{PropError, Properties};
@@ -39,43 +38,45 @@ impl Descriptor {
         filter: Option<Arc<str>>,
     ) -> Worker {
         let path = path.to_owned();
-        let (sender, msg_recv) = bounded(8);
+        let (sender, mut msg_recv) = bounded(8);
         let conn = conn.clone();
         let handle = spawn(async move {
             let call_recv = conn.get_call_recv(&*path).await.unwrap();
             let mut call_fut = call_recv.recv();
-            let mut msg_fut = msg_recv.recv();
             loop {
-                match select(msg_fut, call_fut).await {
-                    Either::Left((msg, call_f)) => {
-                        match msg? {
+                tokio::select! {
+                    biased;
+
+                    opt = msg_recv.recv() => {
+                        let msg = opt.ok_or(Error::ThreadClosed)?;
+                        match msg {
                             WorkerMsg::Unregister => break,
                             WorkerMsg::Update(vf, _) => {
                                 self.value = vf;
                             }
                             WorkerMsg::Get(sender) => {
-                                sender.send(self.value.to_value())?;
+                                let res = sender.send(self.value.to_value());
+                                res.map_err(|_| Error::ThreadClosed)?;
                             }
                             WorkerMsg::GetHandle(sender) => {
-                                sender.send(NonZeroU16::new(self.handle).unwrap())?;
+                                let res = sender.send(NonZeroU16::new(self.handle).unwrap());
+                                res.map_err(|_| Error::ThreadClosed)?;
                             }
                             WorkerMsg::ObjMgr(sender) => {
-                                sender.send((path.clone(), self.get_all_interfaces(&path)))?;
+                                let res = sender.send((path.clone(), self.get_all_interfaces(&path)));
+                                res.map_err(|_| Error::ThreadClosed)?;
                             }
                             _ => unreachable!(),
                         }
-                        call_fut = call_f;
-                        msg_fut = msg_recv.recv();
                     }
-                    Either::Right((call, msg_f)) => {
-                        let call = call?;
+                    res = &mut call_fut => {
+                        let call = res?;
                         let res = if is_msg_bluez(&call, filter.as_deref()) {
                             self.handle_call(&call)
                         } else {
                             call.dynheader.make_error_response("PermissionDenied", None)
                         };
                         conn.send_msg(&res).await?;
-                        msg_fut = msg_f;
                         call_fut = call_recv.recv();
                     }
                 }
